@@ -7,6 +7,8 @@ import { normalizeAddress } from "@/lib/addresses";
 import { createSyndicateSchema } from "@/lib/validation";
 import { generateBatchId, jsonError } from "@/lib/syndicates";
 import { checkAccountWarmup } from "@/lib/warmup";
+import { aggregateAssets, type ResolvedAsset } from "@/lib/tokens";
+import { APPROX_PRICES } from "@/lib/config";
 
 export async function POST(req: Request): Promise<Response> {
   let body: unknown;
@@ -25,12 +27,30 @@ export async function POST(req: Request): Promise<Response> {
   const market = getMarket(input.market);
   if (!market) return jsonError(400, `unknown market: ${input.market}`);
 
+  // Resolve the final amount: multi-asset aggregation or legacy single amount.
+  let finalAmount: number;
+  let resolvedAssets: ResolvedAsset[];
+
+  if (input.assets && input.assets.length > 0) {
+    const marketPrice = APPROX_PRICES[input.market] ?? 1;
+    const { totalBaseAmount, resolved } = aggregateAssets(
+      input.assets,
+      market.baseDecimals,
+      marketPrice,
+    );
+    finalAmount = totalBaseAmount;
+    resolvedAssets = resolved;
+  } else {
+    finalAmount = input.amount;
+    resolvedAssets = [{ symbol: market.symbol.split(":")[0], amount: input.amount, usdValue: input.amount * (APPROX_PRICES[input.market] ?? 1) }];
+  }
+
   // Pool minimums are enforced HERE, before an intent is ever saved -- the pool
   // reverts QuantityBelowMinimum at execution time and the sweep would eat gas.
-  if (!amountMeetsMinimum(market, input.amount)) {
+  if (!amountMeetsMinimum(market, finalAmount)) {
     return jsonError(
       400,
-      `amount ${input.amount} is below the pool minimum ${market.minAmount} ${market.symbol} (lot ${market.lotSize})`,
+      `amount ${finalAmount} is below the pool minimum ${market.minAmount} ${market.symbol} (lot ${market.lotSize})`,
     );
   }
 
@@ -64,13 +84,13 @@ export async function POST(req: Request): Promise<Response> {
     const trade = await Trade.create({
       batchId,
       userAddress: creatorAddress,
-      amount: input.amount,
+      amount: finalAmount,
+      assets: resolvedAssets,
+      dustSweep: input.dustSweep ?? false,
       status: "PENDING",
     });
-    await Batch.updateOne({ _id: batchId }, { $inc: { totalPool: input.amount } });
+    await Batch.updateOne({ _id: batchId }, { $inc: { totalPool: finalAmount } });
 
-    // Non-blocking warmup hint (Phase 1 learning): a cold wallet cannot even
-    // pay gas for the one-time operator grant it must sign after joining.
     const warmup = await checkAccountWarmup(creatorAddress).catch(() => null);
 
     return Response.json(
@@ -78,7 +98,8 @@ export async function POST(req: Request): Promise<Response> {
         batchId,
         closesAt: closesAt.toISOString(),
         tradeId: trade._id,
-        totalPool: input.amount,
+        totalPool: finalAmount,
+        assets: resolvedAssets,
         walletReady: warmup ? warmup.warm : null,
       },
       { status: 201 },

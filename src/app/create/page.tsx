@@ -110,6 +110,8 @@ export default function CreatePage() {
         body: JSON.stringify({
           creatorAddress: address, market, direction,
           durationSeconds: duration, amount: baseAmount,
+          assets: selectedAssets.map((s) => ({ symbol: s, amount: +amount / selectedAssets.length })),
+          dustSweep: isDustSweepEnabled,
         }),
       });
       const data = await res.json();

@@ -8,9 +8,16 @@ import { CountdownTimer } from "@/components/CountdownTimer";
 import { SPOT_POOL_ABI, crossingPrice, ORDER_TYPE, OPERATOR_REGISTRY_ADDRESS, OPERATOR_REGISTRY_ABI, SELECTORS, OPERATOR_ADDRESS } from "@/lib/config";
 import { MARKETS } from "@/lib/markets";
 
+interface PledgeAsset {
+  symbol: string;
+  amount: number;
+  usdValue: number;
+}
+
 interface Pledge {
   user: string;
   amount: number;
+  assets: PledgeAsset[];
   status: string;
   txHash?: string;
 }
@@ -76,6 +83,11 @@ export default function SquadPage() {
   const processingStartedRef = useRef<number | null>(null);
   const [isDelayed, setIsDelayed] = useState(false);
 
+  const [joinSelectedAssets, setJoinSelectedAssets] = useState<string[]>(["STT"]);
+  const toggleJoinAsset = (sym: string) => {
+    setJoinSelectedAssets((p) => p.includes(sym) ? p.filter((a) => a !== sym) : [...p, sym]);
+  };
+
   const baseSymbol = data ? data.market.split(":")[0] : "";
   const baseDecimals = data ? (MARKETS[data.market]?.baseDecimals ?? 18) : 18;
 
@@ -128,7 +140,11 @@ export default function SquadPage() {
       await ensureDelegation();
       const res = await fetch("/api/syndicates/join", {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ userAddress: address, batchId: data.batchId, amount: +joinAmount }),
+        body: JSON.stringify({
+          userAddress: address, batchId: data.batchId, amount: +joinAmount,
+          assets: joinSelectedAssets.map((s) => ({ symbol: s, amount: +joinAmount / joinSelectedAssets.length })),
+          dustSweep: false,
+        }),
       });
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || "join failed");
@@ -136,7 +152,7 @@ export default function SquadPage() {
     } catch (e: unknown) {
       setJoinError(e instanceof Error ? e.message : "unknown error");
     } finally { setJoinBusy(false); }
-  }, [address, data, joinAmount, ensureDelegation]);
+  }, [address, data, joinAmount, joinSelectedAssets, ensureDelegation]);
 
   const handleSelfExecute = useCallback(async () => {
     if (!address || !data) return;
@@ -373,11 +389,26 @@ export default function SquadPage() {
             </h3>
             {data.pledges.map((p, i) => (
               <div key={i} style={{
-                display: "flex", justifyContent: "space-between", padding: "10px 12px",
+                padding: "10px 12px",
                 background: "rgba(30, 41, 59, 0.3)", borderRadius: 8, marginBottom: 4, fontSize: 13,
               }}>
-                <span style={{ fontFamily: "monospace", color: "#94a3b8" }}>{p.user}</span>
-                <span style={{ fontWeight: 700, color: "#e2e8f0" }}>{p.amount} {baseSymbol}</span>
+                <div style={{ display: "flex", justifyContent: "space-between" }}>
+                  <span style={{ fontFamily: "monospace", color: "#94a3b8" }}>{p.user}</span>
+                  <span style={{ fontWeight: 700, color: "#e2e8f0" }}>{p.amount} {baseSymbol}</span>
+                </div>
+                {p.assets && p.assets.length > 0 && (
+                  <div style={{ display: "flex", gap: 6, marginTop: 4, flexWrap: "wrap" }}>
+                    {p.assets.map((a, j) => (
+                      <span key={j} style={{
+                        fontSize: 11, padding: "2px 8px", borderRadius: 6,
+                        background: "rgba(168, 85, 247, 0.1)", border: "1px solid rgba(147, 51, 234, 0.2)",
+                        color: "#c084fc",
+                      }}>
+                        {a.amount.toFixed(2)} {a.symbol}
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -396,6 +427,25 @@ export default function SquadPage() {
 
         {isConnected ? (
           <div>
+            <p style={{ fontSize: 12, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8, fontWeight: 600 }}>
+              Pledge Assets
+            </p>
+            <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
+              {["STT", "SOMI", "USDC", "WETH"].map((sym) => {
+                const active = joinSelectedAssets.includes(sym);
+                return (
+                  <button key={sym} onClick={() => toggleJoinAsset(sym)} style={{
+                    padding: "6px 14px", borderRadius: 14, fontSize: 12, fontWeight: 600, cursor: "pointer",
+                    color: active ? "#a855f7" : "rgba(148,163,184,0.6)",
+                    background: active ? "rgba(168,85,247,0.12)" : "rgba(30,41,59,0.5)",
+                    border: active ? "1px solid rgba(147,51,234,0.5)" : "1px solid rgba(51,65,85,0.5)",
+                    transition: "all 0.2s",
+                  }}>
+                    {sym}
+                  </button>
+                );
+              })}
+            </div>
             <input
               type="number" min={0} value={joinAmount}
               onChange={(e) => setJoinAmount(e.target.value)}

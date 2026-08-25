@@ -6,6 +6,8 @@ import { getMarket, amountMeetsMinimum } from "@/lib/markets";
 import { normalizeAddress } from "@/lib/addresses";
 import { joinSyndicateSchema } from "@/lib/validation";
 import { jsonError } from "@/lib/syndicates";
+import { aggregateAssets, type ResolvedAsset } from "@/lib/tokens";
+import { APPROX_PRICES } from "@/lib/config";
 
 export async function POST(req: Request): Promise<Response> {
   let body: unknown;
@@ -34,10 +36,28 @@ export async function POST(req: Request): Promise<Response> {
     const market = getMarket(batch.market);
     if (!market) return jsonError(500, `batch references unknown market: ${batch.market}`);
 
-    if (!amountMeetsMinimum(market, input.amount)) {
+    // Resolve the final amount: multi-asset aggregation or legacy single amount.
+    let finalAmount: number;
+    let resolvedAssets: ResolvedAsset[];
+
+    if (input.assets && input.assets.length > 0) {
+      const marketPrice = APPROX_PRICES[batch.market] ?? 1;
+      const { totalBaseAmount, resolved } = aggregateAssets(
+        input.assets,
+        market.baseDecimals,
+        marketPrice,
+      );
+      finalAmount = totalBaseAmount;
+      resolvedAssets = resolved;
+    } else {
+      finalAmount = input.amount;
+      resolvedAssets = [{ symbol: batch.market.split(":")[0], amount: input.amount, usdValue: input.amount * (APPROX_PRICES[batch.market] ?? 1) }];
+    }
+
+    if (!amountMeetsMinimum(market, finalAmount)) {
       return jsonError(
         400,
-        `amount ${input.amount} is below the pool minimum ${market.minAmount} ${market.symbol} (lot ${market.lotSize})`,
+        `amount ${finalAmount} is below the pool minimum ${market.minAmount} ${market.symbol} (lot ${market.lotSize})`,
       );
     }
 
@@ -48,12 +68,9 @@ export async function POST(req: Request): Promise<Response> {
       { upsert: true },
     );
 
-    // Reserve against the timer/status FIRST so a closing batch can never take
-    // new money; roll back if the unique (batchId,userAddress) index rejects a
-    // double-join.
     const reservation = await Batch.updateOne(
       { _id: batch._id, status: "OPEN", closesAt: { $gt: new Date() } },
-      { $inc: { totalPool: input.amount } },
+      { $inc: { totalPool: finalAmount } },
     );
     if (reservation.modifiedCount === 0) {
       return jsonError(409, "syndicate just closed or expired");
@@ -64,19 +81,20 @@ export async function POST(req: Request): Promise<Response> {
       const trade = await Trade.create({
         batchId: batch._id,
         userAddress,
-        amount: input.amount,
+        amount: finalAmount,
+        assets: resolvedAssets,
+        dustSweep: input.dustSweep ?? false,
         status: "PENDING",
       });
       tradeId = trade._id;
     } catch (e) {
-      // duplicate pledge -- undo the reservation
-      await Batch.updateOne({ _id: batch._id }, { $inc: { totalPool: -input.amount } });
+      await Batch.updateOne({ _id: batch._id }, { $inc: { totalPool: -finalAmount } });
       const dup = (e as { code?: number }).code === 11000;
       return jsonError(dup ? 409 : 500, dup ? "wallet already pledged to this syndicate" : "failed to record pledge");
     }
 
     const updated = await Batch.findById(batch._id).select("totalPool").lean();
-    return Response.json({ tradeId, totalPool: updated?.totalPool ?? batch.totalPool + input.amount }, { status: 201 });
+    return Response.json({ tradeId, totalPool: updated?.totalPool ?? batch.totalPool + finalAmount, assets: resolvedAssets }, { status: 201 });
   } catch (err) {
     console.error("join failed", err);
     return jsonError(500, "failed to join syndicate");

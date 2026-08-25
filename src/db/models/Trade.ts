@@ -4,18 +4,25 @@ import { Schema, model } from "mongoose";
 export const TRADE_STATUS = ["PENDING", "EXECUTED", "FAILED"] as const;
 export type TradeStatus = (typeof TRADE_STATUS)[number];
 
+export interface PledgedAsset {
+  symbol: string;
+  amount: number; // human-readable units
+  usdValue: number;
+}
+
 /**
  * trades -- one participant's queued position inside a batch.
  *
- * The executor writes back txHash + executedAt on success (EXECUTED) or
- * errorMessage on revert (FAILED). One intent per user per batch is enforced
- * at the index level so a double-tap on Join cannot inflate the pool.
+ * `amount` is the aggregated base-token quantity (for executor compatibility).
+ * `assets` stores the individual token breakdown for multi-asset pledges.
  */
 export interface TradeDoc {
   _id: string; // uuid
   batchId: string; // batches._id
   userAddress: string; // users._id
   amount: number;
+  assets: PledgedAsset[];
+  dustSweep: boolean;
   status: TradeStatus;
   txHash?: string;
   executedAt?: Date;
@@ -23,12 +30,19 @@ export interface TradeDoc {
   createdAt: Date;
 }
 
+const PledgedAssetSchema = new Schema<PledgedAsset>(
+  { symbol: { type: String, required: true }, amount: { type: Number, required: true }, usdValue: { type: Number, required: true } },
+  { _id: false, versionKey: false },
+);
+
 const TradeSchema = new Schema<TradeDoc>(
   {
     _id: { type: String, default: () => randomUUID() },
     batchId: { type: String, ref: "Batch", required: true },
     userAddress: { type: String, ref: "User", required: true },
     amount: { type: Number, required: true },
+    assets: { type: [PledgedAssetSchema], default: [] },
+    dustSweep: { type: Boolean, default: false },
     status: { type: String, enum: TRADE_STATUS, default: "PENDING" },
     txHash: { type: String },
     executedAt: { type: Date },

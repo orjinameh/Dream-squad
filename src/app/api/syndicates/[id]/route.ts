@@ -7,12 +7,18 @@ import { jsonError } from "@/lib/syndicates";
 interface TradeRow {
   user: string;
   amount: number;
+  assets: { symbol: string; amount: number; usdValue: number }[];
   status: string;
   txHash?: string;
 }
 
 function scrubTrade(t: TradeDoc): TradeRow {
-  const row: TradeRow = { user: maskAddress(t.userAddress), amount: t.amount, status: t.status };
+  const row: TradeRow = {
+    user: maskAddress(t.userAddress),
+    amount: t.amount,
+    assets: t.assets ?? [],
+    status: t.status,
+  };
   if (t.txHash) row.txHash = t.txHash;
   return row;
 }
