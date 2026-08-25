@@ -1,0 +1,84 @@
+import { connectToDatabase } from "@/db/connect";
+import { User } from "@/db/models/User";
+import { Batch } from "@/db/models/Batch";
+import { Trade } from "@/db/models/Trade";
+import { getMarket, amountMeetsMinimum } from "@/lib/markets";
+import { normalizeAddress } from "@/lib/addresses";
+import { joinSyndicateSchema } from "@/lib/validation";
+import { jsonError } from "@/lib/syndicates";
+
+export async function POST(req: Request): Promise<Response> {
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return jsonError(400, "body must be JSON");
+  }
+
+  const parsed = joinSyndicateSchema.safeParse(body);
+  if (!parsed.success) {
+    return jsonError(400, `validation failed: ${parsed.error.issues.map((i) => i.message).join("; ")}`);
+  }
+  const input = parsed.data;
+
+  try {
+    await connectToDatabase();
+
+    const batch = await Batch.findById(input.batchId);
+    if (!batch) return jsonError(404, `syndicate not found: ${input.batchId}`);
+    if (batch.status !== "OPEN") return jsonError(409, `syndicate is ${batch.status}, no longer accepting pledges`);
+    if (batch.closesAt.getTime() <= Date.now()) {
+      return jsonError(409, "syndicate timer has expired");
+    }
+
+    const market = getMarket(batch.market);
+    if (!market) return jsonError(500, `batch references unknown market: ${batch.market}`);
+
+    if (!amountMeetsMinimum(market, input.amount)) {
+      return jsonError(
+        400,
+        `amount ${input.amount} is below the pool minimum ${market.minAmount} ${market.symbol} (lot ${market.lotSize})`,
+      );
+    }
+
+    const userAddress = normalizeAddress(input.userAddress);
+    await User.findByIdAndUpdate(
+      userAddress,
+      { $setOnInsert: { _id: userAddress, operatorAuthorized: false, vaultInitialized: false } },
+      { upsert: true },
+    );
+
+    // Reserve against the timer/status FIRST so a closing batch can never take
+    // new money; roll back if the unique (batchId,userAddress) index rejects a
+    // double-join.
+    const reservation = await Batch.updateOne(
+      { _id: batch._id, status: "OPEN", closesAt: { $gt: new Date() } },
+      { $inc: { totalPool: input.amount } },
+    );
+    if (reservation.modifiedCount === 0) {
+      return jsonError(409, "syndicate just closed or expired");
+    }
+
+    let tradeId: string;
+    try {
+      const trade = await Trade.create({
+        batchId: batch._id,
+        userAddress,
+        amount: input.amount,
+        status: "PENDING",
+      });
+      tradeId = trade._id;
+    } catch (e) {
+      // duplicate pledge -- undo the reservation
+      await Batch.updateOne({ _id: batch._id }, { $inc: { totalPool: -input.amount } });
+      const dup = (e as { code?: number }).code === 11000;
+      return jsonError(dup ? 409 : 500, dup ? "wallet already pledged to this syndicate" : "failed to record pledge");
+    }
+
+    const updated = await Batch.findById(batch._id).select("totalPool").lean();
+    return Response.json({ tradeId, totalPool: updated?.totalPool ?? batch.totalPool + input.amount }, { status: 201 });
+  } catch (err) {
+    console.error("join failed", err);
+    return jsonError(500, "failed to join syndicate");
+  }
+}
