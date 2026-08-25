@@ -1,5 +1,5 @@
 import { connectToDatabase } from "@/db/connect";
-import { Match } from "@/db/models/Match";
+import { Match, ROUND_TIMINGS } from "@/db/models/Match";
 import { normalizeAddress } from "@/lib/addresses";
 import { jsonError } from "@/lib/syndicates";
 import { z } from "zod";
@@ -27,6 +27,8 @@ export async function POST(req: Request): Promise<Response> {
   try {
     await connectToDatabase();
     const address = normalizeAddress(input.playerAddress);
+    const now = new Date();
+    const deadline = new Date(now.getTime() + 3_000); // 3s intro before first round
 
     const match = await Match.create({
       playerAddress: address,
@@ -35,10 +37,19 @@ export async function POST(req: Request): Promise<Response> {
       rivalChar: input.rivalChar,
       mode: input.mode,
       totalRounds: input.totalRounds,
+      currentRound: 1,
+      roundPhase: "WAITING",
+      roundStartTime: now,
+      roundDeadline: deadline,
       status: "ACTIVE",
     });
 
-    return Response.json({ matchId: match._id }, { status: 201 });
+    return Response.json({
+      matchId: match._id,
+      serverTime: now.toISOString(),
+      roundStartTime: now.toISOString(),
+      roundDeadline: deadline.toISOString(),
+    }, { status: 201 });
   } catch (err) {
     console.error("create match failed", err);
     return jsonError(500, "failed to create match");

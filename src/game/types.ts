@@ -47,7 +47,6 @@ export interface GameState {
   rivalStreak: number;
   timeLeft: number;
   playerPrediction: Prediction;
-  rivalPrediction: Prediction;
   roundResult: RoundResult | null;
   roundHistory: RoundResult[];
   hitEffect: "none" | "player-hit" | "rival-hit" | "both-hit";

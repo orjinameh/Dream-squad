@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { useGameState } from "./useGameState";
 import { RetroCharacter } from "./RetroCharacter";
 import { CHARACTERS } from "./characters";
@@ -28,6 +28,7 @@ export default function GameApp() {
       animation: screenShake ? "shake 0.4s ease-in-out" : undefined,
     }}>
       <style>{globalCSS}</style>
+
       {g.phase === "HOME" && <HomeScreen onEnter={g.actions.goToModeSelect} onLeaderboard={g.actions.goToLeaderboard} />}
       {g.phase === "MODE_SELECT" && <ModeSelect onSelect={g.actions.selectMode} onBack={g.actions.goToHome} />}
       {g.phase === "CHAR_SELECT" && <CharSelect onSelect={g.actions.selectChar} onBack={g.actions.goToModeSelect} />}
@@ -36,6 +37,78 @@ export default function GameApp() {
         <ArenaScreen game={g} />
       )}
       {g.phase === "MATCH_RESULT" && <MatchResult game={g} />}
+
+      {g.isReconnecting && <ReconnectOverlay />}
+    </div>
+  );
+}
+
+function ConnectionIndicator({ status, pingMs }: { status: string; pingMs: number }) {
+  const getColor = () => {
+    if (status === "offline") return "#475569";
+    if (status === "reconnecting") return "#ef4444";
+    if (status === "high") return "#f59e0b";
+    return "#10b981";
+  };
+  const getLabel = () => {
+    if (status === "offline") return "OFFLINE";
+    if (status === "reconnecting") return "RECONNECTING";
+    if (status === "high") return "HIGH PING";
+    return "NET: OK";
+  };
+  const color = getColor();
+  const dots = status === "offline" ? 0 : status === "reconnecting" ? Math.floor(Date.now() / 500) % 3 + 1 : status === "high" ? 2 : 3;
+
+  return (
+    <div style={{
+      display: "flex", alignItems: "center", gap: 6,
+      fontSize: 9, letterSpacing: "0.1em", color,
+      padding: "4px 8px", borderRadius: 4,
+      background: `${color}15`, border: `1px solid ${color}40`,
+    }}>
+      <div style={{ display: "flex", gap: 3 }}>
+        {[1, 2, 3].map((i) => (
+          <div key={i} style={{
+            width: 5, height: 5, borderRadius: "50%",
+            background: i <= dots ? color : "#334155",
+            transition: "background 0.3s",
+          }} />
+        ))}
+      </div>
+      <span>{getLabel()}</span>
+      {status !== "offline" && status !== "reconnecting" && (
+        <span style={{ color: "#64748b", fontSize: 8 }}>{pingMs}ms</span>
+      )}
+    </div>
+  );
+}
+
+function ReconnectOverlay() {
+  return (
+    <div style={{
+      position: "fixed", inset: 0, background: "rgba(8,8,16,0.92)",
+      display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+      zIndex: 100,
+    }}>
+      <div style={{
+        fontSize: 32, fontWeight: 900, color: "#ef4444", letterSpacing: "0.15em",
+        textShadow: "2px 2px 0 #7f1d1d", marginBottom: 16,
+        animation: "criticalPulse 1s steps(2) infinite",
+      }}>
+        CONNECTION LOST
+      </div>
+      <div style={{ fontSize: 14, color: "#94a3b8", letterSpacing: "0.1em", marginBottom: 24 }}>
+        RECONNECTING...
+      </div>
+      <div style={{ display: "flex", gap: 6 }}>
+        {[0, 1, 2].map((i) => (
+          <div key={i} style={{
+            width: 8, height: 8, borderRadius: "50%",
+            background: "#ef4444",
+            animation: `dotPulse 1.2s ease-in-out ${i * 0.2}s infinite`,
+          }} />
+        ))}
+      </div>
     </div>
   );
 }
@@ -225,7 +298,7 @@ function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
     }
     if (game.phase === "ROUND_IMPACT" && game.roundResult) {
       if (game.roundResult.playerCorrect) {
-        setImpactText(game.playerStreak >= 4 ? "KING UNSTOPPABLE" : game.playerStreak === 3 ? "ON FIRE!" : game.playerStreak === 2 ? "COMBO!" : "STRIKE!");
+        setImpactText(game.playerStreak >= 4 ? "UNSTOPPABLE" : game.playerStreak === 3 ? "ON FIRE!" : game.playerStreak === 2 ? "COMBO!" : "STRIKE!");
       } else {
         setImpactText("HIT!");
       }
@@ -235,6 +308,7 @@ function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
 
   const isFinalRound = game.currentRound >= game.totalRounds && game.phase === "ROUND_ACTIVE";
   const urgency = game.timeLeft <= 2 ? "critical" : game.timeLeft <= 5 ? "urgent" : "calm";
+  const predStatus = game.predictionStatus;
 
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", position: "relative" }}>
@@ -252,8 +326,8 @@ function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
           </div>
         </div>
 
-        <div style={{ textAlign: "center" }}>
-          <div style={{ fontSize: 12, color: "#64748b", letterSpacing: "0.1em", marginBottom: 4 }}>
+        <div style={{ textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
+          <div style={{ fontSize: 12, color: "#64748b", letterSpacing: "0.1em" }}>
             ROUND {String(game.currentRound).padStart(2, "0")} / {String(game.totalRounds).padStart(2, "0")}
           </div>
           {isFinalRound && (
@@ -261,6 +335,7 @@ function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
               {"\u26A1"} FINAL ROUND {"\u26A1"}
             </div>
           )}
+          <ConnectionIndicator status={game.connectionStatus} pingMs={game.pingMs} />
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -277,7 +352,6 @@ function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
         flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
         position: "relative", padding: "20px",
       }}>
-        {/* Arena background effects */}
         <div style={{
           position: "absolute", inset: 0, pointerEvents: "none",
           background: "linear-gradient(180deg, rgba(168,85,247,0.03) 0%, rgba(6,182,212,0.02) 50%, transparent 100%)",
@@ -312,8 +386,7 @@ function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
             fontSize: 28, fontWeight: 900, letterSpacing: "0.15em",
             color: game.playerStreak >= 4 ? "#fbbf24" : game.playerStreak >= 3 ? "#ef4444" : "#10b981",
             textShadow: `0 0 20px ${game.playerStreak >= 4 ? "rgba(251,191,36,0.5)" : "rgba(16,185,129,0.5)"}`,
-            marginBottom: 16,
-            animation: "streakPop 0.5s ease-out",
+            marginBottom: 16, animation: "streakPop 0.5s ease-out",
           }}>
             {game.playerStreak >= 4 ? "\uD83D\uDC51 " : game.playerStreak >= 3 ? "\u26A1 " : game.playerStreak >= 2 ? "\uD83D\uDD25 " : ""}
             {game.showStreak}
@@ -347,7 +420,7 @@ function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
             <span style={{ color: game.playerChar?.colors.accent, fontWeight: 700 }}>{game.playerChar?.name}</span>
             <span style={{ color: "#475569" }}>{"\u2500".repeat(8)}</span>
             <span style={{ color: game.roundResult.playerCorrect ? "#10b981" : "#ef4444", fontSize: 20 }}>
-              {game.roundResult.playerCorrect ? "\uD83D\uDCA5" : "\uD83D\uDCA9"}
+              {game.roundResult.playerCorrect ? "\u2713" : "\u2717"}
             </span>
             <span style={{ color: "#475569" }}>{"\u2500".repeat(8)}</span>
             <span style={{ color: game.rivalChar?.colors.accent, fontWeight: 700 }}>{game.rivalName}</span>
@@ -363,13 +436,11 @@ function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
       }}>
         {game.phase === "ROUND_ACTIVE" && (
           <div style={{ textAlign: "center" }}>
-            <div style={{
-              fontSize: 14, color: "#94a3b8", letterSpacing: "0.1em", marginBottom: 8,
-            }}>
+            <div style={{ fontSize: 14, color: "#94a3b8", letterSpacing: "0.1em", marginBottom: 8 }}>
               WILL THE MARKET GO UP OR DOWN?
             </div>
 
-            {/* Timer */}
+            {/* Server-synced countdown */}
             <div style={{
               fontSize: 42, fontWeight: 900, letterSpacing: "0.08em", marginBottom: 16,
               color: urgency === "critical" ? "#ef4444" : urgency === "urgent" ? "#f59e0b" : "#10b981",
@@ -379,12 +450,46 @@ function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
               {game.timeLeft.toFixed(2)}
             </div>
 
-            {/* YES / NO buttons */}
+            {/* Prediction status display */}
+            {predStatus !== "idle" && (
+              <div style={{
+                fontSize: 11, letterSpacing: "0.12em", marginBottom: 12, padding: "4px 12px",
+                borderRadius: 4, display: "inline-block",
+                background: predStatus === "confirmed" ? "rgba(16,185,129,0.15)" : predStatus === "error" ? "rgba(239,68,68,0.15)" : "rgba(245,158,11,0.15)",
+                border: `1px solid ${predStatus === "confirmed" ? "#10b981" : predStatus === "error" ? "#ef4444" : "#f59e0b"}`,
+                color: predStatus === "confirmed" ? "#10b981" : predStatus === "error" ? "#ef4444" : "#f59e0b",
+              }}>
+                {predStatus === "selected" && `\u2191 ${game.playerPrediction?.toUpperCase()} SELECTED`}
+                {predStatus === "submitting" && "SUBMITTING..."}
+                {predStatus === "confirmed" && "\uD83D\uDD12 LOCKED"}
+                {predStatus === "error" && "SUBMISSION FAILED"}
+              </div>
+            )}
+
+            {/* YES / NO buttons — disabled after selection */}
             <div style={{ display: "flex", gap: 20, justifyContent: "center" }}>
-              <button onClick={() => game.actions.makePrediction("UP")} style={predictionBtnStyle("#10b981")}>
+              <button
+                onClick={() => game.actions.makePrediction("UP")}
+                disabled={predStatus !== "idle"}
+                style={{
+                  ...predictionBtnStyle("#10b981"),
+                  opacity: predStatus !== "idle" ? 0.4 : 1,
+                  cursor: predStatus !== "idle" ? "not-allowed" : "pointer",
+                  transform: predStatus === "idle" ? undefined : "scale(0.95)",
+                }}
+              >
                 {"\u2191"} YES
               </button>
-              <button onClick={() => game.actions.makePrediction("DOWN")} style={predictionBtnStyle("#ef4444")}>
+              <button
+                onClick={() => game.actions.makePrediction("DOWN")}
+                disabled={predStatus !== "idle"}
+                style={{
+                  ...predictionBtnStyle("#ef4444"),
+                  opacity: predStatus !== "idle" ? 0.4 : 1,
+                  cursor: predStatus !== "idle" ? "not-allowed" : "pointer",
+                  transform: predStatus === "idle" ? undefined : "scale(0.95)",
+                }}
+              >
                 {"\u2193"} NO
               </button>
             </div>
@@ -423,30 +528,6 @@ function MatchResult({ game }: { game: ReturnType<typeof useGameState> }) {
   const won = game.playerScore > game.rivalScore;
   const draw = game.playerScore === game.rivalScore;
 
-  useEffect(() => {
-    // Submit result to backend
-    if (game.matchId) {
-      fetch("/api/matches/result", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          matchId: game.matchId,
-          playerAddress: "0x0000000000000000000000000000000000000000",
-          rounds: game.roundHistory.map((r) => ({
-            roundNum: r.roundNum,
-            playerPrediction: r.playerPredicted,
-            rivalPrediction: r.rivalPredicted,
-            actual: r.actual,
-            playerCorrect: r.playerCorrect,
-            rivalCorrect: r.rivalCorrect,
-          })),
-          playerScore: game.playerScore,
-          rivalScore: game.rivalScore,
-        }),
-      }).catch(() => {});
-    }
-  }, [game.matchId, game.roundHistory, game.playerScore, game.rivalScore]);
-
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "40px 20px" }}>
       <h2 style={{ fontSize: 36, fontWeight: 900, letterSpacing: "0.15em", color: "#fbbf24", textShadow: "3px 3px 0 #92400e", marginBottom: 24, textAlign: "center" }}>
@@ -478,7 +559,7 @@ function MatchResult({ game }: { game: ReturnType<typeof useGameState> }) {
         color: won ? "#10b981" : draw ? "#fbbf24" : "#ef4444",
         textShadow: won ? "0 0 20px rgba(16,185,129,0.4)" : undefined,
       }}>
-        {won ? "\uD83C\uDFC6 VICTORY \uD83C\uDFC6" : draw ? "DRAW" : "DEFEAT"}
+        {won ? "VICTORY" : draw ? "DRAW" : "DEFEAT"}
       </div>
 
       {/* Round history */}
@@ -546,6 +627,10 @@ const globalCSS = `
   @keyframes cursorBlink {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.3; }
+  }
+  @keyframes dotPulse {
+    0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
+    40% { opacity: 1; transform: scale(1.2); }
   }
 `;
 

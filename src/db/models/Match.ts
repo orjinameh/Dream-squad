@@ -4,6 +4,9 @@ import { Schema, model } from "mongoose";
 export const MATCH_STATUS = ["ACTIVE", "COMPLETED", "ABANDONED"] as const;
 export type MatchStatus = (typeof MATCH_STATUS)[number];
 
+export const ROUND_PHASE = ["WAITING", "ACTIVE", "LOCKED", "REVEALED"] as const;
+export type RoundPhase = (typeof ROUND_PHASE)[number];
+
 export interface RoundRecord {
   roundNum: number;
   playerPrediction: "UP" | "DOWN" | null;
@@ -21,14 +24,25 @@ export interface MatchDoc {
   rivalChar: string;
   mode: string;
   totalRounds: number;
+  currentRound: number;
+  roundPhase: RoundPhase;
+  roundStartTime: Date;
+  roundDeadline: Date;
   playerScore: number;
   rivalScore: number;
   winner: "player" | "rival" | "draw";
   rounds: RoundRecord[];
+  playerPrediction: "UP" | "DOWN" | null;
+  rivalPrediction: "UP" | "DOWN" | null;
   status: MatchStatus;
   createdAt: Date;
   completedAt?: Date;
 }
+
+const ROUND_DURATION_MS = 10_000;
+const LOCK_MS = 1_200;
+const REVEAL_MS = 1_500;
+const IMPACT_MS = 1_400;
 
 const RoundSchema = new Schema<RoundRecord>(
   {
@@ -51,10 +65,16 @@ const MatchSchema = new Schema<MatchDoc>(
     rivalChar: { type: String, required: true },
     mode: { type: String, required: true },
     totalRounds: { type: Number, required: true },
+    currentRound: { type: Number, default: 1 },
+    roundPhase: { type: String, enum: ROUND_PHASE, default: "WAITING" },
+    roundStartTime: { type: Date, default: () => new Date() },
+    roundDeadline: { type: Date, required: true },
     playerScore: { type: Number, default: 0 },
     rivalScore: { type: Number, default: 0 },
     winner: { type: String, enum: ["player", "rival", "draw"], default: "player" },
     rounds: { type: [RoundSchema], default: [] },
+    playerPrediction: { type: String, enum: ["UP", "DOWN", null], default: null },
+    rivalPrediction: { type: String, enum: ["UP", "DOWN", null], default: null },
     status: { type: String, enum: MATCH_STATUS, default: "ACTIVE" },
     createdAt: { type: Date, default: () => new Date() },
     completedAt: { type: Date },
@@ -62,6 +82,9 @@ const MatchSchema = new Schema<MatchDoc>(
   { versionKey: false },
 );
 
+MatchSchema.index({ playerAddress: 1, status: 1 });
 MatchSchema.index({ playerAddress: 1, createdAt: -1 });
+
+export const ROUND_TIMINGS = { ROUND_DURATION_MS, LOCK_MS, REVEAL_MS, IMPACT_MS } as const;
 
 export const Match = model<MatchDoc>("Match", MatchSchema, "matches");

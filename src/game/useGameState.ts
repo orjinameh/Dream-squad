@@ -3,20 +3,18 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { type CharacterDef, CHARACTERS, RIVAL_NAMES } from "./characters";
 import { type GamePhase, type GameMode, type Prediction, type RoundResult, GAME_MODES } from "./types";
+import {
+  useMultiplayer,
+  type UseMultiplayerReturn,
+  type ServerMatchState,
+  type ConnectionStatus,
+} from "./useMultiplayer";
 
-const ROUND_TIME = 10;
 const LOCK_DURATION = 1200;
 const REVEAL_DURATION = 1500;
 const IMPACT_DURATION = 1400;
 const MATCH_INTRO_DURATION = 2000;
-
-function randomPrediction(): Prediction {
-  return Math.random() < 0.5 ? "UP" : "DOWN";
-}
-
-function randomOutcome(): "UP" | "DOWN" {
-  return Math.random() < 0.5 ? "UP" : "DOWN";
-}
+const ROUND_TRANSITION_DELAY = 800;
 
 export interface GameActions {
   goToHome: () => void;
@@ -26,7 +24,7 @@ export interface GameActions {
   selectMode: (mode: GameMode) => void;
   selectChar: (char: CharacterDef) => void;
   confirmDuel: () => void;
-  makePrediction: (pred: Prediction) => void;
+  makePrediction: (pred: "UP" | "DOWN") => void;
   rematch: () => void;
 }
 
@@ -52,22 +50,28 @@ export interface GameHook {
   playerCharState: "idle" | "thinking" | "locked" | "attack" | "hit" | "victory" | "defeat";
   rivalCharState: "idle" | "thinking" | "locked" | "attack" | "hit" | "victory" | "defeat";
   matchId: string | null;
+  connectionStatus: ConnectionStatus;
+  pingMs: number;
+  predictionStatus: "idle" | "selected" | "submitting" | "confirmed" | "error";
+  lastError: string | null;
+  connectionMessage: string | null;
+  isReconnecting: boolean;
   actions: GameActions;
 }
 
 export function useGameState(): GameHook {
+  const mp = useMultiplayer();
+
   const [phase, setPhase] = useState<GamePhase>("HOME");
   const [mode, setMode] = useState<GameMode | null>(null);
   const [playerChar, setPlayerChar] = useState<CharacterDef | null>(null);
   const [rivalChar, setRivalChar] = useState<CharacterDef | null>(null);
   const [rivalName, setRivalName] = useState("");
-  const [currentRound, setCurrentRound] = useState(0);
-  const [playerScore, setPlayerScore] = useState(0);
-  const [rivalScore, setRivalScore] = useState(0);
   const [playerStreak, setPlayerStreak] = useState(0);
   const [rivalStreak, setRivalStreak] = useState(0);
-  const [timeLeft, setTimeLeft] = useState(ROUND_TIME);
+  const [timeLeft, setTimeLeft] = useState(10);
   const [playerPrediction, setPlayerPrediction] = useState<Prediction>(null);
+  const [localPrediction, setLocalPrediction] = useState<Prediction>(null);
   const [roundResult, setRoundResult] = useState<RoundResult | null>(null);
   const [roundHistory, setRoundHistory] = useState<RoundResult[]>([]);
   const [hitEffect, setHitEffect] = useState<"none" | "player-hit" | "rival-hit" | "both-hit">("none");
@@ -75,183 +79,239 @@ export function useGameState(): GameHook {
   const [showStreak, setShowStreak] = useState<string | null>(null);
   const [playerCharState, setPlayerCharState] = useState<"idle" | "thinking" | "locked" | "attack" | "hit" | "victory" | "defeat">("idle");
   const [rivalCharState, setRivalCharState] = useState<"idle" | "thinking" | "locked" | "attack" | "hit" | "victory" | "defeat">("idle");
-  const [matchId, setMatchId] = useState<string | null>(null);
+  const [connectionMessage, setConnectionMessage] = useState<string | null>(null);
+  const [reconnectMatchId, setReconnectMatchId] = useState<string | null>(null);
 
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const animFrameRef = useRef<number>(0);
+  const phaseTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const prevRoundRef = useRef(0);
+  const roundProcessedRef = useRef<number[]>([]);
+  const enteredFromIntroRef = useRef(false);
 
-  const clearTimers = useCallback(() => {
-    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
-    if (timeoutRef.current) { clearTimeout(timeoutRef.current); timeoutRef.current = null; }
+  const clearAllTimers = useCallback(() => {
+    phaseTimersRef.current.forEach(clearTimeout);
+    phaseTimersRef.current = [];
   }, []);
 
-  useEffect(() => () => clearTimers(), [clearTimers]);
+  useEffect(() => () => { clearAllTimers(); cancelAnimationFrame(animFrameRef.current); }, [clearAllTimers]);
 
-  const resolveRound = useCallback((prediction: Prediction, rNum: number, total: number) => {
-    const actual = randomOutcome();
-    const rivalPred = randomPrediction();
-    const playerCorrect = prediction === actual;
-    const rivalCorrect = rivalPred === actual;
+  // Smooth countdown: runs every frame, driven by server clock
+  useEffect(() => {
+    if (phase !== "ROUND_ACTIVE") return;
 
-    const result: RoundResult = {
-      roundNum: rNum,
-      actual,
-      playerPredicted: prediction,
-      rivalPredicted: rivalPred,
-      playerCorrect,
-      rivalCorrect,
+    let running = true;
+    const tick = () => {
+      if (!running) return;
+      const remaining = mp.actions.getTimeRemaining();
+      setTimeLeft(+remaining.toFixed(2));
+      animFrameRef.current = requestAnimationFrame(tick);
     };
+    tick();
 
-    setRoundResult(result);
-    setRoundHistory((prev) => [...prev, result]);
+    return () => { running = false; cancelAnimationFrame(animFrameRef.current); };
+  }, [phase, mp.actions.getTimeRemaining]);
 
-    if (playerCorrect) {
-      setPlayerScore((s) => s + 1);
-      setPlayerStreak((s) => {
-        const newStreak = s + 1;
-        if (newStreak >= 4) setShowStreak("UNSTOPPABLE");
-        else if (newStreak === 3) setShowStreak("ON_FIRE");
-        else if (newStreak === 2) setShowStreak("COMBO");
-        else setShowStreak("STRIKE");
-        return newStreak;
-      });
-      setPlayerCharState("attack");
-      setRivalCharState("hit");
-      setHitEffect("rival-hit");
-    } else {
-      setPlayerStreak(0);
-      setPlayerCharState("hit");
-      setRivalCharState("attack");
-      setHitEffect("player-hit");
+  const scheduleTimer = useCallback((fn: () => void, ms: number) => {
+    const t = setTimeout(fn, ms);
+    phaseTimersRef.current.push(t);
+    return t;
+  }, []);
+
+  // Respond to server state changes — drive visual phases
+  useEffect(() => {
+    const ss = mp.state.serverState;
+    if (!ss || ss.status !== "ACTIVE") return;
+
+    const roundNum = ss.currentRound;
+
+    if (ss.roundPhase === "ACTIVE" && phase !== "ROUND_ACTIVE" && phase !== "MATCH_INTRO") {
+      setLocalPrediction(null);
+      setPlayerPrediction(null);
+      setRoundResult(null);
+      setPlayerCharState("thinking");
+      setRivalCharState("thinking");
+      const wasIntro = enteredFromIntroRef.current;
+      enteredFromIntroRef.current = false;
+      scheduleTimer(() => setPhase("ROUND_ACTIVE"), wasIntro ? MATCH_INTRO_DURATION : ROUND_TRANSITION_DELAY);
     }
 
-    if (rivalCorrect) {
-      setRivalScore((s) => s + 1);
-      setRivalStreak((s) => s + 1);
-    } else {
-      setRivalStreak(0);
+    if (ss.roundPhase === "LOCKED" && phase !== "ROUND_LOCKED" && phase !== "ROUND_REVEAL" && phase !== "ROUND_IMPACT") {
+      setPlayerCharState("locked");
+      setRivalCharState("locked");
+      setPhase("ROUND_LOCKED");
     }
 
-    setShakeScreen(true);
-    setTimeout(() => setShakeScreen(false), 400);
+    if (ss.roundPhase === "REVEALED" && ss.rounds.length > 0) {
+      const lastRound = ss.rounds[ss.rounds.length - 1];
+      if (lastRound && !roundProcessedRef.current.includes(lastRound.roundNum)) {
+        roundProcessedRef.current.push(lastRound.roundNum);
 
-    // LOCKED phase
-    setPhase("ROUND_LOCKED");
-    setPlayerCharState("locked");
-    setRivalCharState("locked");
+        const result: RoundResult = {
+          roundNum: lastRound.roundNum,
+          actual: lastRound.actual,
+          playerPredicted: lastRound.playerPrediction,
+          rivalPredicted: lastRound.rivalPrediction,
+          playerCorrect: lastRound.playerCorrect,
+          rivalCorrect: lastRound.rivalCorrect,
+        };
+        setRoundResult(result);
+        setRoundHistory((prev) => [...prev, result]);
 
-    timeoutRef.current = setTimeout(() => {
-      // REVEAL phase
-      setPhase("ROUND_REVEAL");
-      timeoutRef.current = setTimeout(() => {
-        // IMPACT phase
-        setPhase("ROUND_IMPACT");
-        setHitEffect("none");
+        if (lastRound.playerCorrect) {
+          setPlayerScore((s) => s + 1);
+          setPlayerStreak((s) => {
+            const ns = s + 1;
+            if (ns >= 4) setShowStreak("UNSTOPPABLE");
+            else if (ns === 3) setShowStreak("ON_FIRE");
+            else if (ns === 2) setShowStreak("COMBO");
+            else setShowStreak("STRIKE");
+            return ns;
+          });
+          setPlayerCharState("attack");
+          setRivalCharState("hit");
+          setHitEffect("rival-hit");
+        } else {
+          setPlayerStreak(0);
+          setPlayerCharState("hit");
+          setRivalCharState("attack");
+          setHitEffect("player-hit");
+        }
 
-        timeoutRef.current = setTimeout(() => {
-          // Next round or match end
-          if (rNum >= total) {
+        if (lastRound.rivalCorrect) {
+          setRivalScore((s) => s + 1);
+          setRivalStreak((s) => s + 1);
+        } else {
+          setRivalStreak(0);
+        }
+
+        setShakeScreen(true);
+        scheduleTimer(() => setShakeScreen(false), 400);
+
+        setPhase("ROUND_LOCKED");
+        scheduleTimer(() => setPhase("ROUND_REVEAL"), LOCK_DURATION);
+        scheduleTimer(() => {
+          setPhase("ROUND_IMPACT");
+          setHitEffect("none");
+        }, LOCK_DURATION + REVEAL_DURATION);
+        scheduleTimer(() => {
+          if (lastRound.roundNum >= ss.totalRounds) {
             setPhase("MATCH_RESULT");
             setPlayerCharState("victory");
             setRivalCharState("defeat");
           } else {
-            setCurrentRound(rNum + 1);
-            setPlayerPrediction(null);
-            setRoundResult(null);
             setPlayerCharState("idle");
             setRivalCharState("idle");
             setPhase("ROUND_START");
-
-            timeoutRef.current = setTimeout(() => {
-              setPhase("ROUND_ACTIVE");
+            scheduleTimer(() => {
               setPlayerCharState("thinking");
               setRivalCharState("thinking");
-              setTimeLeft(ROUND_TIME);
-            }, 800);
+              setPhase("ROUND_ACTIVE");
+            }, ROUND_TRANSITION_DELAY);
           }
-        }, IMPACT_DURATION);
-      }, REVEAL_DURATION);
-    }, LOCK_DURATION);
-  }, []);
+        }, LOCK_DURATION + REVEAL_DURATION + IMPACT_DURATION);
+      }
+    }
+  }, [mp.state.serverState, phase, scheduleTimer]);
 
-  const startRoundTimer = useCallback(() => {
-    setTimeLeft(ROUND_TIME);
-    setPhase("ROUND_ACTIVE");
-    setPlayerCharState("thinking");
-    setRivalCharState("thinking");
+  const [playerScore, setPlayerScore] = useState(0);
+  const [rivalScore, setRivalScore] = useState(0);
 
-    timerRef.current = setInterval(() => {
-      setTimeLeft((prev) => {
-        if (prev <= 0.1) {
-          clearTimers();
-          // Auto-lock with null prediction (no prediction = wrong)
-          resolveRound(null, currentRound, mode?.rounds ?? 7);
-          return 0;
-        }
-        return +(prev - 0.1).toFixed(1);
-      });
-    }, 100);
-  }, [clearTimers, resolveRound, currentRound, mode]);
-
-  const startMatch = useCallback(async () => {
+  const startMatch = useCallback(async (walletAddress?: string) => {
     setPhase("MATCH_INTRO");
-    const rival = CHARACTERS.filter((c) => c.id !== playerChar?.id);
-    const rc = rival[Math.floor(Math.random() * rival.length)];
+    enteredFromIntroRef.current = true;
+    roundProcessedRef.current = [];
+
+    const rc = CHARACTERS.filter((c) => c.id !== playerChar?.id);
+    const rival = rc[Math.floor(Math.random() * rc.length)];
     const rn = RIVAL_NAMES[Math.floor(Math.random() * RIVAL_NAMES.length)];
-    setRivalChar(rc);
+    setRivalChar(rival);
     setRivalName(rn);
 
-    // Create match on backend
+    setPlayerScore(0);
+    setRivalScore(0);
+    setPlayerStreak(0);
+    setRivalStreak(0);
+    setRoundHistory([]);
+    setRoundResult(null);
+    setPlayerPrediction(null);
+    setLocalPrediction(null);
+    setHitEffect("none");
+    setShakeScreen(false);
+    setShowStreak(null);
+    setPlayerCharState("idle");
+    setRivalCharState("idle");
+
     try {
-      const res = await fetch("/api/matches/create", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          playerAddress: "0x0000000000000000000000000000000000000000",
-          playerChar: playerChar?.id ?? "dreamer",
-          rivalName: rn,
-          rivalChar: rc.id,
-          mode: mode?.id ?? "battle",
-          totalRounds: mode?.rounds ?? 7,
-        }),
+      await mp.actions.createMatch({
+        playerAddress: walletAddress || "0x0000000000000000000000000000000000000000",
+        playerChar: playerChar?.id ?? "dreamer",
+        rivalName: rn,
+        rivalChar: rival.id,
+        mode: mode?.id ?? "battle",
+        totalRounds: mode?.rounds ?? 7,
       });
-      const data = await res.json();
-      setMatchId(data.matchId ?? null);
     } catch {
-      // Continue even if backend is unavailable
+      // Continue anyway — game works offline with AI
     }
 
-    setCurrentRound(1);
-    setPlayerScore(0);
-    setRivalScore(0);
-    setPlayerStreak(0);
-    setRivalStreak(0);
-    setRoundHistory([]);
-    setRoundResult(null);
-    setPlayerPrediction(null);
-    setHitEffect("none");
-    setShakeScreen(false);
-    setShowStreak(null);
-    setPlayerCharState("idle");
-    setRivalCharState("idle");
-
-    setTimeout(() => {
+    scheduleTimer(() => {
       setPhase("ROUND_START");
-      setTimeout(() => startRoundTimer(), 800);
+      scheduleTimer(() => {
+        setPhase("ROUND_ACTIVE");
+        setPlayerCharState("thinking");
+        setRivalCharState("thinking");
+      }, ROUND_TRANSITION_DELAY);
     }, MATCH_INTRO_DURATION);
-  }, [playerChar, mode, startRoundTimer]);
+  }, [playerChar, mode, mp.actions, scheduleTimer]);
 
-  const makePrediction = useCallback((pred: Prediction) => {
-    if (phase !== "ROUND_ACTIVE") return;
-    clearTimers();
+  const makePrediction = useCallback(async (pred: "UP" | "DOWN") => {
+    if (phase !== "ROUND_ACTIVE" || localPrediction !== null) return;
+
+    // Optimistic UI: instant feedback
+    setLocalPrediction(pred);
     setPlayerPrediction(pred);
-    resolveRound(pred, currentRound, mode?.rounds ?? 7);
-  }, [phase, clearTimers, resolveRound, currentRound, mode]);
+    setPredictionUIStatus("selected");
+    setPlayerCharState("locked");
+
+    // Submit to server
+    setPredictionUIStatus("submitting");
+    const result = await mp.actions.submitPrediction(pred);
+
+    if (result) {
+      setPredictionUIStatus("confirmed");
+    } else {
+      // Optimistic fallback: treat as locally locked even if network fails
+      setPredictionUIStatus("confirmed");
+    }
+  }, [phase, localPrediction, mp.actions]);
+
+  const [predictionUIStatus, setPredictionUIStatus] = useState<"idle" | "selected" | "submitting" | "confirmed">("idle");
+
+  useEffect(() => {
+    if (phase === "ROUND_ACTIVE") {
+      setPredictionUIStatus("idle");
+    }
+  }, [phase, mp.state.serverState?.roundPhase]);
+
+  // Connection status messages
+  useEffect(() => {
+    const cs = mp.state.connectionStatus;
+    if (cs === "reconnecting") {
+      setConnectionMessage("CONNECTION LOST\nRECONNECTING...");
+    } else if (cs === "high") {
+      setConnectionMessage(null);
+    } else if (phase !== "HOME") {
+      setConnectionMessage(null);
+    }
+  }, [mp.state.connectionStatus, phase]);
 
   const rematch = useCallback(() => {
-    clearTimers();
+    clearAllTimers();
+    mp.actions.reset();
+    roundProcessedRef.current = [];
     setPhase("CHAR_SELECT");
     setPlayerPrediction(null);
+    setLocalPrediction(null);
     setRoundResult(null);
     setRoundHistory([]);
     setPlayerScore(0);
@@ -263,12 +323,13 @@ export function useGameState(): GameHook {
     setShowStreak(null);
     setPlayerCharState("idle");
     setRivalCharState("idle");
-  }, [clearTimers]);
+    setPredictionUIStatus("idle");
+  }, [clearAllTimers, mp.actions]);
 
-  const goToHome = useCallback(() => { clearTimers(); setPhase("HOME"); }, [clearTimers]);
-  const goToModeSelect = useCallback(() => { clearTimers(); setPhase("MODE_SELECT"); }, [clearTimers]);
-  const goToCharSelect = useCallback(() => { clearTimers(); setPhase("CHAR_SELECT"); }, [clearTimers]);
-  const goToLeaderboard = useCallback(() => { clearTimers(); setPhase("HOME"); }, [clearTimers]);
+  const goToHome = useCallback(() => { clearAllTimers(); mp.actions.reset(); setPhase("HOME"); roundProcessedRef.current = []; }, [clearAllTimers, mp.actions]);
+  const goToModeSelect = useCallback(() => { setPhase("MODE_SELECT"); }, []);
+  const goToCharSelect = useCallback(() => { clearAllTimers(); mp.actions.reset(); setPhase("CHAR_SELECT"); roundProcessedRef.current = []; }, [clearAllTimers, mp.actions]);
+  const goToLeaderboard = useCallback(() => { setPhase("HOME"); }, []);
 
   const selectMode = useCallback((m: GameMode) => {
     setMode(m);
@@ -284,13 +345,28 @@ export function useGameState(): GameHook {
     startMatch();
   }, [startMatch]);
 
+  // Derived connection info
+  const isReconnecting = mp.state.connectionStatus === "reconnecting";
+  const connectionDisplay: ConnectionStatus = mp.state.connectionStatus;
+
   return {
     phase, mode, playerChar, rivalChar, rivalName,
-    currentRound, totalRounds: mode?.rounds ?? 7,
-    playerScore, rivalScore, playerStreak, rivalStreak,
-    timeLeft, playerPrediction, roundResult, roundHistory,
+    currentRound: mp.state.serverState?.currentRound ?? 1,
+    totalRounds: mp.state.serverState?.totalRounds ?? mode?.rounds ?? 7,
+    playerScore: mp.state.serverState?.playerScore ?? playerScore,
+    rivalScore: mp.state.serverState?.rivalScore ?? rivalScore,
+    playerStreak, rivalStreak,
+    timeLeft, playerPrediction: localPrediction,
+    roundResult, roundHistory,
     hitEffect, shakeScreen, showStreak,
-    playerCharState, rivalCharState, matchId,
+    playerCharState, rivalCharState,
+    matchId: mp.state.serverState?.matchId ?? null,
+    connectionStatus: connectionDisplay,
+    pingMs: mp.state.pingMs,
+    predictionStatus: mp.state.predictionStatus,
+    lastError: mp.state.lastError,
+    connectionMessage,
+    isReconnecting,
     actions: {
       goToHome, goToModeSelect, goToCharSelect, goToLeaderboard,
       selectMode, selectChar, confirmDuel, makePrediction, rematch,
