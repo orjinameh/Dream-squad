@@ -1,15 +1,41 @@
 "use client";
 
-import { useState } from "react";
+import { type ReactNode } from "react";
+import {
+  RainbowKitProvider,
+  getDefaultConfig,
+  darkTheme,
+} from "@rainbow-me/rainbowkit";
 import { WagmiProvider } from "wagmi";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { wagmiConfig } from "@/lib/wagmi";
+import { SOMNIA_CHAIN } from "@/lib/config";
+import "@rainbow-me/rainbowkit/styles.css";
 
-export function Providers({ children }: { children: React.ReactNode }) {
-  const [queryClient] = useState(() => new QueryClient());
+const config = getDefaultConfig({
+  appName: "DreamSquad",
+  projectId: process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID || "dreamsquad",
+  chains: [SOMNIA_CHAIN],
+  ssr: true,
+});
+
+const queryClient = new QueryClient();
+
+export function Providers({ children }: { children: ReactNode }) {
   return (
-    <WagmiProvider config={wagmiConfig}>
-      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    <WagmiProvider config={config}>
+      <QueryClientProvider client={queryClient}>
+        <RainbowKitProvider
+          theme={darkTheme({
+            accentColor: "#a855f7",
+            accentColorForeground: "white",
+            borderRadius: "medium",
+            fontStack: "system",
+            overlayBlur: "small",
+          })}
+        >
+          {children}
+        </RainbowKitProvider>
+      </QueryClientProvider>
     </WagmiProvider>
   );
 }
