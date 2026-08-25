@@ -1,0 +1,92 @@
+import { connectToDatabase } from "@/db/connect";
+import { Match, type RoundRecord } from "@/db/models/Match";
+import { PlayerStats } from "@/db/models/PlayerStats";
+import { normalizeAddress } from "@/lib/addresses";
+import { jsonError } from "@/lib/syndicates";
+import { z } from "zod";
+import { isAddress } from "viem";
+
+const resultSchema = z.object({
+  matchId: z.string().min(1),
+  playerAddress: z.string().refine((v) => isAddress(v), "invalid address"),
+  rounds: z.array(z.object({
+    roundNum: z.number(),
+    playerPrediction: z.enum(["UP", "DOWN"]).nullable(),
+    rivalPrediction: z.enum(["UP", "DOWN"]).nullable(),
+    actual: z.enum(["UP", "DOWN"]),
+    playerCorrect: z.boolean(),
+    rivalCorrect: z.boolean(),
+  })),
+  playerScore: z.number().int().min(0),
+  rivalScore: z.number().int().min(0),
+});
+
+export async function POST(req: Request): Promise<Response> {
+  let body: unknown;
+  try { body = await req.json(); } catch { return jsonError(400, "body must be JSON"); }
+
+  const parsed = resultSchema.safeParse(body);
+  if (!parsed.success) {
+    return jsonError(400, `validation failed: ${parsed.error.issues.map((i) => i.message).join("; ")}`);
+  }
+  const input = parsed.data;
+
+  try {
+    await connectToDatabase();
+    const address = normalizeAddress(input.playerAddress);
+
+    const match = await Match.findById(input.matchId);
+    if (!match) return jsonError(404, "match not found");
+    if (match.status !== "ACTIVE") return jsonError(409, "match already completed");
+
+    const winner = input.playerScore > input.rivalScore ? "player"
+      : input.rivalScore > input.playerScore ? "rival" : "draw";
+
+    await Match.findByIdAndUpdate(input.matchId, {
+      $set: {
+        rounds: input.rounds as RoundRecord[],
+        playerScore: input.playerScore,
+        rivalScore: input.rivalScore,
+        winner,
+        status: "COMPLETED",
+        completedAt: new Date(),
+      },
+    });
+
+    // Update player stats
+    const longestStreak = input.rounds.reduce((max, r) => {
+      let streak = 0;
+      for (const round of input.rounds) {
+        if (round.playerCorrect) streak++;
+        else streak = 0;
+        if (streak > max) max = streak;
+      }
+      return max;
+    }, 0);
+
+    const correctCount = input.rounds.filter((r) => r.playerCorrect).length;
+
+    await PlayerStats.findOneAndUpdate(
+      { address },
+      {
+        $setOnInsert: { _id: address, address },
+        $inc: {
+          totalWins: winner === "player" ? 1 : 0,
+          totalLosses: winner === "rival" ? 1 : 0,
+          totalDraws: winner === "draw" ? 1 : 0,
+          totalMatches: 1,
+          totalRounds: input.rounds.length,
+          correctPredictions: correctCount,
+        },
+        $max: { longestStreak },
+        $set: { lastPlayedAt: new Date(), favoriteChar: match.playerChar },
+      },
+      { upsert: true },
+    );
+
+    return Response.json({ matchId: input.matchId, winner }, { status: 200 });
+  } catch (err) {
+    console.error("submit result failed", err);
+    return jsonError(500, "failed to submit result");
+  }
+}
