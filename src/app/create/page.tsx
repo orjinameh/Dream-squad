@@ -21,13 +21,15 @@ const DURATIONS = [
 const PILLS = [50, 100, 250, 500] as const;
 const MARKET_KEYS = Object.keys(MARKETS) as string[];
 
+const AVAILABLE_ASSETS = ["STT", "SOMI", "USDC", "WETH"] as const;
+
 const pillStyle = (active: boolean): React.CSSProperties => ({
   padding: "10px 22px", borderRadius: 20, fontSize: 14, fontWeight: 600,
   cursor: "pointer",
-  color: active ? "#06b6d4" : "rgba(148, 163, 184, 0.7)",
-  background: active ? "rgba(6, 182, 212, 0.1)" : "rgba(30, 41, 59, 0.5)",
-  border: active ? "1px solid rgba(6, 182, 212, 0.5)" : "1px solid rgba(51, 65, 85, 0.5)",
-  boxShadow: active ? "0 0 20px rgba(6, 182, 212, 0.2)" : "none",
+  color: active ? "#a855f7" : "rgba(148, 163, 184, 0.7)",
+  background: active ? "rgba(168, 85, 247, 0.12)" : "rgba(30, 41, 59, 0.5)",
+  border: active ? "1px solid rgba(147, 51, 234, 0.5)" : "1px solid rgba(51, 65, 85, 0.5)",
+  boxShadow: active ? "0 0 20px rgba(168, 85, 247, 0.2)" : "none",
   transition: "all 0.2s",
 });
 
@@ -61,6 +63,15 @@ export default function CreatePage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [phase, setPhase] = useState<"idle" | "delegating" | "creating">("idle");
+
+  const [selectedAssets, setSelectedAssets] = useState<string[]>(["STT"]);
+  const [isDustSweepEnabled, setIsDustSweepEnabled] = useState<boolean>(false);
+
+  const toggleAsset = (symbol: string) => {
+    setSelectedAssets((prev) =>
+      prev.includes(symbol) ? prev.filter((a) => a !== symbol) : [...prev, symbol]
+    );
+  };
 
   const { writeContractAsync } = useWriteContract();
   const baseAmount = dollarsToBase(+amount || 0, market);
@@ -116,20 +127,47 @@ export default function CreatePage() {
   return (
     <main style={{ maxWidth: 600, margin: "0 auto", padding: "48px 24px" }}>
       <div style={{
-        background: "rgba(15, 23, 42, 0.6)",
-        backdropFilter: "blur(20px)",
-        border: "1px solid rgba(51, 65, 85, 0.5)",
-        borderRadius: 20, padding: "40px 36px",
-        boxShadow: "0 25px 60px rgba(0, 0, 0, 0.5), 0 0 40px rgba(6, 182, 212, 0.03)",
+        background: "rgba(13, 17, 36, 0.70)",
+        backdropFilter: "blur(32px)", WebkitBackdropFilter: "blur(32px)",
+        border: "1px solid rgba(147, 51, 234, 0.30)",
+        borderRadius: 24, padding: "40px 36px",
+        boxShadow: "0 0 60px rgba(168, 85, 247, 0.20), 0 25px 60px rgba(0,0,0,0.5)",
       }}>
         <h1 style={{
           fontSize: 28, fontWeight: 800, letterSpacing: "-0.03em",
           marginBottom: 32,
-          background: "linear-gradient(135deg, #e2e8f0, #94a3b8)",
+          background: "linear-gradient(135deg, #c084fc, #d946ef)",
           WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
         }}>
           New Syndicate
         </h1>
+
+        {/* Multi-Asset Selection */}
+        <label style={labelStyle}>Pledge Assets</label>
+        <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+          {AVAILABLE_ASSETS.map((a) => (
+            <button key={a} style={pillStyle(selectedAssets.includes(a))} onClick={() => toggleAsset(a)}>
+              {a}
+            </button>
+          ))}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+          <label style={{
+            display: "flex", alignItems: "center", gap: 8, cursor: "pointer",
+            fontSize: 13, color: "rgba(148, 163, 184, 0.8)",
+          }}>
+            <input
+              type="checkbox"
+              checked={isDustSweepEnabled}
+              onChange={(e) => setIsDustSweepEnabled(e.target.checked)}
+              style={{ accentColor: "#a855f7" }}
+            />
+            Sweep all wallet dust (auto-convert micro-balances)
+          </label>
+        </div>
+        <p style={{ fontSize: 12, color: "#64748b", margin: "0 0 4px" }}>
+          Selected: {selectedAssets.join(", ")}
+        </p>
 
         {/* Market */}
         <label style={labelStyle}>Market</label>
@@ -198,9 +236,9 @@ export default function CreatePage() {
             width: "100%", marginTop: 28, padding: "16px 0",
             border: "none", borderRadius: 14, fontWeight: 800, fontSize: 16,
             letterSpacing: "-0.01em", cursor: busy ? "wait" : "pointer",
-            background: busy ? "rgba(51, 65, 85, 0.5)" : "linear-gradient(135deg, #06b6d4, #10b981)",
-            color: busy ? "#64748b" : "#06060e",
-            boxShadow: busy ? "none" : "0 0 30px rgba(6, 182, 212, 0.3), 0 4px 20px rgba(0,0,0,0.3)",
+            background: busy ? "rgba(51, 65, 85, 0.5)" : "linear-gradient(135deg, #a855f7, #d946ef)",
+            color: busy ? "#64748b" : "#fff",
+            boxShadow: busy ? "none" : "0 0 30px rgba(168, 85, 247, 0.35), 0 4px 20px rgba(0,0,0,0.4)",
             transition: "all 0.25s",
           }}
         >

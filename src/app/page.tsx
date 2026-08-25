@@ -1,75 +1,112 @@
 "use client";
 
+const FEATURES = [
+  {
+    icon: "\u{1FA99}",
+    title: "Multi-Token Sweep",
+    desc: "Select any token mix or sweep micro-balances from your Somnia wallet.",
+  },
+  {
+    icon: "\u26A1",
+    title: "EIP-5792 Batching",
+    desc: "Batch-approve and convert assets in a single wallet signature.",
+  },
+  {
+    icon: "\u{1F3C6}",
+    title: "Synchronized Execution",
+    desc: "Relayers route aggregated liquidity to execute atomic prediction trades on DreamDEX.",
+  },
+] as const;
+
 export default function Home() {
   return (
-    <main style={{
-      maxWidth: 720, margin: "0 auto", padding: "100px 24px 80px",
-      textAlign: "center", position: "relative",
-    }}>
-      {/* Title glow */}
-      <div style={{
-        position: "absolute", top: 60, left: "50%", transform: "translateX(-50%)",
-        width: 300, height: 120, borderRadius: "50%",
-        background: "radial-gradient(circle, rgba(6,182,212,0.2) 0%, transparent 70%)",
-        filter: "blur(40px)", pointerEvents: "none",
-      }} />
+    <main style={{ maxWidth: 900, margin: "0 auto", padding: "100px 24px 80px" }}>
+      {/* Hero */}
+      <div style={{ textAlign: "center", marginBottom: 80, position: "relative" }}>
+        <h1 style={{
+          fontSize: 56, fontWeight: 900, letterSpacing: "-0.04em", lineHeight: 1.1,
+          marginBottom: 20, position: "relative",
+          background: "linear-gradient(135deg, #22d3ee, #c084fc, #d946ef)",
+          WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
+          filter: "drop-shadow(0 0 20px rgba(168,85,247,0.3))",
+        }}>
+          Funnel Multi-Token Conviction.
+          <br />
+          Execute on Somnia.
+        </h1>
 
-      <h1 style={{
-        fontSize: 56, fontWeight: 900, letterSpacing: "-0.04em",
-        lineHeight: 1.1, marginBottom: 16, position: "relative",
-        background: "linear-gradient(135deg, #06b6d4 0%, #10b981 50%, #06b6d4 100%)",
-        WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
-      }}>
-        DreamSquad
-      </h1>
+        <p style={{
+          fontSize: 18, color: "rgba(224,231,239,0.65)", lineHeight: 1.7,
+          maxWidth: 600, margin: "0 auto 40px",
+        }}>
+          Pledge custom tokens or sweep wallet dust. DreamSquad aggregates your
+          chosen assets via EIP-5792 into synchronized, atomic trades on DreamDEX.
+        </p>
 
-      <p style={{
-        fontSize: 20, color: "rgba(148, 163, 184, 0.9)", lineHeight: 1.7,
-        marginBottom: 16, maxWidth: 540, marginLeft: "auto", marginRight: "auto",
-        letterSpacing: "0.01em",
-      }}>
-        Pool capital with friends. Execute synchronized trades on DreamDEX via
-        backend operator delegation.
-      </p>
+        {/* Feature badges */}
+        <div style={{
+          display: "flex", justifyContent: "center", gap: 12,
+          marginBottom: 48, flexWrap: "wrap",
+        }}>
+          {[
+            "\u{1FA99} Multi-Token & Dust Pledges",
+            "\u26A1 EIP-5792 Batch Swaps",
+            "\u{1F3AF} Atomic DreamDEX Execution",
+          ].map((b) => (
+            <span key={b} style={{
+              padding: "8px 18px", borderRadius: 20, fontSize: 13, fontWeight: 600,
+              color: "#a855f7",
+              background: "rgba(168,85,247,0.08)",
+              border: "1px solid rgba(147,51,234,0.25)",
+            }}>
+              {b}
+            </span>
+          ))}
+        </div>
 
-      <p style={{
-        fontSize: 15, color: "rgba(100, 116, 139, 0.8)", lineHeight: 1.6,
-        marginBottom: 48, maxWidth: 480, marginLeft: "auto", marginRight: "auto",
-      }}>
-        No custody. No custom contracts. Just vibes and on-chain execution.
-      </p>
-
-      {/* Feature pills */}
-      <div style={{
-        display: "flex", justifyContent: "center", gap: 12,
-        marginBottom: 48, flexWrap: "wrap",
-      }}>
-        {["Zero Custody", "Operator Delegation", "Social Execution"].map((f) => (
-          <span key={f} style={{
-            padding: "8px 18px", borderRadius: 20, fontSize: 13, fontWeight: 600,
-            color: "#06b6d4",
-            background: "rgba(6, 182, 212, 0.08)",
-            border: "1px solid rgba(6, 182, 212, 0.2)",
-            letterSpacing: "0.02em",
-          }}>
-            {f}
-          </span>
-        ))}
+        {/* CTA */}
+        <a href="/create" style={{
+          display: "inline-block",
+          background: "linear-gradient(135deg, #a855f7, #d946ef)",
+          color: "#fff", fontWeight: 800, fontSize: 17, letterSpacing: "-0.01em",
+          padding: "16px 44px", borderRadius: 14, textDecoration: "none",
+          boxShadow: "0 0 30px rgba(168,85,247,0.35), 0 4px 20px rgba(0,0,0,0.4)",
+          transition: "all 0.3s",
+        }}>
+          Start a Syndicate
+        </a>
       </div>
 
-      {/* CTA */}
-      <a href="/create" style={{
-        display: "inline-block",
-        background: "linear-gradient(135deg, #06b6d4, #10b981)",
-        color: "#06060e",
-        fontWeight: 800, fontSize: 17, letterSpacing: "-0.01em",
-        padding: "16px 40px", borderRadius: 14,
-        textDecoration: "none",
-        boxShadow: "0 0 30px rgba(6, 182, 212, 0.3), 0 4px 20px rgba(0,0,0,0.3)",
-        transition: "all 0.3s",
+      {/* 3-card grid */}
+      <div style={{
+        display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+        gap: 20,
       }}>
-        Start a Syndicate
-      </a>
+        {FEATURES.map((f) => (
+          <div key={f.title} style={{
+            background: "rgba(14,19,40,0.60)",
+            backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)",
+            border: "1px solid rgba(147,51,234,0.20)",
+            borderRadius: 20, padding: "32px 28px",
+            boxShadow: "0 0 25px rgba(168,85,247,0.12)",
+            transition: "border-color 0.3s",
+          }}>
+            <div style={{ fontSize: 36, marginBottom: 16 }}>{f.icon}</div>
+            <h3 style={{
+              fontSize: 18, fontWeight: 700, margin: "0 0 10px",
+              color: "#e2e8f0",
+            }}>
+              {f.title}
+            </h3>
+            <p style={{
+              fontSize: 14, lineHeight: 1.6, margin: 0,
+              color: "rgba(148,163,184,0.8)",
+            }}>
+              {f.desc}
+            </p>
+          </div>
+        ))}
+      </div>
 
       {/* Bottom stats */}
       <div style={{
@@ -82,7 +119,10 @@ export default function Home() {
           { label: "Execution", value: "IOC Market Orders" },
         ].map((s) => (
           <div key={s.label} style={{ textAlign: "center" }}>
-            <div style={{ fontSize: 12, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>
+            <div style={{
+              fontSize: 12, color: "#64748b", textTransform: "uppercase",
+              letterSpacing: "0.08em", marginBottom: 4,
+            }}>
               {s.label}
             </div>
             <div style={{ fontSize: 14, fontWeight: 600, color: "#94a3b8" }}>
