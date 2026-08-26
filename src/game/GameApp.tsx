@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import { useGameState } from "./useGameState";
 import { RetroCharacter } from "./RetroCharacter";
 import { CHARACTERS } from "./characters";
-import { GAME_MODES, PREDICTIONS, type GameMode, type PredictionConfig, type BotDifficulty } from "./types";
+import { GAME_MODES, PREDICTIONS, type GameMode, type PredictionConfig, type BotDifficulty, type FighterState } from "./types";
 import { WalletModal } from "@/components/WalletModal";
 import { useMatchmaking } from "./useMatchmaking";
 import { useAccount } from "wagmi";
@@ -726,8 +726,10 @@ function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
       setRevealText(game.roundResult.actual === "UP" ? "RESULT: \u2191 UP" : "RESULT: \u2193 DOWN");
     }
     if (game.phase === "ROUND_IMPACT" && game.roundResult) {
-      if (game.roundResult.playerCorrect) {
-        setImpactText(game.playerStreak >= 4 ? "UNSTOPPABLE" : game.playerStreak === 3 ? "ON FIRE!" : game.playerStreak === 2 ? "COMBO!" : "STRIKE!");
+      if (game.roundResult.isDraw) {
+        setImpactText("WEAPONS CLASH!");
+      } else if (game.roundResult.playerCorrect) {
+        setImpactText(game.roundResult.isCritical ? "CRITICAL STRIKE!" : game.playerStreak >= 4 ? "UNSTOPPABLE" : game.playerStreak === 3 ? "ON FIRE!" : game.playerStreak === 2 ? "COMBO!" : "STRIKE!");
       } else {
         setImpactText("HIT!");
       }
@@ -735,7 +737,7 @@ function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
     }
   }, [game.phase, game.roundResult, game.playerStreak]);
 
-  const isFinalRound = game.currentRound >= game.totalRounds && game.phase === "ROUND_ACTIVE";
+  const isFinalRound = game.isFinalRound;
   const urgency = game.timeLeft <= 2 ? "critical" : game.timeLeft <= 5 ? "urgent" : "calm";
   const predStatus = game.predictionStatus;
 
@@ -749,9 +751,12 @@ function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
       }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <RetroCharacter char={game.playerChar!} state={game.playerCharState} size={0.6} />
-          <div>
+          <div style={{ minWidth: 80 }}>
             <div style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.1em" }}>YOU</div>
-            <div style={{ fontSize: 24, fontWeight: 900, color: "#10b981" }}>{game.playerScore}</div>
+            <HealthBar current={game.playerHP} max={game.maxHP} color="#10b981" />
+            <div style={{ fontSize: 10, color: "#10b981", fontWeight: 700, textAlign: "center", marginTop: 2 }}>
+              {game.playerHP} HP
+            </div>
           </div>
         </div>
 
@@ -775,9 +780,12 @@ function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <div style={{ textAlign: "right" }}>
-            <div style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.1em" }}>RIVAL</div>
-            <div style={{ fontSize: 24, fontWeight: 900, color: "#ef4444" }}>{game.rivalScore}</div>
+          <div style={{ minWidth: 80 }}>
+            <div style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.1em", textAlign: "right" }}>RIVAL</div>
+            <HealthBar current={game.rivalHP} max={game.maxHP} color="#ef4444" />
+            <div style={{ fontSize: 10, color: "#ef4444", fontWeight: 700, textAlign: "center", marginTop: 2 }}>
+              {game.rivalHP} HP
+            </div>
           </div>
           <RetroCharacter char={game.rivalChar!} state={game.rivalCharState} size={0.6} flip />
         </div>
@@ -787,31 +795,109 @@ function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
       <div style={{
         flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
         position: "relative", padding: "20px",
+        background: game.isFinalRound ? "linear-gradient(180deg, rgba(239,68,68,0.05) 0%, rgba(245,158,11,0.03) 50%, transparent 100%)" : undefined,
       }}>
         <div style={{
           position: "absolute", inset: 0, pointerEvents: "none",
           background: "linear-gradient(180deg, rgba(168,85,247,0.03) 0%, rgba(6,182,212,0.02) 50%, transparent 100%)",
         }} />
 
-        {/* Match intro */}
-        {game.phase === "MATCH_INTRO" && (
-          <div style={{ textAlign: "center" }}>
-            <div style={{ fontSize: 48, fontWeight: 900, color: "#fbbf24", textShadow: "3px 3px 0 #92400e", letterSpacing: "0.15em", animation: "introPulse 0.8s ease-in-out" }}>
-              {countdown > 0 ? countdown : "FIGHT!"}
+        {/* KO Overlay */}
+        {game.koOverlay && (
+          <div style={{
+            position: "absolute", inset: 0, display: "flex", flexDirection: "column",
+            alignItems: "center", justifyContent: "center", zIndex: 50,
+            background: "rgba(8,8,16,0.7)",
+            animation: "koFlash 0.3s ease-out",
+          }}>
+            <div style={{
+              fontSize: 56, fontWeight: 900, color: "#ef4444", letterSpacing: "0.2em",
+              textShadow: "4px 4px 0 #7f1d1d, 0 0 40px rgba(239,68,68,0.6)",
+              animation: "koShake 0.5s ease-out",
+            }}>
+              K.O.!
+            </div>
+            <div style={{
+              fontSize: 24, fontWeight: 900, color: "#fbbf24", letterSpacing: "0.15em",
+              marginTop: 16, textShadow: "2px 2px 0 #92400e",
+            }}>
+              {game.koOverlay}
             </div>
           </div>
         )}
 
+        {/* Draw Clash Effect */}
+        {game.combatPhase === "clash" && (
+          <div style={{
+            position: "absolute", top: "50%", left: "50%",
+            transform: "translate(-50%, -50%)", zIndex: 30,
+          }}>
+            <div style={{
+              fontSize: 32, fontWeight: 900, color: "#fbbf24",
+              textShadow: "0 0 20px rgba(251,191,36,0.8)",
+              animation: "clashFlash 0.3s ease-out",
+            }}>
+              CLASH!
+            </div>
+            <div style={{
+              position: "absolute", top: -8, left: "50%", transform: "translateX(-50%)",
+              width: 4, height: 4, borderRadius: "50%",
+              background: "#fbbf24", boxShadow: "0 0 12px #fbbf24, -20px -10px 0 #fbbf24, 20px -10px 0 #fbbf24, -15px 5px 0 #fbbf24, 15px 5px 0 #fbbf24",
+              animation: "sparkBurst 0.4s ease-out forwards",
+            }} />
+          </div>
+        )}
+
+        {/* Match intro */}
+        {game.phase === "MATCH_INTRO" && (
+          <div style={{ textAlign: "center" }}>
+            <div style={{
+              fontSize: 48, fontWeight: 900, color: "#fbbf24", textShadow: "3px 3px 0 #92400e",
+              letterSpacing: "0.15em", animation: "introPulse 0.8s ease-in-out",
+            }}>
+              {countdown > 0 ? countdown : "FIGHT!"}
+            </div>
+            {game.isFinalRound && countdown === 0 && (
+              <div style={{
+                fontSize: 16, color: "#ef4444", fontWeight: 700, letterSpacing: "0.2em",
+                marginTop: 8, animation: "criticalPulse 0.3s steps(2) infinite",
+              }}>
+                FINAL ROUND
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Characters */}
-        {(game.phase !== "MATCH_INTRO") && (
-          <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "center", gap: 80, marginBottom: 24 }}>
-            <div style={{ textAlign: "center" }}>
+        {(game.phase !== "MATCH_INTRO" && !game.koOverlay) && (
+          <div style={{
+            display: "flex", alignItems: "flex-end", justifyContent: "center",
+            gap: game.combatPhase === "clash" ? 20 : 80,
+            marginBottom: 24, position: "relative",
+          }}>
+            <div style={{
+              textAlign: "center", position: "relative",
+              transform: game.combatPhase === "strike" && game.lastDamage?.target === "rival"
+                ? "translateX(20px)" : undefined,
+              transition: "transform 0.2s ease-out",
+            }}>
               <RetroCharacter char={game.playerChar!} state={game.playerCharState} size={2} aura={game.playerStreak >= 3 ? "#fbbf24" : undefined} />
               <div style={{ fontSize: 11, color: game.playerChar?.colors.accent, letterSpacing: "0.1em", marginTop: 4 }}>{game.playerChar?.name}</div>
+              {game.lastDamage?.target === "player" && (
+                <DamageNumber amount={game.lastDamage.amount} isCritical={game.lastDamage.isCritical} />
+              )}
             </div>
-            <div style={{ textAlign: "center" }}>
+            <div style={{
+              textAlign: "center", position: "relative",
+              transform: game.combatPhase === "strike" && game.lastDamage?.target === "player"
+                ? "translateX(-20px)" : undefined,
+              transition: "transform 0.2s ease-out",
+            }}>
               <RetroCharacter char={game.rivalChar!} state={game.rivalCharState} size={2} flip aura={game.rivalStreak >= 3 ? "#ef4444" : undefined} />
               <div style={{ fontSize: 11, color: game.rivalChar?.colors.accent, letterSpacing: "0.1em", marginTop: 4 }}>{game.rivalName}</div>
+              {game.lastDamage?.target === "rival" && (
+                <DamageNumber amount={game.lastDamage.amount} isCritical={game.lastDamage.isCritical} />
+              )}
             </div>
           </div>
         )}
@@ -829,6 +915,29 @@ function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
           </div>
         )}
 
+        {/* Critical hit flash */}
+        {game.roundResult?.isCritical && game.combatPhase === "impact" && (
+          <div style={{
+            position: "absolute", top: "30%", left: "50%", transform: "translate(-50%, -50%)",
+            fontSize: 36, fontWeight: 900, color: "#fbbf24", letterSpacing: "0.2em",
+            textShadow: "3px 3px 0 #92400e, 0 0 30px rgba(251,191,36,0.8)",
+            animation: "critFlash 0.5s ease-out", zIndex: 40,
+          }}>
+            CRITICAL!
+          </div>
+        )}
+
+        {/* Draw round notice */}
+        {game.roundResult?.isDraw && game.phase === "ROUND_IMPACT" && (
+          <div style={{
+            fontSize: 22, fontWeight: 900, letterSpacing: "0.15em",
+            color: "#fbbf24", textShadow: "0 0 15px rgba(251,191,36,0.5)",
+            marginBottom: 16, animation: "streakPop 0.5s ease-out",
+          }}>
+            DRAW ROUND
+          </div>
+        )}
+
         {/* Result reveal */}
         {showResult && game.phase !== "ROUND_IMPACT" && (
           <div style={{
@@ -843,7 +952,7 @@ function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
         {game.phase === "ROUND_IMPACT" && impactText && (
           <div style={{
             fontSize: 20, fontWeight: 900, letterSpacing: "0.1em",
-            color: game.roundResult?.playerCorrect ? "#10b981" : "#ef4444",
+            color: game.roundResult?.isDraw ? "#fbbf24" : game.roundResult?.playerCorrect ? "#10b981" : "#ef4444",
             marginBottom: 16,
           }}>
             {impactText}
@@ -982,7 +1091,16 @@ function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
         {(game.phase === "ROUND_REVEAL" || game.phase === "ROUND_IMPACT") && (
           <div style={{ textAlign: "center" }}>
             <div style={{ fontSize: 14, color: "#64748b", letterSpacing: "0.1em" }}>
-              {game.roundResult?.playerCorrect ? "YOU PREDICTED CORRECTLY!" : "MISS! RIVAL SCORES!"}
+              {game.roundResult?.isDraw ? "DRAW ROUND — NO DAMAGE" : game.roundResult?.playerCorrect ? "YOU PREDICTED CORRECTLY!" : "MISS! RIVAL SCORES!"}
+            </div>
+            {game.roundResult && !game.roundResult.isDraw && (
+              <div style={{ fontSize: 12, color: game.roundResult.playerCorrect ? "#10b981" : "#ef4444", fontWeight: 700, marginTop: 4 }}>
+                {game.roundResult.playerCorrect ? `Dealt ${game.roundResult.rivalDamage} damage!` : `Took ${game.roundResult.playerDamage} damage!`}
+                {game.roundResult.isCritical ? " CRITICAL!" : ""}
+              </div>
+            )}
+            <div style={{ fontSize: 11, color: "#475569", marginTop: 4 }}>
+              HP: {game.playerHP} / {game.maxHP} vs {game.rivalHP} / {game.maxHP}
             </div>
             {game.roundResult?.playerExecution && (
               <div style={{ fontSize: 10, color: "#475569", letterSpacing: "0.06em", marginTop: 4 }}>
@@ -1064,29 +1182,44 @@ function MatchResult({ game, onRematch }: { game: ReturnType<typeof useGameState
     }).catch(() => {});
   }, [game.matchId, game.roundHistory, game.playerScore, game.rivalScore, game.isBotMatch, game.mode, game.playerChar, game.rivalChar, won, draw, address]);
 
+  const koRound = game.roundHistory.find((r) => r.knockout);
+
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "40px 20px" }}>
+      {game.koOverlay && (
+        <div style={{
+          fontSize: 42, fontWeight: 900, color: "#ef4444", letterSpacing: "0.2em",
+          textShadow: "3px 3px 0 #7f1d1d, 0 0 30px rgba(239,68,68,0.5)",
+          marginBottom: 8,
+        }}>
+          K.O.!
+        </div>
+      )}
       <h2 style={{ fontSize: 36, fontWeight: 900, letterSpacing: "0.15em", color: "#fbbf24", textShadow: "3px 3px 0 #92400e", marginBottom: 24, textAlign: "center" }}>
         MATCH COMPLETE
       </h2>
 
-      <div style={{ display: "flex", alignItems: "center", gap: 48, marginBottom: 32 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 48, marginBottom: 16 }}>
         <div style={{ textAlign: "center" }}>
           <RetroCharacter char={game.playerChar!} state={won ? "victory" : draw ? "idle" : "defeat"} size={1.5} />
           <div style={{ fontSize: 14, color: game.playerChar?.colors.accent, letterSpacing: "0.1em", marginTop: 8 }}>{game.playerChar?.name}</div>
+          <HealthBar current={game.playerHP} max={game.maxHP} color="#10b981" wide />
+          <div style={{ fontSize: 11, color: "#10b981", marginTop: 2 }}>{game.playerHP} HP</div>
         </div>
         <div style={{ textAlign: "center" }}>
-          <div style={{ fontSize: 48, fontWeight: 900, color: "#fbbf24", textShadow: "2px 2px 0 #92400e" }}>
-            {game.playerScore}
+          <div style={{ fontSize: 24, fontWeight: 900, color: "#fbbf24", textShadow: "2px 2px 0 #92400e" }}>
+            {game.playerScore} - {game.rivalScore}
           </div>
-          <div style={{ fontSize: 12, color: "#64748b", letterSpacing: "0.1em" }}>VS</div>
-          <div style={{ fontSize: 48, fontWeight: 900, color: "#ef4444", textShadow: "2px 2px 0 #7f1d1d" }}>
-            {game.rivalScore}
+          <div style={{ fontSize: 12, color: "#64748b", letterSpacing: "0.1em" }}>ROUNDS</div>
+          <div style={{ fontSize: 11, color: "#475569", marginTop: 4 }}>
+            Final HP: {game.playerHP} vs {game.rivalHP}
           </div>
         </div>
         <div style={{ textAlign: "center" }}>
           <RetroCharacter char={game.rivalChar!} state={won ? "defeat" : draw ? "idle" : "victory"} size={1.5} flip />
           <div style={{ fontSize: 14, color: game.rivalChar?.colors.accent, letterSpacing: "0.1em", marginTop: 8 }}>{game.rivalName}</div>
+          <HealthBar current={game.rivalHP} max={game.maxHP} color="#ef4444" wide />
+          <div style={{ fontSize: 11, color: "#ef4444", marginTop: 2 }}>{game.rivalHP} HP</div>
         </div>
       </div>
 
@@ -1104,14 +1237,19 @@ function MatchResult({ game, onRematch }: { game: ReturnType<typeof useGameState
         <div style={{ display: "flex", gap: 4, justifyContent: "center", flexWrap: "wrap" }}>
           {game.roundHistory.map((r, i) => (
             <div key={i} style={{
-              width: 32, height: 32, borderRadius: 4,
-              display: "flex", alignItems: "center", justifyContent: "center",
-              fontSize: 11, fontWeight: 700,
-              background: r.playerCorrect ? "rgba(16,185,129,0.2)" : "rgba(239,68,68,0.2)",
-              border: `1px solid ${r.playerCorrect ? "#10b981" : "#ef4444"}`,
-              color: r.playerCorrect ? "#10b981" : "#ef4444",
+              width: 36, height: 36, borderRadius: 4,
+              display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+              fontSize: 10, fontWeight: 700, lineHeight: 1.2,
+              background: r.isDraw ? "rgba(251,191,36,0.15)" : r.playerCorrect ? "rgba(16,185,129,0.2)" : "rgba(239,68,68,0.2)",
+              border: `1px solid ${r.isDraw ? "#fbbf24" : r.playerCorrect ? "#10b981" : "#ef4444"}`,
+              color: r.isDraw ? "#fbbf24" : r.playerCorrect ? "#10b981" : "#ef4444",
             }}>
-              {r.playerCorrect ? "\u2713" : "\u2717"}
+              {r.isDraw ? "\u2694" : r.playerCorrect ? "\u2713" : "\u2717"}
+              {!r.isDraw && (
+                <span style={{ fontSize: 8, opacity: 0.8 }}>
+                  {r.playerCorrect ? `-${r.rivalDamage}` : `-${r.playerDamage}`}
+                </span>
+              )}
             </div>
           ))}
         </div>
@@ -1125,6 +1263,49 @@ function MatchResult({ game, onRematch }: { game: ReturnType<typeof useGameState
           BACK TO ARENA
         </button>
       </div>
+    </div>
+  );
+}
+
+function HealthBar({ current, max, color, wide }: { current: number; max: number; color: string; wide?: boolean }) {
+  const pct = Math.max(0, Math.min(100, (current / max) * 100));
+  const barColor = pct > 60 ? color : pct > 30 ? "#f59e0b" : "#ef4444";
+  const segments = 10;
+  const segWidth = wide ? 8 : 5;
+  const segGap = 2;
+  return (
+    <div style={{
+      display: "flex", gap: segGap, justifyContent: "center",
+      padding: "2px 0",
+    }}>
+      {Array.from({ length: segments }, (_, i) => {
+        const segPct = ((i + 1) / segments) * 100;
+        const filled = pct >= segPct;
+        return (
+          <div key={i} style={{
+            width: segWidth, height: wide ? 8 : 6,
+            borderRadius: 1,
+            background: filled ? barColor : "rgba(30,41,59,0.8)",
+            border: `1px solid ${filled ? barColor : "#1e293b"}`,
+            opacity: filled ? 1 : 0.5,
+            transition: "background 0.3s, border-color 0.3s",
+          }} />
+        );
+      })}
+    </div>
+  );
+}
+
+function DamageNumber({ amount, isCritical }: { amount: number; isCritical: boolean }) {
+  return (
+    <div style={{
+      position: "absolute", top: -10, left: "50%", transform: "translateX(-50%)",
+      fontSize: isCritical ? 22 : 16, fontWeight: 900, color: isCritical ? "#fbbf24" : "#ef4444",
+      textShadow: isCritical ? "2px 2px 0 #92400e, 0 0 10px rgba(251,191,36,0.6)" : "1px 1px 0 #7f1d1d",
+      animation: "damageFloat 1.2s ease-out forwards",
+      zIndex: 30, whiteSpace: "nowrap", pointerEvents: "none",
+    }}>
+      -{amount}{isCritical ? "!" : ""}
     </div>
   );
 }
@@ -1167,6 +1348,55 @@ const globalCSS = `
   @keyframes dotPulse {
     0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
     40% { opacity: 1; transform: scale(1.2); }
+  }
+  @keyframes damageFloat {
+    0% { transform: translateX(-50%) translateY(0); opacity: 1; }
+    70% { transform: translateX(-50%) translateY(-30px); opacity: 1; }
+    100% { transform: translateX(-50%) translateY(-40px); opacity: 0; }
+  }
+  @keyframes koFlash {
+    0% { background: rgba(239,68,68,0.3); }
+    100% { background: rgba(8,8,16,0.7); }
+  }
+  @keyframes koShake {
+    0% { transform: scale(0.5) rotate(-10deg); opacity: 0; }
+    30% { transform: scale(1.3) rotate(5deg); opacity: 1; }
+    50% { transform: scale(0.9) rotate(-3deg); }
+    70% { transform: scale(1.1) rotate(2deg); }
+    100% { transform: scale(1) rotate(0deg); opacity: 1; }
+  }
+  @keyframes clashFlash {
+    0% { transform: scale(0.3); opacity: 0; }
+    50% { transform: scale(1.4); opacity: 1; }
+    100% { transform: scale(1); opacity: 1; }
+  }
+  @keyframes sparkBurst {
+    0% { transform: translateX(-50%) scale(0); opacity: 1; }
+    100% { transform: translateX(-50%) scale(3); opacity: 0; }
+  }
+  @keyframes critFlash {
+    0% { transform: translate(-50%, -50%) scale(0.5) rotate(-10deg); opacity: 0; }
+    30% { transform: translate(-50%, -50%) scale(1.3) rotate(5deg); opacity: 1; }
+    60% { transform: translate(-50%, -50%) scale(0.95) rotate(-2deg); opacity: 1; }
+    100% { transform: translate(-50%, -50%) scale(1) rotate(0deg); opacity: 0; }
+  }
+  @keyframes weaponSwing {
+    0% { transform: rotate(0deg); }
+    50% { transform: rotate(-60deg); }
+    100% { transform: rotate(0deg); }
+  }
+  @keyframes weaponClash {
+    0%, 100% { transform: rotate(0deg); }
+    50% { transform: rotate(-10deg); }
+  }
+  @keyframes weaponDrop {
+    0% { transform: rotate(0deg); filter: brightness(1); }
+    20% { transform: rotate(-15deg); filter: brightness(1.5); }
+    100% { transform: rotate(0deg); filter: brightness(1); }
+  }
+  @keyframes glow {
+    0%, 100% { text-shadow: 0 0 10px currentColor; }
+    50% { text-shadow: 0 0 20px currentColor, 0 0 40px currentColor; }
   }
 `;
 

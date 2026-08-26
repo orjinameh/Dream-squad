@@ -77,6 +77,11 @@ export interface MatchDoc {
     poolAddress: string;
     amountPerRound: number;
   };
+  // Combat state
+  playerHP: number;
+  rivalHP: number;
+  playerStreak: number;
+  rivalStreak: number;
 }
 
 const ROUND_DURATION_MS = 10_000;
@@ -157,6 +162,11 @@ const MatchSchema = new Schema<MatchDoc>(
       poolAddress: { type: String, default: "0x259fD6559214dd5aD3752322426eA9F9fABEFff4" },
       amountPerRound: { type: Number, default: 1 },
     },
+    // Combat state
+    playerHP: { type: Number, default: 100 },
+    rivalHP: { type: Number, default: 100 },
+    playerStreak: { type: Number, default: 0 },
+    rivalStreak: { type: Number, default: 0 },
   },
   { versionKey: false },
 );

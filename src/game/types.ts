@@ -1,5 +1,22 @@
 import { type CharacterDef } from "./characters";
 
+export type WeaponType = "sword" | "axe" | "hammer" | "spear" | "energy-staff" | "dual-daggers";
+
+export type FighterState =
+  | "idle"
+  | "thinking"
+  | "locked"
+  | "windup"
+  | "attack"
+  | "hit"
+  | "block"
+  | "knockback"
+  | "stunned"
+  | "victory"
+  | "defeat";
+
+export type CombatPhase = "idle" | "windup" | "strike" | "impact" | "recovery" | "clash" | "ko";
+
 export type GamePhase =
   | "HOME"
   | "MODE_SELECT"
@@ -52,6 +69,11 @@ export interface RoundResult {
   rivalPredicted: Prediction;
   playerCorrect: boolean;
   rivalCorrect: boolean;
+  playerDamage?: number;
+  rivalDamage?: number;
+  isCritical?: boolean;
+  isDraw?: boolean;
+  knockout?: boolean;
   playerExecution?: {
     status: "PENDING" | "EXECUTED" | "FAILED";
     txHash?: string;
@@ -88,4 +110,11 @@ export interface GameState {
   executionStatus: "idle" | "executing" | "success" | "failed" | "retrying";
   executionError: string | null;
   lastTxHash: string | null;
+  playerHP: number;
+  rivalHP: number;
+  maxHP: number;
+  combatPhase: CombatPhase;
+  lastDamage: { amount: number; target: "player" | "rival"; isCritical: boolean } | null;
+  isFinalRound: boolean;
+  koOverlay: string | null;
 }
