@@ -66,7 +66,7 @@ export default function GameApp() {
     }}>
       <style>{globalCSS}</style>
 
-      {g.phase === "HOME" && <HomeScreen onEnter={g.actions.goToModeSelect} onLeaderboard={g.actions.goToLeaderboard} onRejoin={activeMatchId ? rejoinMatch : undefined} />}
+      {g.phase === "HOME" && <HomeScreen onEnter={g.actions.goToModeSelect} onLeaderboard={g.actions.goToLeaderboard} onProfile={g.actions.goToProfile} onHistory={g.actions.goToMatchHistory} onRejoin={activeMatchId ? rejoinMatch : undefined} />}
       {g.phase === "MODE_SELECT" && <ModeSelect onSelect={g.actions.selectMode} onBack={g.actions.goToHome} />}
       {g.phase === "CHAR_SELECT" && <CharSelect onSelect={g.actions.selectChar} onBack={g.actions.goToModeSelect} />}
       {g.phase === "DUEL_CONFIRM" && <DuelConfirm mode={g.mode!} char={g.playerChar!} difficulty={g.botDifficulty} onConfirm={() => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.confirmDuel(); }} onBack={g.actions.goToCharSelect} onQuickMatch={(rounds) => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.joinMatchmaking(rounds); }} onSelectDifficulty={g.actions.selectDifficulty} />}
@@ -78,6 +78,9 @@ export default function GameApp() {
         <ArenaScreen game={g} />
       )}
       {g.phase === "MATCH_RESULT" && <MatchResult game={g} onRematch={() => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.rematch(); }} />}
+      {g.phase === "PROFILE" && <ProfileScreen address={address} onBack={g.actions.goToHome} onHistory={g.actions.goToMatchHistory} />}
+      {g.phase === "MATCH_HISTORY" && <MatchHistoryScreen address={address} onBack={g.actions.goToHome} onSelectMatch={g.actions.goToMatchDetail} />}
+      {g.phase === "MATCH_DETAIL" && <MatchDetailScreen matchId={g.selectedMatchId} address={address} onBack={g.actions.goToMatchHistory} />}
 
       {g.isReconnecting && <ReconnectOverlay />}
       <WalletModal open={showWalletModal} onClose={() => setShowWalletModal(false)} />
@@ -157,7 +160,7 @@ function ReconnectOverlay() {
   );
 }
 
-function HomeScreen({ onEnter, onLeaderboard, onRejoin }: { onEnter: () => void; onLeaderboard: () => void; onRejoin?: () => void }) {
+function HomeScreen({ onEnter, onLeaderboard, onProfile, onHistory, onRejoin }: { onEnter: () => void; onLeaderboard: () => void; onProfile: () => void; onHistory: () => void; onRejoin?: () => void }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "100vh", padding: "40px 20px" }}>
       <div style={{ position: "absolute", inset: 0, background: "radial-gradient(ellipse at 50% 30%, rgba(168,85,247,0.08) 0%, transparent 60%)", pointerEvents: "none" }} />
@@ -182,9 +185,17 @@ function HomeScreen({ onEnter, onLeaderboard, onRejoin }: { onEnter: () => void;
       <button onClick={onEnter} style={ctaButtonStyle}>
         {"\u2694\uFE0F"} ENTER THE ARENA
       </button>
-      <button onClick={onLeaderboard} style={{ ...ctaButtonStyle, background: "transparent", border: "3px solid #64748b", color: "#94a3b8", marginTop: 12, fontSize: 14, padding: "12px 32px" }}>
-        {"\uD83C\uDFC6"} HALL OF DREAMERS
-      </button>
+      <div style={{ display: "flex", gap: 12, marginTop: 16 }}>
+        <button onClick={onProfile} style={{ ...ctaButtonStyle, background: "transparent", border: "3px solid #a855f7", color: "#a855f7", fontSize: 13, padding: "10px 24px" }}>
+          {"\uD83D\uDC64"} PROFILE
+        </button>
+        <button onClick={onHistory} style={{ ...ctaButtonStyle, background: "transparent", border: "3px solid #22d3ee", color: "#22d3ee", fontSize: 13, padding: "10px 24px" }}>
+          {"\uD83D\uDCCB"} HISTORY
+        </button>
+        <button onClick={onLeaderboard} style={{ ...ctaButtonStyle, background: "transparent", border: "3px solid #fbbf24", color: "#fbbf24", fontSize: 13, padding: "10px 24px" }}>
+          {"\uD83C\uDFC6"} RANKS
+        </button>
+      </div>
 
       <div style={{ display: "flex", gap: 8, marginTop: 48, flexWrap: "wrap", justifyContent: "center" }}>
         {["Enter a duel", "Choose rounds", "Predict in 10s", "Strike your rival", "Win the match"].map((s, i) => (
@@ -1262,10 +1273,456 @@ function MatchResult({ game, onRematch }: { game: ReturnType<typeof useGameState
         <button onClick={onRematch} style={ctaButtonStyle}>
           REMATCH {"\u2694\uFE0F"}
         </button>
+        {game.matchId && (
+          <button onClick={() => game.actions.goToMatchDetail(game.matchId!)} style={{ ...ctaButtonStyle, background: "linear-gradient(135deg, #155e75, #22d3ee)", fontSize: 14, padding: "12px 28px" }}>
+            VIEW DETAIL
+          </button>
+        )}
         <button onClick={game.actions.goToHome} style={{ ...ctaButtonStyle, background: "transparent", border: "2px solid #475569", color: "#94a3b8", fontSize: 14, padding: "12px 28px" }}>
           BACK TO ARENA
         </button>
       </div>
+    </div>
+  );
+}
+
+function ProfileScreen({ address, onBack, onHistory }: { address?: string; onBack: () => void; onHistory: () => void }) {
+  const [profile, setProfile] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!address) { setLoading(false); return; }
+    fetch(`/api/player/profile?address=${encodeURIComponent(address)}`)
+      .then((r) => r.json())
+      .then((d) => { setProfile(d); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, [address]);
+
+  const char = profile ? CHARACTERS.find((c) => c.id === profile.favoriteChar) ?? CHARACTERS[4] : CHARACTERS[4];
+
+  if (!address) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "40px 20px" }}>
+        <div style={{ fontSize: 20, color: "#64748b", letterSpacing: "0.1em", marginBottom: 24 }}>CONNECT WALLET TO VIEW PROFILE</div>
+        <button onClick={onBack} style={{ ...ctaButtonStyle, background: "transparent", border: "2px solid #475569", color: "#94a3b8", fontSize: 14, padding: "10px 28px" }}>{"\u2190"} BACK</button>
+      </div>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "40px 20px" }}>
+        <div style={{ fontSize: 18, color: "#64748b", letterSpacing: "0.1em" }}>LOADING PROFILE...</div>
+      </div>
+    );
+  }
+
+  if (!profile || profile.error) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "40px 20px" }}>
+        <div style={{ fontSize: 20, color: "#ef4444", letterSpacing: "0.1em", marginBottom: 24 }}>PROFILE NOT FOUND</div>
+        <button onClick={onBack} style={{ ...ctaButtonStyle, background: "transparent", border: "2px solid #475569", color: "#94a3b8", fontSize: 14, padding: "10px 28px" }}>{"\u2190"} BACK</button>
+      </div>
+    );
+  }
+
+  const maskAddr = (a: string) => `${a.slice(0, 6)}...${a.slice(-4)}`;
+  const rank = profile.rank ?? { rank: "BRONZE", tier: 5, color: "#b45309", icon: "\u25CF" };
+  const pvpAcc = profile.pvp?.rounds > 0 ? Math.round((profile.pvp.correctPredictions / profile.pvp.rounds) * 100) : 0;
+  const botAcc = profile.bot?.rounds > 0 ? Math.round((profile.bot.correctPredictions / profile.bot.rounds) * 100) : 0;
+
+  return (
+    <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", padding: "40px 20px" }}>
+      <h2 style={{ fontSize: 28, fontWeight: 900, letterSpacing: "0.1em", color: "#fbbf24", textShadow: "2px 2px 0 #92400e", marginBottom: 24 }}>
+        PROFILE
+      </h2>
+
+      {/* Fighter Card */}
+      <div style={{
+        background: "rgba(15,23,42,0.9)", border: `2px solid ${char.colors.accent}`, borderRadius: 12,
+        padding: "24px 32px", textAlign: "center", marginBottom: 24, maxWidth: 400, width: "100%",
+      }}>
+        <div style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.15em", marginBottom: 8 }}>FIGHTER</div>
+        <div style={{ display: "flex", justifyContent: "center", marginBottom: 12 }}>
+          <RetroCharacter char={char} state="idle" size={1.3} />
+        </div>
+        <div style={{ fontSize: 20, fontWeight: 900, color: char.colors.accent, letterSpacing: "0.1em", marginBottom: 4 }}>{char.name}</div>
+        <div style={{ fontSize: 12, color: "#64748b", fontFamily: "'Courier New', monospace" }}>{maskAddr(address)}</div>
+        <div style={{ fontSize: 10, color: "#10b981", marginTop: 4, letterSpacing: "0.08em" }}>SOMNIA TESTNET</div>
+      </div>
+
+      {/* Rank */}
+      <div style={{
+        background: "rgba(15,23,42,0.9)", border: `2px solid ${rank.color}`, borderRadius: 12,
+        padding: "16px 32px", textAlign: "center", marginBottom: 24, maxWidth: 400, width: "100%",
+      }}>
+        <div style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.15em", marginBottom: 4 }}>RANK</div>
+        <div style={{ fontSize: 22, fontWeight: 900, color: rank.color, letterSpacing: "0.1em" }}>
+          {rank.icon} {profile.rankLabel}
+        </div>
+        <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 4 }}>{profile.rankPoints} RP</div>
+      </div>
+
+      {/* Overall Stats */}
+      <div style={{
+        background: "rgba(15,23,42,0.9)", border: "2px solid #334155", borderRadius: 12,
+        padding: "20px 32px", maxWidth: 400, width: "100%", marginBottom: 16,
+      }}>
+        <div style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.15em", marginBottom: 12, textAlign: "center" }}>OVERALL</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16, textAlign: "center" }}>
+          <div>
+            <div style={{ fontSize: 24, fontWeight: 900, color: "#10b981" }}>{profile.totalWins}</div>
+            <div style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.1em" }}>WINS</div>
+          </div>
+          <div>
+            <div style={{ fontSize: 24, fontWeight: 900, color: "#ef4444" }}>{profile.totalLosses}</div>
+            <div style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.1em" }}>LOSSES</div>
+          </div>
+          <div>
+            <div style={{ fontSize: 24, fontWeight: 900, color: "#fbbf24" }}>{profile.accuracy}%</div>
+            <div style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.1em" }}>ACCURACY</div>
+          </div>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, textAlign: "center", marginTop: 16 }}>
+          <div>
+            <div style={{ fontSize: 18, fontWeight: 900, color: "#f59e0b" }}>{profile.longestStreak}</div>
+            <div style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.1em" }}>BEST STREAK</div>
+          </div>
+          <div>
+            <div style={{ fontSize: 18, fontWeight: 900, color: "#a855f7" }}>{profile.totalMatches}</div>
+            <div style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.1em" }}>MATCHES</div>
+          </div>
+        </div>
+      </div>
+
+      {/* PvP Stats */}
+      <div style={{
+        background: "rgba(15,23,42,0.9)", border: "2px solid #22d3ee", borderRadius: 12,
+        padding: "20px 32px", maxWidth: 400, width: "100%", marginBottom: 16,
+      }}>
+        <div style={{ fontSize: 11, color: "#22d3ee", letterSpacing: "0.15em", marginBottom: 12, textAlign: "center" }}>PVP STATS</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16, textAlign: "center" }}>
+          <div>
+            <div style={{ fontSize: 22, fontWeight: 900, color: "#10b981" }}>{profile.pvp?.wins ?? 0}</div>
+            <div style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.1em" }}>WINS</div>
+          </div>
+          <div>
+            <div style={{ fontSize: 22, fontWeight: 900, color: "#ef4444" }}>{profile.pvp?.losses ?? 0}</div>
+            <div style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.1em" }}>LOSSES</div>
+          </div>
+          <div>
+            <div style={{ fontSize: 22, fontWeight: 900, color: "#a855f7" }}>{pvpAcc}%</div>
+            <div style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.1em" }}>ACCURACY</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Bot Stats */}
+      <div style={{
+        background: "rgba(15,23,42,0.9)", border: "2px solid #a855f7", borderRadius: 12,
+        padding: "20px 32px", maxWidth: 400, width: "100%", marginBottom: 16,
+      }}>
+        <div style={{ fontSize: 11, color: "#a855f7", letterSpacing: "0.15em", marginBottom: 12, textAlign: "center" }}>BOT TRAINING</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16, textAlign: "center" }}>
+          <div>
+            <div style={{ fontSize: 22, fontWeight: 900, color: "#10b981" }}>{profile.bot?.wins ?? 0}</div>
+            <div style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.1em" }}>WINS</div>
+          </div>
+          <div>
+            <div style={{ fontSize: 22, fontWeight: 900, color: "#ef4444" }}>{profile.bot?.losses ?? 0}</div>
+            <div style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.1em" }}>LOSSES</div>
+          </div>
+          <div>
+            <div style={{ fontSize: 22, fontWeight: 900, color: "#a855f7" }}>{botAcc}%</div>
+            <div style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.1em" }}>ACCURACY</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Combat Stats */}
+      <div style={{
+        background: "rgba(15,23,42,0.9)", border: "2px solid #334155", borderRadius: 12,
+        padding: "16px 32px", maxWidth: 400, width: "100%", marginBottom: 24,
+      }}>
+        <div style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.15em", marginBottom: 8, textAlign: "center" }}>COMBAT</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, textAlign: "center" }}>
+          <div>
+            <div style={{ fontSize: 16, fontWeight: 900, color: "#ef4444" }}>{profile.knockouts ?? 0}</div>
+            <div style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.1em" }}>KNOCKOUTS</div>
+          </div>
+          <div>
+            <div style={{ fontSize: 16, fontWeight: 900, color: "#f59e0b" }}>{profile.timesKnockedOut ?? 0}</div>
+            <div style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.1em" }}>KNOCKED OUT</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Active match banner */}
+      {profile.activeMatchId && (
+        <div style={{
+          background: "rgba(245,158,11,0.1)", border: "2px solid #f59e0b", borderRadius: 8,
+          padding: "12px 24px", marginBottom: 16, textAlign: "center",
+        }}>
+          <div style={{ fontSize: 12, color: "#f59e0b", letterSpacing: "0.1em" }}>ACTIVE MATCH DETECTED</div>
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 12 }}>
+        <button onClick={onHistory} style={{ ...ctaButtonStyle, background: "linear-gradient(135deg, #155e75, #22d3ee)", fontSize: 14, padding: "12px 28px" }}>
+          BATTLE HISTORY
+        </button>
+        <button onClick={onBack} style={{ ...ctaButtonStyle, background: "transparent", border: "2px solid #475569", color: "#94a3b8", fontSize: 14, padding: "12px 28px" }}>
+          {"\u2190"} BACK
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function MatchHistoryScreen({ address, onBack, onSelectMatch }: { address?: string; onBack: () => void; onSelectMatch: (matchId: string) => void }) {
+  const [matches, setMatches] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!address) { setLoading(false); return; }
+    fetch(`/api/matches/history?address=${encodeURIComponent(address)}&limit=30`)
+      .then((r) => r.json())
+      .then((d) => { setMatches(d.matches ?? []); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, [address]);
+
+  const timeAgo = (iso: string) => {
+    const diff = Date.now() - new Date(iso).getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins}m ago`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return `${hours}h ago`;
+    return `${Math.floor(hours / 24)}d ago`;
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", padding: "40px 20px" }}>
+      <h2 style={{ fontSize: 28, fontWeight: 900, letterSpacing: "0.1em", color: "#fbbf24", textShadow: "2px 2px 0 #92400e", marginBottom: 24 }}>
+        BATTLE HISTORY
+      </h2>
+
+      {loading && <div style={{ fontSize: 16, color: "#64748b", letterSpacing: "0.1em" }}>LOADING...</div>}
+
+      {!loading && matches.length === 0 && (
+        <div style={{ textAlign: "center", padding: "40px 0" }}>
+          <div style={{ fontSize: 18, color: "#64748b", letterSpacing: "0.1em", marginBottom: 8 }}>NO BATTLES YET</div>
+          <div style={{ fontSize: 13, color: "#475569", letterSpacing: "0.08em", marginBottom: 24 }}>YOUR FIRST FIGHT AWAITS.</div>
+          <button onClick={onBack} style={ctaButtonStyle}>ENTER ARENA</button>
+        </div>
+      )}
+
+      <div style={{ maxWidth: 500, width: "100%" }}>
+        {matches.map((m) => {
+          const char = CHARACTERS.find((c) => c.id === m.playerChar) ?? CHARACTERS[4];
+          const rivalCharData = CHARACTERS.find((c) => c.id === m.rivalChar) ?? CHARACTERS[1];
+          const isWin = m.winner === "player";
+          const isDraw = m.winner === "draw";
+          const isBot = m.opponentType === "bot";
+
+          return (
+            <button
+              key={m.matchId}
+              onClick={() => onSelectMatch(m.matchId)}
+              style={{
+                display: "block", width: "100%", textAlign: "left",
+                background: "rgba(15,23,42,0.9)", border: `2px solid ${isWin ? "#10b981" : isDraw ? "#fbbf24" : "#ef4444"}`,
+                borderRadius: 8, padding: "14px 20px", marginBottom: 8,
+                cursor: "pointer", fontFamily: "'Courier New', monospace",
+                transition: "all 0.15s",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  <span style={{ fontSize: 18 }}>{isWin ? "\uD83C\uDFC6" : isDraw ? "\u2694\uFE0F" : "\uD83D\uDC80"}</span>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: char.colors.accent }}>
+                      {char.name} <span style={{ color: "#475569" }}>vs</span> {isBot ? "TRAINING BOT" : m.rivalName}
+                    </div>
+                    <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 2 }}>
+                      {m.playerScore} - {m.rivalScore} | {m.totalRounds} ROUNDS | {isBot ? "BOT" : "PvP"}
+                    </div>
+                  </div>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ fontSize: 11, color: isWin ? "#10b981" : isDraw ? "#fbbf24" : "#ef4444", fontWeight: 700 }}>
+                    {isWin ? "WIN" : isDraw ? "DRAW" : "LOSS"}
+                  </div>
+                  <div style={{ fontSize: 10, color: "#475569", marginTop: 2 }}>
+                    {m.completedAt ? timeAgo(m.completedAt) : ""}
+                  </div>
+                </div>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+
+      <button onClick={onBack} style={{ ...ctaButtonStyle, background: "transparent", border: "2px solid #475569", color: "#94a3b8", fontSize: 14, padding: "10px 28px", marginTop: 16 }}>
+        {"\u2190"} BACK
+      </button>
+    </div>
+  );
+}
+
+function MatchDetailScreen({ matchId, address, onBack }: { matchId: string | null; address?: string; onBack: () => void }) {
+  const [match, setMatch] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!matchId) { setLoading(false); return; }
+    const addrParam = address ? `&address=${encodeURIComponent(address)}` : "";
+    fetch(`/api/matches/detail?matchId=${encodeURIComponent(matchId)}${addrParam}`)
+      .then((r) => r.json())
+      .then((d) => { setMatch(d); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, [matchId, address]);
+
+  if (!matchId) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "40px 20px" }}>
+        <div style={{ fontSize: 18, color: "#64748b", letterSpacing: "0.1em", marginBottom: 24 }}>NO MATCH SELECTED</div>
+        <button onClick={onBack} style={{ ...ctaButtonStyle, background: "transparent", border: "2px solid #475569", color: "#94a3b8", fontSize: 14, padding: "10px 28px" }}>{"\u2190"} BACK</button>
+      </div>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "40px 20px" }}>
+        <div style={{ fontSize: 18, color: "#64748b", letterSpacing: "0.1em" }}>LOADING MATCH...</div>
+      </div>
+    );
+  }
+
+  if (!match || match.error) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "40px 20px" }}>
+        <div style={{ fontSize: 18, color: "#ef4444", letterSpacing: "0.1em", marginBottom: 24 }}>MATCH NOT FOUND</div>
+        <button onClick={onBack} style={{ ...ctaButtonStyle, background: "transparent", border: "2px solid #475569", color: "#94a3b8", fontSize: 14, padding: "10px 28px" }}>{"\u2190"} BACK</button>
+      </div>
+    );
+  }
+
+  const playerChar = CHARACTERS.find((c) => c.id === match.playerChar) ?? CHARACTERS[4];
+  const rivalChar = CHARACTERS.find((c) => c.id === match.rivalChar) ?? CHARACTERS[1];
+  const isWin = match.winner === "player";
+  const isDraw = match.winner === "draw";
+  const isBot = match.opponentType === "bot";
+  const pvpAcc = match.totalRoundsPlayed > 0 ? Math.round((match.playerCorrectCount / match.totalRoundsPlayed) * 100) : 0;
+  const rivalAcc = match.totalRoundsPlayed > 0 ? Math.round((match.rivalCorrectCount / match.totalRoundsPlayed) * 100) : 0;
+
+  return (
+    <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", padding: "40px 20px" }}>
+      <div style={{ fontSize: 12, color: "#475569", letterSpacing: "0.1em", marginBottom: 8 }}>MATCH #{match.matchId.slice(0, 8).toUpperCase()}</div>
+
+      {/* VS Card */}
+      <div style={{
+        display: "flex", alignItems: "center", gap: 32, marginBottom: 24,
+        background: "rgba(15,23,42,0.9)", border: "2px solid #334155", borderRadius: 12,
+        padding: "24px 40px",
+      }}>
+        <div style={{ textAlign: "center" }}>
+          <RetroCharacter char={playerChar} state={isWin ? "victory" : isDraw ? "idle" : "defeat"} size={1.3} />
+          <div style={{ fontSize: 13, fontWeight: 700, color: playerChar.colors.accent, marginTop: 8 }}>{playerChar.name}</div>
+        </div>
+        <div style={{ textAlign: "center" }}>
+          <div style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.1em", marginBottom: 4 }}>VS</div>
+          <div style={{ fontSize: 28, fontWeight: 900, color: "#fbbf24", textShadow: "2px 2px 0 #92400e" }}>
+            {match.playerScore} - {match.rivalScore}
+          </div>
+        </div>
+        <div style={{ textAlign: "center" }}>
+          <RetroCharacter char={rivalChar} state={isWin ? "defeat" : isDraw ? "idle" : "victory"} size={1.3} flip />
+          <div style={{ fontSize: 13, fontWeight: 700, color: rivalChar.colors.accent, marginTop: 8 }}>{match.rivalName}</div>
+        </div>
+      </div>
+
+      {/* Result */}
+      <div style={{
+        fontSize: 28, fontWeight: 900, letterSpacing: "0.15em", marginBottom: 24,
+        color: isWin ? "#10b981" : isDraw ? "#fbbf24" : "#ef4444",
+      }}>
+        {isWin ? "\uD83C\uDFC6 " : ""}{isWin ? "VICTORY" : isDraw ? "DRAW" : "DEFEAT"}
+      </div>
+
+      {/* Prediction Accuracy */}
+      <div style={{
+        background: "rgba(15,23,42,0.9)", border: "2px solid #334155", borderRadius: 8,
+        padding: "16px 32px", maxWidth: 400, width: "100%", marginBottom: 16, textAlign: "center",
+      }}>
+        <div style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.15em", marginBottom: 12 }}>PREDICTION ACCURACY</div>
+        <div style={{ display: "flex", justifyContent: "space-around" }}>
+          <div>
+            <div style={{ fontSize: 20, fontWeight: 900, color: playerChar.colors.accent }}>{match.playerCorrectCount}/{match.totalRoundsPlayed}</div>
+            <div style={{ fontSize: 10, color: "#64748b" }}>{playerChar.name}</div>
+          </div>
+          <div>
+            <div style={{ fontSize: 20, fontWeight: 900, color: rivalChar.colors.accent }}>{match.rivalCorrectCount}/{match.totalRoundsPlayed}</div>
+            <div style={{ fontSize: 10, color: "#64748b" }}>{match.rivalName}</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Combat */}
+      <div style={{
+        background: "rgba(15,23,42,0.9)", border: "2px solid #334155", borderRadius: 8,
+        padding: "16px 32px", maxWidth: 400, width: "100%", marginBottom: 16, textAlign: "center",
+      }}>
+        <div style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.15em", marginBottom: 8 }}>COMBAT</div>
+        <div style={{ display: "flex", justifyContent: "space-around" }}>
+          <div>
+            <div style={{ fontSize: 16, fontWeight: 900, color: "#ef4444" }}>{match.knockouts ?? 0}</div>
+            <div style={{ fontSize: 10, color: "#64748b" }}>KNOCKOUTS</div>
+          </div>
+          <div>
+            <div style={{ fontSize: 16, fontWeight: 900, color: "#f59e0b" }}>{match.bestStreak ?? 0}</div>
+            <div style={{ fontSize: 10, color: "#64748b" }}>BEST STREAK</div>
+          </div>
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-around", marginTop: 8 }}>
+          <div>
+            <div style={{ fontSize: 12, color: "#10b981" }}>HP: {match.playerHP}/100</div>
+          </div>
+          <div>
+            <div style={{ fontSize: 12, color: "#ef4444" }}>HP: {match.rivalHP}/100</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Round-by-round */}
+      {match.rounds && match.rounds.length > 0 && (
+        <div style={{
+          background: "rgba(15,23,42,0.9)", border: "2px solid #334155", borderRadius: 8,
+          padding: "16px 32px", maxWidth: 500, width: "100%", marginBottom: 24,
+        }}>
+          <div style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.15em", marginBottom: 12, textAlign: "center" }}>ROUNDS</div>
+          <div style={{ display: "flex", gap: 4, justifyContent: "center", flexWrap: "wrap" }}>
+            {match.rounds.map((r: any) => (
+              <div key={r.roundNum} style={{
+                width: 36, height: 36, borderRadius: 4,
+                display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+                fontSize: 10, fontWeight: 700, lineHeight: 1.2,
+                background: r.playerCorrect ? "rgba(16,185,129,0.2)" : "rgba(239,68,68,0.2)",
+                border: `1px solid ${r.playerCorrect ? "#10b981" : "#ef4444"}`,
+                color: r.playerCorrect ? "#10b981" : "#ef4444",
+              }}>
+                {r.playerCorrect ? "\u2713" : "\u2717"}
+                <span style={{ fontSize: 8, opacity: 0.7 }}>{r.actual}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <button onClick={onBack} style={{ ...ctaButtonStyle, background: "transparent", border: "2px solid #475569", color: "#94a3b8", fontSize: 14, padding: "10px 28px" }}>
+        {"\u2190"} BACK TO HISTORY
+      </button>
     </div>
   );
 }

@@ -33,7 +33,10 @@ export type GamePhase =
   | "ROUND_EXECUTING"
   | "ROUND_REVEAL"
   | "ROUND_IMPACT"
-  | "MATCH_RESULT";
+  | "MATCH_RESULT"
+  | "PROFILE"
+  | "MATCH_HISTORY"
+  | "MATCH_DETAIL";
 
 export type GameMode = { id: string; name: string; icon: string; rounds: number; desc: string };
 

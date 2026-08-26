@@ -43,6 +43,9 @@ export interface GameActions {
   goToModeSelect: () => void;
   goToCharSelect: () => void;
   goToLeaderboard: () => void;
+  goToProfile: () => void;
+  goToMatchHistory: () => void;
+  goToMatchDetail: (matchId: string) => void;
   selectMode: (mode: GameMode) => void;
   selectChar: (char: CharacterDef) => void;
   confirmDuel: () => void;
@@ -98,6 +101,7 @@ export interface GameHook {
   lastDamage: { amount: number; target: "player" | "rival"; isCritical: boolean } | null;
   isFinalRound: boolean;
   koOverlay: string | null;
+  selectedMatchId: string | null;
   actions: GameActions;
 }
 
@@ -144,6 +148,7 @@ export function useGameState(): GameHook {
   const [lastDamage, setLastDamage] = useState<{ amount: number; target: "player" | "rival"; isCritical: boolean } | null>(null);
   const [isFinalRound, setIsFinalRound] = useState(false);
   const [koOverlay, setKoOverlay] = useState<string | null>(null);
+  const [selectedMatchId, setSelectedMatchId] = useState<string | null>(null);
 
   const animFrameRef = useRef<number>(0);
   const phaseTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
@@ -815,7 +820,10 @@ export function useGameState(): GameHook {
   const goToHome = useCallback(() => { clearAllTimers(); mp.actions.reset(); setPhase("HOME"); roundProcessedRef.current = []; lastServerPhaseKeyRef.current = null; }, [clearAllTimers, mp.actions]);
   const goToModeSelect = useCallback(() => { setPhase("MODE_SELECT"); }, []);
   const goToCharSelect = useCallback(() => { clearAllTimers(); mp.actions.reset(); setPhase("CHAR_SELECT"); roundProcessedRef.current = []; lastServerPhaseKeyRef.current = null; }, [clearAllTimers, mp.actions]);
-  const goToLeaderboard = useCallback(() => { setPhase("HOME"); }, []);
+  const goToLeaderboard = useCallback(() => { window.location.href = "/leaderboard"; }, []);
+  const goToProfile = useCallback(() => { setPhase("PROFILE"); }, []);
+  const goToMatchHistory = useCallback(() => { setPhase("MATCH_HISTORY"); }, []);
+  const goToMatchDetail = useCallback((matchId: string) => { setSelectedMatchId(matchId); setPhase("MATCH_DETAIL"); }, []);
   const selectMode = useCallback((m: GameMode) => { setMode(m); setPhase("CHAR_SELECT"); }, []);
   const selectChar = useCallback((c: CharacterDef) => { setPlayerChar(c); setPhase("DUEL_CONFIRM"); }, []);
   const confirmDuel = useCallback(() => { setPhase("PREDICTION_SELECT"); }, []);
@@ -906,8 +914,10 @@ export function useGameState(): GameHook {
     lastTxHash,
     playerHP, rivalHP, maxHP: MAX_HP,
     combatPhase, lastDamage, isFinalRound, koOverlay,
+    selectedMatchId,
     actions: {
       goToHome, goToModeSelect, goToCharSelect, goToLeaderboard,
+      goToProfile, goToMatchHistory, goToMatchDetail,
       selectMode, selectChar, confirmDuel, selectPrediction, selectDifficulty, makePrediction, rematch,
       joinMatchmaking, startPvPMatch, setReady, cancelMatchmaking, fightBotInstead,
     },

@@ -1,7 +1,9 @@
 import { connectToDatabase } from "@/db/connect";
 import { PlayerStats } from "@/db/models/PlayerStats";
+import { Match } from "@/db/models/Match";
 import { normalizeAddress } from "@/lib/addresses";
 import { jsonError } from "@/lib/syndicates";
+import { getRankLabel, getRankFromPoints } from "@/lib/rank";
 
 export const dynamic = "force-dynamic";
 
@@ -33,6 +35,8 @@ export async function GET(req: Request): Promise<Response> {
         currentStreak: 0,
         favoriteChar: "dreamer",
         lastPlayedAt: new Date(),
+        rankPoints: 500,
+        processedMatches: [],
       });
       stats = await PlayerStats.findById(addr).lean();
     }
@@ -41,29 +45,95 @@ export async function GET(req: Request): Promise<Response> {
       return jsonError(500, "failed to load player profile");
     }
 
-    const accuracy = stats.totalRounds > 0
+    const pvpAccuracy = stats.pvpRounds > 0
+      ? Math.round((stats.pvpCorrectPredictions / stats.pvpRounds) * 100)
+      : 0;
+    const botAccuracy = stats.botRounds > 0
+      ? Math.round((stats.botCorrectPredictions / stats.botRounds) * 100)
+      : 0;
+    const overallAccuracy = stats.totalRounds > 0
       ? Math.round((stats.correctPredictions / stats.totalRounds) * 100)
       : 0;
 
-    const rank = await PlayerStats.countDocuments({ totalWins: { $gt: stats.totalWins } }) + 1;
+    const rank = await PlayerStats.countDocuments({ rankPoints: { $gt: stats.rankPoints } }) + 1;
+    const rankInfo = getRankFromPoints(stats.rankPoints);
+    const rankLabel = getRankLabel(stats.rankPoints);
+
+    // Check for active match
+    const activeMatch = await Match.findOne({
+      $or: [{ playerAddress: addr }, { player2Address: addr }],
+      status: "ACTIVE",
+    }).lean();
 
     return Response.json({
       address: stats.address,
+      favoriteChar: stats.favoriteChar,
+      lastPlayedAt: stats.lastPlayedAt,
+      // Overall
+      totalMatches: stats.totalMatches,
       totalWins: stats.totalWins,
       totalLosses: stats.totalLosses,
       totalDraws: stats.totalDraws,
-      totalMatches: stats.totalMatches,
-      totalRounds: stats.totalRounds,
-      correctPredictions: stats.correctPredictions,
+      accuracy: overallAccuracy,
       longestStreak: stats.longestStreak,
-      currentStreak: stats.currentStreak,
-      favoriteChar: stats.favoriteChar,
-      accuracy,
-      rank,
-      lastPlayedAt: stats.lastPlayedAt,
+      // PvP
+      pvp: {
+        matches: stats.pvpMatches,
+        wins: stats.pvpWins,
+        losses: stats.pvpLosses,
+        draws: stats.pvpDraws,
+        rounds: stats.pvpRounds,
+        correctPredictions: stats.pvpCorrectPredictions,
+        accuracy: pvpAccuracy,
+      },
+      // Bot
+      bot: {
+        matches: stats.botMatches,
+        wins: stats.botWins,
+        losses: stats.botLosses,
+        draws: stats.botDraws,
+        rounds: stats.botRounds,
+        correctPredictions: stats.botCorrectPredictions,
+        accuracy: botAccuracy,
+      },
+      // Combat
+      knockouts: stats.knockouts,
+      timesKnockedOut: stats.timesKnockedOut,
+      // Rank
+      rankPoints: stats.rankPoints,
+      rank: rankInfo,
+      rankLabel,
+      leaderboardRank: rank,
+      // Active match
+      activeMatchId: activeMatch?._id ?? null,
     });
   } catch (err) {
     console.error("player profile failed", err);
     return jsonError(500, "failed to load player profile");
+  }
+}
+
+export async function PUT(req: Request): Promise<Response> {
+  let body: unknown;
+  try { body = await req.json(); } catch { return jsonError(400, "body must be JSON"); }
+
+  const { address, favoriteChar } = body as { address?: string; favoriteChar?: string };
+  if (!address || !address.startsWith("0x")) return jsonError(400, "address required");
+  if (!favoriteChar) return jsonError(400, "favoriteChar required");
+
+  try {
+    await connectToDatabase();
+    const addr = normalizeAddress(address);
+
+    await PlayerStats.findOneAndUpdate(
+      { _id: addr },
+      { $set: { favoriteChar } },
+      { upsert: true },
+    );
+
+    return Response.json({ ok: true, favoriteChar });
+  } catch (err) {
+    console.error("update profile failed", err);
+    return jsonError(500, "failed to update profile");
   }
 }

@@ -68,6 +68,7 @@ export async function POST(req: Request): Promise<Response> {
         winner,
         status: "COMPLETED",
         completedAt: new Date(),
+        statsProcessed: true,
       },
     });
 

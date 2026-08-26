@@ -5,6 +5,7 @@ import { normalizeAddress } from "@/lib/addresses";
 import { jsonError } from "@/lib/syndicates";
 import { executeGameRound, deriveRoundOutcome, type RoundExecutionResult } from "@/lib/operator";
 import { MARKETS } from "@/lib/markets";
+import { getPvpWinPoints } from "@/lib/rank";
 import { z } from "zod";
 import { isAddress } from "viem";
 
@@ -376,44 +377,76 @@ export interface MatchStateResponse {
 }
 
 async function updatePlayerStats(match: any, allRounds: any[], winner: string, now: Date) {
+  const matchId = match._id;
+
   // Player 1 stats
   const p1CorrectCount = allRounds.filter((r: any) => r.playerCorrect).length;
   const p1LongestStreak = computeLongestStreak(allRounds);
+  const p1Win = winner === "player";
+  const p1Draw = winner === "draw";
+  const p1RankDelta = getPvpWinPoints(p1Win, p1Draw);
+  const hasKO = allRounds.some((r: any) => r.ko);
+
   await PlayerStats.findOneAndUpdate(
     { _id: normalizeAddress(match.playerAddress) },
     {
       $setOnInsert: { address: normalizeAddress(match.playerAddress) },
       $inc: {
-        totalWins: winner === "player" ? 1 : 0,
-        totalLosses: winner === "rival" ? 1 : 0,
-        totalDraws: winner === "draw" ? 1 : 0,
+        totalWins: p1Win ? 1 : 0,
+        totalLosses: !p1Win && !p1Draw ? 1 : 0,
+        totalDraws: p1Draw ? 1 : 0,
         totalMatches: 1,
         totalRounds: allRounds.length,
         correctPredictions: p1CorrectCount,
+        pvpWins: p1Win ? 1 : 0,
+        pvpLosses: !p1Win && !p1Draw ? 1 : 0,
+        pvpDraws: p1Draw ? 1 : 0,
+        pvpMatches: 1,
+        pvpRounds: allRounds.length,
+        pvpCorrectPredictions: p1CorrectCount,
+        knockouts: hasKO && p1Win ? 1 : 0,
+        timesKnockedOut: hasKO && !p1Win ? 1 : 0,
+        rankPoints: p1RankDelta,
       },
       $max: { longestStreak: p1LongestStreak },
+      $addToSet: { processedMatches: matchId },
       $set: { lastPlayedAt: now, favoriteChar: match.playerChar },
     },
     { upsert: true },
   );
+
   // Player 2 stats (PvP only)
   if (match.opponentType === "player" && match.player2Address) {
     const p2CorrectCount = allRounds.filter((r: any) => r.rivalCorrect).length;
     const p2Rounds = allRounds.map((r: any) => ({ playerCorrect: r.rivalCorrect }));
     const p2LongestStreak = computeLongestStreak(p2Rounds);
+    const p2Win = winner === "rival";
+    const p2Draw = winner === "draw";
+    const p2RankDelta = getPvpWinPoints(p2Win, p2Draw);
+
     await PlayerStats.findOneAndUpdate(
       { _id: normalizeAddress(match.player2Address) },
       {
         $setOnInsert: { address: normalizeAddress(match.player2Address) },
         $inc: {
-          totalWins: winner === "rival" ? 1 : 0,
-          totalLosses: winner === "player" ? 1 : 0,
-          totalDraws: winner === "draw" ? 1 : 0,
+          totalWins: p2Win ? 1 : 0,
+          totalLosses: !p2Win && !p2Draw ? 1 : 0,
+          totalDraws: p2Draw ? 1 : 0,
           totalMatches: 1,
           totalRounds: allRounds.length,
           correctPredictions: p2CorrectCount,
+          pvpWins: p2Win ? 1 : 0,
+          pvpLosses: !p2Win && !p2Draw ? 1 : 0,
+          pvpDraws: p2Draw ? 1 : 0,
+          pvpMatches: 1,
+          pvpRounds: allRounds.length,
+          pvpCorrectPredictions: p2CorrectCount,
+          knockouts: hasKO && p2Win ? 1 : 0,
+          timesKnockedOut: hasKO && !p2Win ? 1 : 0,
+          rankPoints: p2RankDelta,
         },
         $max: { longestStreak: p2LongestStreak },
+        $addToSet: { processedMatches: matchId },
         $set: { lastPlayedAt: now, favoriteChar: match.player2Char || "dreamer" },
       },
       { upsert: true },

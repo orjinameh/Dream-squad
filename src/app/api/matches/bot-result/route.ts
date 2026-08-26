@@ -1,4 +1,5 @@
 import { connectToDatabase } from "@/db/connect";
+import { Match } from "@/db/models/Match";
 import { PlayerStats } from "@/db/models/PlayerStats";
 import { normalizeAddress } from "@/lib/addresses";
 import { jsonError } from "@/lib/syndicates";
@@ -7,6 +8,7 @@ import { isAddress } from "viem";
 
 const botResultSchema = z.object({
   idempotencyKey: z.string().min(1),
+  matchId: z.string().optional(),
   playerAddress: z.string().refine((v) => isAddress(v), "invalid address"),
   rounds: z.array(z.object({
     roundNum: z.number(),
@@ -20,6 +22,8 @@ const botResultSchema = z.object({
   rivalScore: z.number().int().min(0),
   winner: z.enum(["player", "rival", "draw"]),
   playerChar: z.string().min(1),
+  playerHP: z.number().optional(),
+  rivalHP: z.number().optional(),
 });
 
 function computeLongestStreak(rounds: Array<{ playerCorrect: boolean }>): number {
@@ -56,20 +60,48 @@ export async function POST(req: Request): Promise<Response> {
       return Response.json({ ok: true, winner: input.winner, deduped: true });
     }
 
+    // Mark match as completed if matchId provided
+    if (input.matchId) {
+      const match = await Match.findById(input.matchId);
+      if (match && match.status === "ACTIVE") {
+        const hasKO = input.rounds.some((r) => false); // bot matches don't track KO in rounds
+        await Match.findByIdAndUpdate(input.matchId, {
+          $set: {
+            playerScore: input.playerScore,
+            rivalScore: input.rivalScore,
+            winner: input.winner,
+            status: "COMPLETED",
+            completedAt: new Date(),
+            rounds: input.rounds,
+            statsProcessed: true,
+          },
+        });
+      }
+    }
+
     const correctCount = input.rounds.filter((r) => r.playerCorrect).length;
     const longestStreak = computeLongestStreak(input.rounds);
+    const winPoints = input.winner === "player" ? 1 : 0;
+    const lossPoints = input.winner === "rival" ? 1 : 0;
+    const drawPoints = input.winner === "draw" ? 1 : 0;
 
     await PlayerStats.findOneAndUpdate(
       { _id: address },
       {
         $setOnInsert: { address },
         $inc: {
-          totalWins: input.winner === "player" ? 1 : 0,
-          totalLosses: input.winner === "rival" ? 1 : 0,
-          totalDraws: input.winner === "draw" ? 1 : 0,
+          totalWins: winPoints,
+          totalLosses: lossPoints,
+          totalDraws: drawPoints,
           totalMatches: 1,
           totalRounds: input.rounds.length,
           correctPredictions: correctCount,
+          botWins: winPoints,
+          botLosses: lossPoints,
+          botDraws: drawPoints,
+          botMatches: 1,
+          botRounds: input.rounds.length,
+          botCorrectPredictions: correctCount,
         },
         $max: { longestStreak },
         $set: { lastPlayedAt: new Date(), favoriteChar: input.playerChar, lastBotResultKey: input.idempotencyKey },

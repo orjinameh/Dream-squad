@@ -82,6 +82,8 @@ export interface MatchDoc {
   rivalHP: number;
   playerStreak: number;
   rivalStreak: number;
+  // Stats idempotency
+  statsProcessed: boolean;
 }
 
 const ROUND_DURATION_MS = 10_000;
@@ -167,6 +169,7 @@ const MatchSchema = new Schema<MatchDoc>(
     rivalHP: { type: Number, default: 100 },
     playerStreak: { type: Number, default: 0 },
     rivalStreak: { type: Number, default: 0 },
+    statsProcessed: { type: Boolean, default: false },
   },
   { versionKey: false },
 );
