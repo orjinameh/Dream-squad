@@ -12,6 +12,7 @@ const createMatchSchema = z.object({
   rivalChar: z.string().min(1),
   mode: z.string().min(1),
   totalRounds: z.number().int().positive(),
+  botDifficulty: z.enum(["easy", "normal", "hard"]).optional(),
 });
 
 export async function POST(req: Request): Promise<Response> {
@@ -49,10 +50,11 @@ export async function POST(req: Request): Promise<Response> {
       mode: input.mode,
       totalRounds: input.totalRounds,
       currentRound: 1,
-      roundPhase: "WAITING",
+      roundPhase: "ACTIVE",
       roundStartTime: now,
       roundDeadline: deadline,
       status: "ACTIVE",
+      botDifficulty: input.botDifficulty ?? "normal",
     });
 
     return Response.json({

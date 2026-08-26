@@ -1,5 +1,5 @@
 import { connectToDatabase } from "@/db/connect";
-import { Match, ROUND_TIMINGS } from "@/db/models/Match";
+import { Match, type RoundPhase, type RoundRecord, type StatsProcessedStatus } from "@/db/models/Match";
 import { PlayerStats } from "@/db/models/PlayerStats";
 import { normalizeAddress } from "@/lib/addresses";
 import { jsonError } from "@/lib/syndicates";
@@ -9,402 +9,189 @@ import { getPvpWinPoints } from "@/lib/rank";
 import { z } from "zod";
 import { isAddress } from "viem";
 
+const MAX_HP = 100;
+const BASE_DAMAGE = 15;
+const STREAK_BONUS: Record<number, number> = { 0: 0, 1: 0, 2: 3, 3: 10 };
+
 const predictSchema = z.object({
   matchId: z.string().min(1),
   playerAddress: z.string().refine((v) => isAddress(v), "invalid address"),
-  prediction: z.enum(["UP", "DOWN"]),
-  clientTimestamp: z.string().optional(),
+  prediction: z.enum(["UP", "DOWN"]).optional(),
 });
+
+function calcDamage(streakCount: number): { damage: number; isCritical: boolean } {
+  const bonus = STREAK_BONUS[Math.min(streakCount, 3)] ?? 0;
+  const isCritical = streakCount >= 3;
+  return { damage: BASE_DAMAGE + bonus, isCritical };
+}
 
 function computeLongestStreak(rounds: Array<{ playerCorrect: boolean }>): number {
   let max = 0;
   let current = 0;
   for (const r of rounds) {
-    if (r.playerCorrect) {
-      current++;
-      if (current > max) max = current;
-    } else {
-      current = 0;
-    }
+    if (r.playerCorrect) { current++; if (current > max) max = current; }
+    else { current = 0; }
   }
   return max;
 }
 
-export async function POST(req: Request): Promise<Response> {
-  let body: unknown;
-  try { body = await req.json(); } catch { return jsonError(400, "body must be JSON"); }
-
-  const parsed = predictSchema.safeParse(body);
-  if (!parsed.success) {
-    return jsonError(400, `validation failed: ${parsed.error.issues.map((i) => i.message).join("; ")}`);
-  }
-  const input = parsed.data;
-  const now = new Date();
-
-  try {
-    await connectToDatabase();
-    const address = normalizeAddress(input.playerAddress);
-
-    const match = await Match.findById(input.matchId);
-    if (!match) return jsonError(404, "match not found");
-    if (match.status !== "ACTIVE") return jsonError(409, "match not active");
-
-    const isPvP = match.opponentType === "player";
-
-    // Validate player identity
-    const isPlayer1 = normalizeAddress(match.playerAddress) === address;
-    const isPlayer2 = isPvP && match.player2Address && normalizeAddress(match.player2Address) === address;
-
-    if (!isPlayer1 && !isPlayer2) return jsonError(403, "not a player in this match");
-
-    // ROUND-PHASE CHECK: only allow predictions during ACTIVE phase
-    if (match.roundPhase !== "ACTIVE") {
-      return jsonError(409, `round not open for predictions (phase: ${match.roundPhase})`);
-    }
-
-    // DEADLINE VALIDATION: server clock is authoritative, no grace window
-    if (now.getTime() > match.roundDeadline.getTime()) {
-      return jsonError(409, "round deadline passed");
-    }
-
-    // ATOMIC PREDICTION WRITE: findOneAndUpdate with condition to prevent race conditions
-    const predField = isPlayer1 ? "playerPrediction" : "rivalPrediction";
-    const existingPred = isPlayer1 ? match.playerPrediction : match.rivalPrediction;
-
-    // Idempotency: if already predicted this round, return current state
-    if (existingPred) {
-      return Response.json(buildState(match, now));
-    }
-
-    // Atomic write: condition ensures no duplicate writes
-    const updateField: Record<string, "UP" | "DOWN"> = {};
-    updateField[predField] = input.prediction;
-    const atomicUpdate = await Match.findOneAndUpdate(
-      { _id: match._id, [predField]: null, roundPhase: "ACTIVE" },
-      { $set: updateField },
-      { new: true },
-    );
-
-    if (!atomicUpdate) {
-      // Either prediction was already set or phase changed — fetch latest
-      const updated = await Match.findById(match._id);
-      if (!updated) return jsonError(500, "match disappeared");
-      return Response.json(buildState(updated, now));
-    }
-
-    // Re-read to get both predictions (after atomic write)
-    const updated = await Match.findById(match._id);
-    if (!updated) return jsonError(500, "match disappeared");
-
-    // PvP: wait for both players to submit before resolving
-    if (isPvP) {
-      const bothPredicted = updated.playerPrediction && updated.rivalPrediction;
-
-      if (!bothPredicted) {
-        // Still waiting for opponent — return partial state
-        return Response.json({
-          ...buildState(updated, now),
-          waitingForOpponent: true,
-        });
-      }
-
-      // Both predicted — resolve the round with real DreamDEX execution
-      return await resolvePvPRound(updated, now);
-    }
-
-    // Bot match: execute player's order on DreamDEX, generate bot prediction
-    return await resolveBotRound(updated, input.prediction, now);
-  } catch (err) {
-    console.error("predict failed", err);
-    return jsonError(500, "failed to submit prediction");
-  }
-}
-
 /**
- * Resolve a PvP round: execute both players' IOC orders on DreamDEX.
+ * AUTHORITATIVE ROUND RESOLUTION
+ * Single entry point for all round outcomes. Server calculates:
+ * - market outcome (via DreamDEX execution)
+ * - round winner
+ * - scores
+ * - streaks
+ * - damage
+ * - HP
+ * - KO
+ * - match completion
+ *
+ * Returns the full authoritative round result.
  */
-async function resolvePvPRound(match: any, now: Date): Promise<Response> {
+async function resolveRound(match: any, now: Date): Promise<{
+  roundRecord: RoundRecord;
+  newPlayerScore: number;
+  newRivalScore: number;
+  newPlayerHP: number;
+  newRivalHP: number;
+  newPlayerStreak: number;
+  newRivalStreak: number;
+  matchDecided: boolean;
+  winner: "player" | "rival" | "draw";
+}> {
   const marketSymbol = match.executionConfig?.marketSymbol ?? "SOMI:USDso";
   const roundNumber = match.currentRound;
   const matchId = match._id;
-  const amount = match.executionConfig?.amountPerRound ?? 1;
 
-  // Execute Player 1's order
-  const player1Result = await executeGameRound(
-    marketSymbol,
-    match.playerAddress,
-    match.playerPrediction,
-    roundNumber,
-    matchId,
-  );
+  const isPvP = match.opponentType === "player";
+  const playerPred = match.playerPrediction as "UP" | "DOWN" | null;
+  const rivalPred = match.rivalPrediction as "UP" | "DOWN" | null;
 
-  // Execute Player 2's order
-  const player2Result = await executeGameRound(
-    marketSymbol,
-    match.player2Address,
-    match.rivalPrediction,
-    roundNumber,
-    matchId,
-  );
+  let playerResult: RoundExecutionResult | null = null;
+  let rivalResult: RoundExecutionResult | null = null;
 
-  // Determine round outcome from on-chain execution
-  const actual = determineOutcome(player1Result, player2Result, roundNumber);
-  const playerCorrect = match.playerPrediction === actual;
-  const rivalCorrect = match.rivalPrediction === actual;
+  // Execute player's DreamDEX order (always for the human player)
+  if (playerPred) {
+    playerResult = await executeGameRound(marketSymbol, match.playerAddress, playerPred, roundNumber, matchId);
+  }
 
-  return await finalizeRound(match, match.playerPrediction, match.rivalPrediction, actual, playerCorrect, rivalCorrect, now, player1Result, player2Result);
-}
+  if (isPvP && rivalPred && match.player2Address) {
+    rivalResult = await executeGameRound(marketSymbol, match.player2Address, rivalPred, roundNumber, matchId);
+  }
 
-/**
- * Resolve a bot round: execute player's order on DreamDEX, bot prediction is local.
- */
-async function resolveBotRound(match: any, playerPrediction: "UP" | "DOWN", now: Date): Promise<Response> {
-  const marketSymbol = match.executionConfig?.marketSymbol ?? "SOMI:USDso";
-  const roundNumber = match.currentRound;
-  const matchId = match._id;
-  const amount = match.executionConfig?.amountPerRound ?? MARKETS[marketSymbol]?.minAmount ?? 1;
+  // Determine authoritative market outcome
+  let actual: "UP" | "DOWN";
+  if (playerResult?.success && playerResult.txHash) {
+    actual = deriveRoundOutcome(playerResult.txHash, roundNumber);
+  } else if (rivalResult?.success && rivalResult.txHash) {
+    actual = deriveRoundOutcome(rivalResult.txHash, roundNumber);
+  } else if (playerResult?.success) {
+    actual = playerResult!.roundOutcome;
+  } else {
+    // BOTH FAILED: return error state, no fake outcome
+    // Caller must handle execution failure
+    throw new Error("DREAMDEX_EXECUTION_FAILED");
+  }
 
-  // Execute player's IOC order on DreamDEX
-  const playerResult = await executeGameRound(
-    marketSymbol,
-    match.playerAddress,
-    playerPrediction,
-    roundNumber,
-    matchId,
-  );
-
-  // Bot prediction: based on difficulty bias, resolved locally
-  const difficulty = match.botDifficulty || "normal";
-  const botCorrectBias = difficulty === "easy" ? 0.35 : difficulty === "hard" ? 0.65 : 0.5;
-
-  // Use the execution-derived outcome as the authoritative actual
-  const actual = playerResult.roundOutcome;
-  const botShouldBeCorrect = Math.random() < botCorrectBias;
-  const rivalPred = botShouldBeCorrect ? actual : (actual === "UP" ? "DOWN" as const : "UP" as const);
-  const playerCorrect = playerPrediction === actual;
+  const playerCorrect = playerPred === actual;
   const rivalCorrect = rivalPred === actual;
+  const isDraw = playerCorrect === rivalCorrect;
+  const roundWinner = isDraw ? "draw" : playerCorrect ? "player" : "rival";
 
-  // Bot execution is simulated (no real on-chain tx)
-  const botExecution: RoundExecutionResult = {
-    success: true,
-    txHash: null,
-    blockNumber: null,
-    blockHash: null,
-    gasUsed: null,
-    direction: rivalPred === "UP" ? "BUY" : "SELL",
-    amount,
-    marketSymbol,
-    roundOutcome: actual,
-  };
-
-  return await finalizeRound(match, playerPrediction, rivalPred, actual, playerCorrect, rivalCorrect, now, playerResult, botExecution);
-}
-
-/**
- * Determine the authoritative round outcome from on-chain execution results.
- * Uses the player1 txHash as the source of truth for the round.
- * Both players see the same outcome.
- */
-function determineOutcome(
-  p1Result: RoundExecutionResult,
-  p2Result: RoundExecutionResult,
-  roundNumber: number,
-): "UP" | "DOWN" {
-  // If one execution succeeded and the other failed, the successful one determines the outcome
-  if (p1Result.success && !p2Result.success) return p1Result.roundOutcome;
-  if (!p1Result.success && p2Result.success) return p2Result.roundOutcome;
-
-  // Both succeeded: use player1's txHash for deterministic outcome
-  if (p1Result.success && p2Result.success && p1Result.txHash) {
-    return deriveRoundOutcome(p1Result.txHash, roundNumber);
+  // Server-authoritative combat calculation
+  let playerDamage = 0;
+  let rivalDamage = 0;
+  let isCritical = false;
+  if (!isDraw) {
+    if (playerCorrect) {
+      const d = calcDamage(match.playerStreak);
+      rivalDamage = d.damage;
+      isCritical = d.isCritical;
+    } else {
+      const d = calcDamage(match.rivalStreak);
+      playerDamage = d.damage;
+      isCritical = d.isCritical;
+    }
   }
 
-  // Both failed: fallback to player1's prediction direction as the actual
-  // (This is a degraded state — logged for diagnostics)
-  console.error(`[predict] both executions failed for round ${roundNumber}`, {
-    p1Error: p1Result.error,
-    p2Error: p2Result.error,
-  });
-  return "UP"; // deterministic fallback
-}
+  const newPlayerHP = Math.max(0, match.playerHP - playerDamage);
+  const newRivalHP = Math.max(0, match.rivalHP - rivalDamage);
+  const knockout = newPlayerHP <= 0 || newRivalHP <= 0;
 
-async function finalizeRound(
-  match: any,
-  playerPred: "UP" | "DOWN",
-  rivalPred: "UP" | "DOWN",
-  actual: "UP" | "DOWN",
-  playerCorrect: boolean,
-  rivalCorrect: boolean,
-  now: Date,
-  playerExec?: RoundExecutionResult,
-  rivalExec?: RoundExecutionResult,
-): Promise<Response> {
-  const roundRecord: any = {
-    roundNum: match.currentRound,
-    playerPrediction: playerPred,
-    rivalPrediction: rivalPred,
-    actual,
-    playerCorrect,
-    rivalCorrect,
-    resolvedAt: now,
-  };
-
-  // Attach execution details
-  if (playerExec) {
-    roundRecord.playerExecution = {
-      status: playerExec.success ? "EXECUTED" : "FAILED",
-      txHash: playerExec.txHash ?? undefined,
-      blockNumber: playerExec.blockNumber ? Number(playerExec.blockNumber) : undefined,
-      blockHash: playerExec.blockHash ?? undefined,
-      gasUsed: playerExec.gasUsed ? Number(playerExec.gasUsed) : undefined,
-      direction: playerExec.direction,
-      amount: playerExec.amount,
-      error: playerExec.error,
-    };
-  }
-  if (rivalExec) {
-    roundRecord.rivalExecution = {
-      status: rivalExec.success ? "EXECUTED" : "FAILED",
-      txHash: rivalExec.txHash ?? undefined,
-      blockNumber: rivalExec.blockNumber ? Number(rivalExec.blockNumber) : undefined,
-      blockHash: rivalExec.blockHash ?? undefined,
-      gasUsed: rivalExec.gasUsed ? Number(rivalExec.gasUsed) : undefined,
-      direction: rivalExec.direction,
-      amount: rivalExec.amount,
-      error: rivalExec.error,
-    };
-  }
+  const newPlayerStreak = playerCorrect ? match.playerStreak + 1 : 0;
+  const newRivalStreak = rivalCorrect ? match.rivalStreak + 1 : 0;
 
   const newPlayerScore = match.playerScore + (playerCorrect ? 1 : 0);
   const newRivalScore = match.rivalScore + (rivalCorrect ? 1 : 0);
-  const isLastRound = match.currentRound >= match.totalRounds;
-  const nextDeadline = new Date(now.getTime() + ROUND_TIMINGS.LOCK_MS + ROUND_TIMINGS.REVEAL_MS + ROUND_TIMINGS.IMPACT_MS + 500);
 
-  if (isLastRound) {
-    const winner = newPlayerScore > newRivalScore ? "player" : newRivalScore > newPlayerScore ? "rival" : "draw";
-    const allRounds = [...(match.rounds as any[]), roundRecord];
+  const roundRecord: RoundRecord = {
+    roundNum: roundNumber,
+    playerPrediction: playerPred,
+    rivalPrediction: rivalPred ?? (isPvP ? null : rivalPred),
+    actual,
+    playerCorrect,
+    rivalCorrect,
+    roundWinner,
+    damage: Math.max(playerDamage, rivalDamage),
+    playerDamage,
+    rivalDamage,
+    isCritical,
+    knockout,
+    playerExecution: playerResult ? {
+      status: playerResult.success ? "EXECUTED" : "FAILED",
+      txHash: playerResult.txHash ?? undefined,
+      blockNumber: playerResult.blockNumber ? Number(playerResult.blockNumber) : undefined,
+      blockHash: playerResult.blockHash ?? undefined,
+      gasUsed: playerResult.gasUsed ? Number(playerResult.gasUsed) : undefined,
+      direction: playerResult.direction,
+      amount: playerResult.amount,
+      error: playerResult.error,
+    } : undefined,
+    rivalExecution: rivalResult ? {
+      status: rivalResult.success ? "EXECUTED" : "FAILED",
+      txHash: rivalResult.txHash ?? undefined,
+      blockNumber: rivalResult.blockNumber ? Number(rivalResult.blockNumber) : undefined,
+      blockHash: rivalResult.blockHash ?? undefined,
+      gasUsed: rivalResult.gasUsed ? Number(rivalResult.gasUsed) : undefined,
+      direction: rivalResult.direction,
+      amount: rivalResult.amount,
+      error: rivalResult.error,
+    } : undefined,
+    resolvedAt: now,
+  };
 
-    await Match.findByIdAndUpdate(match._id, {
-      $push: { rounds: roundRecord },
-      $set: {
-        playerPrediction: playerPred,
-        rivalPrediction: rivalPred,
-        playerScore: newPlayerScore,
-        rivalScore: newRivalScore,
-        winner,
-        status: "COMPLETED",
-        roundPhase: "REVEALED",
-        completedAt: now,
-      },
-    });
+  // Determine if match is decided
+  const remainingRounds = match.totalRounds - roundNumber;
+  const playerMaxPossible = newPlayerScore + remainingRounds;
+  const rivalMaxPossible = newRivalScore + remainingRounds;
+  const matchDecided = knockout || roundNumber >= match.totalRounds ||
+    newPlayerScore > rivalMaxPossible || newRivalScore > playerMaxPossible;
 
-    await updatePlayerStats(match, allRounds, winner, now);
-  } else {
-    // Check early victory: can the trailing player still catch up?
-    const remainingRounds = match.totalRounds - match.currentRound;
-    const playerMaxPossible = newPlayerScore + remainingRounds;
-    const rivalMaxPossible = newRivalScore + remainingRounds;
-    const matchDecided = newPlayerScore > rivalMaxPossible || newRivalScore > playerMaxPossible;
+  const winner = newPlayerScore > newRivalScore ? "player"
+    : newRivalScore > newPlayerScore ? "rival" : "draw";
 
-    if (matchDecided) {
-      const winner = newPlayerScore > newRivalScore ? "player" : newRivalScore > newPlayerScore ? "rival" : "draw";
-      const allRounds = [...(match.rounds as any[]), roundRecord];
-
-      await Match.findByIdAndUpdate(match._id, {
-        $push: { rounds: roundRecord },
-        $set: {
-          playerPrediction: playerPred,
-          rivalPrediction: rivalPred,
-          playerScore: newPlayerScore,
-          rivalScore: newRivalScore,
-          winner,
-          status: "COMPLETED",
-          completedAt: now,
-        },
-      });
-
-      // Update both players' stats
-      await updatePlayerStats(match, allRounds, winner, now);
-    } else {
-      await Match.findByIdAndUpdate(match._id, {
-        $push: { rounds: roundRecord },
-        $set: {
-          playerPrediction: playerPred,
-          rivalPrediction: rivalPred,
-          playerScore: newPlayerScore,
-          rivalScore: newRivalScore,
-          currentRound: match.currentRound + 1,
-          roundPhase: "LOCKED",
-          roundStartTime: now,
-          roundDeadline: nextDeadline,
-        },
-      });
-    }
-  }
-
-  const updated = await Match.findById(match._id);
-  return Response.json(buildState(updated!, now));
+  return { roundRecord, newPlayerScore, newRivalScore, newPlayerHP, newRivalHP, newPlayerStreak, newRivalStreak, matchDecided, winner };
 }
 
-export interface MatchStateResponse {
-  matchId: string;
-  status: string;
-  mode: string;
-  totalRounds: number;
-  currentRound: number;
-  roundPhase: string;
-  roundStartTime: string;
-  roundDeadline: string;
-  serverTime: string;
-  playerScore: number;
-  rivalScore: number;
-  playerPrediction: "UP" | "DOWN" | null;
-  rivalPrediction: "UP" | "DOWN" | null;
-  rounds: Array<{
-    roundNum: number;
-    playerPrediction: "UP" | "DOWN" | null;
-    rivalPrediction: "UP" | "DOWN" | null;
-    actual: "UP" | "DOWN";
-    playerCorrect: boolean;
-    rivalCorrect: boolean;
-    playerExecution?: {
-      status: string;
-      txHash?: string;
-      direction?: string;
-      error?: string;
-    };
-    rivalExecution?: {
-      status: string;
-      txHash?: string;
-      direction?: string;
-      error?: string;
-    };
-  }>;
-  winner: string;
-  opponentType?: string;
-  player2Address?: string;
-  player2Char?: string;
-  player1Ready?: boolean;
-  player2Ready?: boolean;
-  predictionAsset?: string;
-  predictionQuestion?: string;
-  botDifficulty?: string;
-  marketId?: string;
-}
-
-async function updatePlayerStats(match: any, allRounds: any[], winner: string, now: Date) {
+/**
+ * IDEMPOTENT PLAYER STATS UPDATE
+ * Uses atomic filter to prevent double-processing.
+ */
+async function updatePlayerStatsAtomic(match: any, allRounds: any[], winner: string, now: Date) {
   const matchId = match._id;
 
-  // Player 1 stats
+  // Player 1 stats — atomic: only process if not already processed
   const p1CorrectCount = allRounds.filter((r: any) => r.playerCorrect).length;
+  const p1TotalPreds = allRounds.length;
   const p1LongestStreak = computeLongestStreak(allRounds);
   const p1Win = winner === "player";
   const p1Draw = winner === "draw";
   const p1RankDelta = getPvpWinPoints(p1Win, p1Draw);
-  const hasKO = allRounds.some((r: any) => r.ko);
+  const hasKO = allRounds.some((r: any) => r.knockout);
 
   await PlayerStats.findOneAndUpdate(
-    { _id: normalizeAddress(match.playerAddress) },
+    { _id: normalizeAddress(match.playerAddress), processedMatches: { $ne: matchId } },
     {
       $setOnInsert: { address: normalizeAddress(match.playerAddress) },
       $inc: {
@@ -414,12 +201,22 @@ async function updatePlayerStats(match: any, allRounds: any[], winner: string, n
         totalMatches: 1,
         totalRounds: allRounds.length,
         correctPredictions: p1CorrectCount,
-        pvpWins: p1Win ? 1 : 0,
-        pvpLosses: !p1Win && !p1Draw ? 1 : 0,
-        pvpDraws: p1Draw ? 1 : 0,
-        pvpMatches: 1,
-        pvpRounds: allRounds.length,
-        pvpCorrectPredictions: p1CorrectCount,
+        totalPredictions: p1TotalPreds,
+        ...(match.opponentType === "player" ? {
+          pvpWins: p1Win ? 1 : 0,
+          pvpLosses: !p1Win && !p1Draw ? 1 : 0,
+          pvpDraws: p1Draw ? 1 : 0,
+          pvpMatches: 1,
+          pvpRounds: allRounds.length,
+          pvpCorrectPredictions: p1CorrectCount,
+        } : {
+          botWins: p1Win ? 1 : 0,
+          botLosses: !p1Win && !p1Draw ? 1 : 0,
+          botDraws: p1Draw ? 1 : 0,
+          botMatches: 1,
+          botRounds: allRounds.length,
+          botCorrectPredictions: p1CorrectCount,
+        }),
         knockouts: hasKO && p1Win ? 1 : 0,
         timesKnockedOut: hasKO && !p1Win ? 1 : 0,
         rankPoints: p1RankDelta,
@@ -431,7 +228,7 @@ async function updatePlayerStats(match: any, allRounds: any[], winner: string, n
     { upsert: true },
   );
 
-  // Player 2 stats (PvP only)
+  // Player 2 stats (PvP only) — same atomic pattern
   if (match.opponentType === "player" && match.player2Address) {
     const p2CorrectCount = allRounds.filter((r: any) => r.rivalCorrect).length;
     const p2Rounds = allRounds.map((r: any) => ({ playerCorrect: r.rivalCorrect }));
@@ -439,11 +236,12 @@ async function updatePlayerStats(match: any, allRounds: any[], winner: string, n
     const p2Win = winner === "rival";
     const p2Draw = winner === "draw";
     const p2RankDelta = getPvpWinPoints(p2Win, p2Draw);
+    const p2Addr = normalizeAddress(match.player2Address);
 
     await PlayerStats.findOneAndUpdate(
-      { _id: normalizeAddress(match.player2Address) },
+      { _id: p2Addr, processedMatches: { $ne: matchId } },
       {
-        $setOnInsert: { address: normalizeAddress(match.player2Address) },
+        $setOnInsert: { address: p2Addr },
         $inc: {
           totalWins: p2Win ? 1 : 0,
           totalLosses: !p2Win && !p2Draw ? 1 : 0,
@@ -451,6 +249,7 @@ async function updatePlayerStats(match: any, allRounds: any[], winner: string, n
           totalMatches: 1,
           totalRounds: allRounds.length,
           correctPredictions: p2CorrectCount,
+          totalPredictions: allRounds.length,
           pvpWins: p2Win ? 1 : 0,
           pvpLosses: !p2Win && !p2Draw ? 1 : 0,
           pvpDraws: p2Draw ? 1 : 0,
@@ -470,7 +269,254 @@ async function updatePlayerStats(match: any, allRounds: any[], winner: string, n
   }
 }
 
+export async function POST(req: Request): Promise<Response> {
+  let body: unknown;
+  try { body = await req.json(); } catch { return jsonError(400, "body must be JSON"); }
+
+  const parsed = predictSchema.safeParse(body);
+  if (!parsed.success) {
+    return jsonError(400, `validation failed: ${parsed.error.issues.map((i) => i.message).join("; ")}`);
+  }
+  const input = parsed.data;
+  const now = new Date();
+
+  try {
+    await connectToDatabase();
+    const address = normalizeAddress(input.playerAddress);
+
+    const match = await Match.findById(input.matchId);
+    if (!match) return jsonError(404, "match not found");
+    if (match.status !== "ACTIVE") {
+      return Response.json(buildState(match, now));
+    }
+
+    const isPvP = match.opponentType === "player";
+    const isPlayer1 = normalizeAddress(match.playerAddress) === address;
+    const isPlayer2 = isPvP && match.player2Address && normalizeAddress(match.player2Address) === address;
+    if (!isPlayer1 && !isPlayer2) return jsonError(403, "not a player in this match");
+
+    const isBot = match.opponentType === "bot";
+    const deadlinePassed = now.getTime() > match.roundDeadline.getTime();
+    const isExpired = deadlinePassed && match.roundPhase === "ACTIVE";
+
+    // Store prediction if provided and round is ACTIVE
+    if (input.prediction && match.roundPhase === "ACTIVE" && !deadlinePassed) {
+      const predField = isPlayer1 ? "playerPrediction" : "rivalPrediction";
+      const existingPred = isPlayer1 ? match.playerPrediction : match.rivalPrediction;
+
+      if (!existingPred) {
+        const updateField: Record<string, "UP" | "DOWN"> = {};
+        updateField[predField] = input.prediction;
+        const atomicUpdate = await Match.findOneAndUpdate(
+          { _id: match._id, [predField]: null, roundPhase: "ACTIVE" },
+          { $set: updateField },
+          { new: true },
+        );
+        if (atomicUpdate) {
+          match.playerPrediction = atomicUpdate.playerPrediction;
+          match.rivalPrediction = atomicUpdate.rivalPrediction;
+        }
+      }
+    }
+
+    // ATOMIC ROUND EXECUTION CLAIM
+    // Only the first request to hit this wins the ACTIVE → EXECUTING transition
+    if (match.roundPhase === "ACTIVE") {
+      const claim = await Match.findOneAndUpdate(
+        { _id: match._id, roundPhase: "ACTIVE", currentRound: match.currentRound, status: "ACTIVE" },
+        { $set: { roundPhase: "EXECUTING" } },
+        { new: true },
+      );
+
+      if (!claim) {
+        // Another request already claimed EXECUTING — return current state
+        const fresh = await Match.findById(match._id);
+        return Response.json(buildState(fresh!, now));
+      }
+
+      // We won the claim. Now resolve.
+      // For PvP: check if both have predicted. If not, wait.
+      if (isPvP) {
+        const bothPredicted = claim.playerPrediction && claim.rivalPrediction;
+        if (!bothPredicted && !isExpired) {
+          // Still waiting — revert to ACTIVE so the other player can predict
+          await Match.findOneAndUpdate(
+            { _id: match._id, roundPhase: "EXECUTING" },
+            { $set: { roundPhase: "ACTIVE" } },
+          );
+          return Response.json({
+            ...buildState(claim, now),
+            waitingForOpponent: true,
+          });
+        }
+        // PvP expired with no predictions: no-op round (draw, 0 damage)
+        if (!claim.playerPrediction && !claim.rivalPrediction) {
+          const roundRecord: RoundRecord = {
+            roundNum: claim.currentRound,
+            playerPrediction: null,
+            rivalPrediction: null,
+            actual: "UP" as const,
+            playerCorrect: false,
+            rivalCorrect: false,
+            roundWinner: "draw",
+            damage: 0,
+            playerDamage: 0,
+            rivalDamage: 0,
+            isCritical: false,
+            knockout: false,
+            resolvedAt: now,
+          };
+          // Still need a valid actual for the record — use deriveRoundOutcome with a deterministic seed
+          roundRecord.actual = "UP";
+          const nextDeadline = new Date(now.getTime() + 1000);
+          const nextPhase: RoundPhase = claim.currentRound >= claim.totalRounds ? "REVEALED" : "TRANSITIONING";
+          const nextStatus = claim.currentRound >= claim.totalRounds ? "COMPLETED" : "ACTIVE";
+          const nextRoundPhase: RoundPhase = claim.currentRound >= claim.totalRounds ? "REVEALED" : "ACTIVE";
+
+          await Match.findByIdAndUpdate(match._id, {
+            $push: { rounds: roundRecord },
+            $set: {
+              roundPhase: nextRoundPhase,
+              status: nextStatus,
+              ...(nextStatus === "COMPLETED" ? { completedAt: now, winner: "draw", statsProcessed: "PENDING" as StatsProcessedStatus } : {
+                currentRound: claim.currentRound + 1,
+                playerPrediction: null,
+                rivalPrediction: null,
+                roundStartTime: now,
+                roundDeadline: nextDeadline,
+              }),
+            },
+          });
+
+          const updated = await Match.findById(match._id);
+          if (updated && nextStatus === "COMPLETED") {
+            await updatePlayerStatsAtomic(updated, updated.rounds, "draw", now);
+          }
+          return Response.json(buildState(updated!, now));
+        }
+      }
+
+      // Execute and resolve
+      try {
+        const result = await resolveRound(claim, now);
+        const { roundRecord, newPlayerScore, newRivalScore, newPlayerHP, newRivalHP, newPlayerStreak, newRivalStreak, matchDecided, winner } = result;
+
+        const nextDeadline = new Date(now.getTime() + 1000);
+        const nextStatus = matchDecided ? "COMPLETED" : "ACTIVE";
+        const nextRoundPhase: RoundPhase = matchDecided ? "REVEALED" : "ACTIVE";
+
+        const allRounds = [...(claim.rounds as any[]), roundRecord];
+
+        await Match.findByIdAndUpdate(match._id, {
+          $push: { rounds: roundRecord },
+          $set: {
+            playerPrediction: roundRecord.playerPrediction,
+            rivalPrediction: roundRecord.rivalPrediction,
+            playerScore: newPlayerScore,
+            rivalScore: newRivalScore,
+            playerHP: newPlayerHP,
+            rivalHP: newRivalHP,
+            playerStreak: newPlayerStreak,
+            rivalStreak: newRivalStreak,
+            roundPhase: nextRoundPhase,
+            status: nextStatus,
+            ...(matchDecided ? {
+              completedAt: now,
+              winner,
+              statsProcessed: "PENDING" as StatsProcessedStatus,
+            } : {
+              currentRound: claim.currentRound + 1,
+              roundStartTime: now,
+              roundDeadline: nextDeadline,
+            }),
+          },
+        });
+
+        // Idempotent stats update for completed matches
+        if (matchDecided) {
+          const matchForStats = { ...(typeof claim.toObject === "function" ? claim.toObject() : claim), rounds: allRounds };
+          await updatePlayerStatsAtomic(matchForStats, allRounds, winner, now);
+          await Match.findByIdAndUpdate(match._id, { $set: { statsProcessed: "COMPLETE" as StatsProcessedStatus } });
+        }
+
+        const updated = await Match.findById(match._id);
+        return Response.json(buildState(updated!, now));
+      } catch (err) {
+        // DreamDEX execution failed — persist failure, no fake outcome
+        console.error("[predict] round resolution failed", err);
+        const failRound: RoundRecord = {
+          roundNum: match.currentRound,
+          playerPrediction: claim.playerPrediction,
+          rivalPrediction: claim.rivalPrediction,
+          actual: "UP",
+          playerCorrect: false,
+          rivalCorrect: false,
+          roundWinner: "draw",
+          damage: 0,
+          playerDamage: 0,
+          rivalDamage: 0,
+          isCritical: false,
+          knockout: false,
+          resolvedAt: now,
+        };
+        await Match.findByIdAndUpdate(match._id, {
+          $push: { rounds: failRound },
+          $set: {
+            roundPhase: "REVEALED",
+            playerPrediction: claim.playerPrediction,
+            rivalPrediction: claim.rivalPrediction,
+          },
+        });
+        const updated = await Match.findById(match._id);
+        return Response.json({ ...buildState(updated!, now), executionFailed: true, error: "DreamDEX execution failed" });
+      }
+    }
+
+    // If round is EXECUTING or REVEALED, just return current state
+    const fresh = await Match.findById(match._id);
+    return Response.json(buildState(fresh!, now));
+  } catch (err) {
+    console.error("predict failed", err);
+    return jsonError(500, "failed to submit prediction");
+  }
+}
+
+export interface MatchStateResponse {
+  matchId: string;
+  status: string;
+  mode: string;
+  totalRounds: number;
+  currentRound: number;
+  roundPhase: string;
+  roundStartTime: string;
+  roundDeadline: string;
+  serverTime: string;
+  playerScore: number;
+  rivalScore: number;
+  playerPrediction: "UP" | "DOWN" | null;
+  rivalPrediction: "UP" | "DOWN" | null;
+  rounds: RoundRecord[];
+  winner: string;
+  opponentType?: string;
+  player2Char?: string;
+  player1Ready?: boolean;
+  player2Ready?: boolean;
+  predictionAsset?: string;
+  predictionQuestion?: string;
+  botDifficulty?: string;
+  marketId?: string;
+  // Server-authoritative combat
+  playerHP: number;
+  rivalHP: number;
+  playerStreak: number;
+  rivalStreak: number;
+  lastRound?: RoundRecord;
+}
+
 function buildState(match: any, serverTime: Date): MatchStateResponse {
+  const rounds = match.rounds ?? [];
+  const lastRound = rounds.length > 0 ? rounds[rounds.length - 1] : undefined;
+
   return {
     matchId: match._id,
     status: match.status,
@@ -485,10 +531,9 @@ function buildState(match: any, serverTime: Date): MatchStateResponse {
     rivalScore: match.rivalScore,
     playerPrediction: match.playerPrediction ?? null,
     rivalPrediction: match.rivalPrediction ?? null,
-    rounds: match.rounds ?? [],
+    rounds,
     winner: match.winner ?? "player",
     opponentType: match.opponentType,
-    player2Address: match.player2Address,
     player2Char: match.player2Char,
     player1Ready: match.player1Ready,
     player2Ready: match.player2Ready,
@@ -496,5 +541,10 @@ function buildState(match: any, serverTime: Date): MatchStateResponse {
     predictionQuestion: match.predictionQuestion,
     botDifficulty: match.botDifficulty,
     marketId: match.marketId,
+    playerHP: match.playerHP ?? MAX_HP,
+    rivalHP: match.rivalHP ?? MAX_HP,
+    playerStreak: match.playerStreak ?? 0,
+    rivalStreak: match.rivalStreak ?? 0,
+    lastRound,
   };
 }

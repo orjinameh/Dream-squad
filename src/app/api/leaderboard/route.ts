@@ -20,7 +20,8 @@ export async function GET(req: Request): Promise<Response> {
     if (address) {
       const stats = await PlayerStats.findById(address).lean();
       if (!stats) return Response.json({ player: null });
-      const accuracy = stats.pvpRounds > 0 ? Math.round((stats.pvpCorrectPredictions / stats.pvpRounds) * 100) : 0;
+      const totalPreds = stats.totalPredictions ?? stats.totalRounds;
+      const accuracy = totalPreds > 0 ? Math.round((stats.correctPredictions / totalPreds) * 100) : 0;
       return Response.json({
         player: {
           address: stats.address,
@@ -29,6 +30,7 @@ export async function GET(req: Request): Promise<Response> {
           totalDraws: stats.totalDraws,
           totalMatches: stats.totalMatches,
           correctPredictions: stats.correctPredictions,
+          totalPredictions: totalPreds,
           pvpWins: stats.pvpWins,
           pvpLosses: stats.pvpLosses,
           pvpMatches: stats.pvpMatches,
@@ -49,7 +51,7 @@ export async function GET(req: Request): Promise<Response> {
         sortConfig = { pvpWins: -1, totalWins: -1 };
         break;
       case "accuracy":
-        sortConfig = { pvpCorrectPredictions: -1, pvpRounds: -1 };
+        sortConfig = { correctPredictions: -1, totalPredictions: -1 };
         break;
       case "streak":
         sortConfig = { longestStreak: -1, pvpWins: -1 };
@@ -67,8 +69,8 @@ export async function GET(req: Request): Promise<Response> {
 
     return Response.json({
       leaderboard: leaders.map((p, i) => {
-        const pvpAccuracy = p.pvpRounds > 0 ? Math.round((p.pvpCorrectPredictions / p.pvpRounds) * 100) : 0;
-        const overallAccuracy = p.totalRounds > 0 ? Math.round((p.correctPredictions / p.totalRounds) * 100) : 0;
+        const totalPreds = p.totalPredictions ?? p.totalRounds;
+        const accuracy = totalPreds > 0 ? Math.round((p.correctPredictions / totalPreds) * 100) : 0;
         return {
           rank: i + 1,
           address: p.address,
@@ -79,9 +81,10 @@ export async function GET(req: Request): Promise<Response> {
           pvpLosses: p.pvpLosses,
           pvpMatches: p.pvpMatches,
           correctPredictions: p.correctPredictions,
+          totalPredictions: totalPreds,
           longestStreak: p.longestStreak,
           favoriteChar: p.favoriteChar,
-          accuracy: sort === "rank" || sort === "wins" ? pvpAccuracy : overallAccuracy,
+          accuracy,
           rankPoints: p.rankPoints,
           rankLabel: getRankLabel(p.rankPoints),
         };

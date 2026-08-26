@@ -23,7 +23,7 @@ export async function POST(req: Request): Promise<Response> {
     if (!match) return jsonError(404, "match not found");
     if (match.status !== "ACTIVE") return jsonError(400, "match not active");
 
-    // Determine which player this is
+    // Determine player identity from connected wallet
     const isPlayer1 = normalizeAddress(match.playerAddress) === addr;
     const isPlayer2 = match.player2Address && normalizeAddress(match.player2Address) === addr;
 
@@ -41,7 +41,7 @@ export async function POST(req: Request): Promise<Response> {
     }
 
     // If both ready, start the match
-    if (match.player1Ready && match.player2Ready) {
+    if (match.player1Ready && match.player2Ready && match.roundPhase === "WAITING") {
       const now = new Date();
       match.roundPhase = "ACTIVE";
       match.roundStartTime = now;
@@ -51,8 +51,14 @@ export async function POST(req: Request): Promise<Response> {
 
     await match.save();
 
+    // Perspective-safe response
+    const myReady = isPlayer1 ? match.player1Ready : match.player2Ready;
+    const opponentReady = isPlayer1 ? match.player2Ready : match.player1Ready;
+
     return Response.json({
       ready: true,
+      myReady,
+      opponentReady,
       bothReady: match.player1Ready && match.player2Ready,
       matchStatus: match.status,
       roundPhase: match.roundPhase,

@@ -10,6 +10,7 @@ export interface PlayerStatsDoc {
   totalMatches: number;
   totalRounds: number;
   correctPredictions: number;
+  totalPredictions: number;
   longestStreak: number;
   currentStreak: number;
   favoriteChar: string;
@@ -54,6 +55,7 @@ const PlayerStatsSchema = new Schema<PlayerStatsDoc>(
     totalMatches: { type: Number, default: 0 },
     totalRounds: { type: Number, default: 0 },
     correctPredictions: { type: Number, default: 0 },
+    totalPredictions: { type: Number, default: 0 },
     longestStreak: { type: Number, default: 0 },
     currentStreak: { type: Number, default: 0 },
     favoriteChar: { type: String, default: "dreamer" },

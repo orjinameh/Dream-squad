@@ -72,21 +72,21 @@ export interface RoundResult {
   rivalPredicted: Prediction;
   playerCorrect: boolean;
   rivalCorrect: boolean;
-  playerDamage?: number;
-  rivalDamage?: number;
-  isCritical?: boolean;
-  isDraw?: boolean;
-  knockout?: boolean;
+  playerDamage: number;
+  rivalDamage: number;
+  isCritical: boolean;
+  isDraw: boolean;
+  knockout: boolean;
   playerExecution?: {
-    status: "PENDING" | "EXECUTED" | "FAILED";
+    status: string;
     txHash?: string;
-    direction?: "BUY" | "SELL";
+    direction?: string;
     error?: string;
   };
   rivalExecution?: {
-    status: "PENDING" | "EXECUTED" | "FAILED";
+    status: string;
     txHash?: string;
-    direction?: "BUY" | "SELL";
+    direction?: string;
     error?: string;
   };
 }

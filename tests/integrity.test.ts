@@ -3,7 +3,7 @@ import { MongoMemoryServer } from "mongodb-memory-server";
 import mongoose from "mongoose";
 
 vi.mock("@/lib/warmup", () => ({
-  checkAccountWarmup: async (address: string) => ({ warm: true, balance: 10, minRequired: 0.05 }),
+  checkAccountWarmup: async () => ({ warm: true, balance: 10, minRequired: 0.05 }),
 }));
 
 vi.mock("@/lib/operator", () => ({
@@ -25,8 +25,7 @@ vi.mock("@/lib/operator", () => ({
 
 import { POST as createRoute } from "@/app/api/matches/create/route";
 import { POST as predictRoute } from "@/app/api/matches/predict/route";
-import { POST as botResultRoute } from "@/app/api/matches/bot-result/route";
-import { POST as resultRoute } from "@/app/api/matches/result/route";
+import { GET as stateRoute } from "@/app/api/matches/state/route";
 import { GET as activeRoute } from "@/app/api/matches/active/route";
 import { Match } from "@/db/models/Match";
 import { PlayerStats } from "@/db/models/PlayerStats";
@@ -83,11 +82,10 @@ async function createActiveBotMatch(player: string, totalRounds = 3): Promise<st
 }
 
 describe("Match Integrity — Exploit Tests", () => {
-  // 1. Duplicate prediction submission (race condition)
-  it("atomic prediction guard overwrites prediction only once", async () => {
+  // 1. Predict resolves atomically — second call returns state (not error)
+  it("atomic prediction claim resolves round exactly once", async () => {
     const matchId = await createActiveBotMatch(PLAYER_A, 3);
 
-    // Simulate concurrent duplicate requests — first should resolve the round
     const res1 = await predictRoute(jsonPost("/api/matches/predict", {
       matchId,
       playerAddress: PLAYER_A,
@@ -95,37 +93,35 @@ describe("Match Integrity — Exploit Tests", () => {
     }));
     expect(res1.status).toBe(200);
     const body1 = await res1.json();
-    // Bot round resolves immediately — score should reflect round 1 result
-    expect(body1.rounds.length).toBeGreaterThanOrEqual(1);
+    // Round resolved — scores updated, round advanced
+    expect(body1.rounds.length).toBe(1);
+    expect(body1.roundPhase).toBeDefined();
 
-    // Second predict: round is now LOCKED (advanced past round 1)
+    // Second predict: round already resolved, returns current state
     const res2 = await predictRoute(jsonPost("/api/matches/predict", {
       matchId,
       playerAddress: PLAYER_A,
       prediction: "DOWN",
     }));
-    // Should be rejected because round phase is no longer ACTIVE
-    expect(res2.status).toBe(409);
+    expect(res2.status).toBe(200); // Returns state, not error
   });
 
-  // 2. Late prediction after deadline
-  it("rejects prediction after round deadline", async () => {
+  // 2. Late prediction — server auto-resolves expired round
+  it("server auto-resolves expired bot round via predict", async () => {
     const matchId = await createActiveBotMatch(PLAYER_A, 3);
 
-    // Fast-forward the match deadline to the past
-    await Match.findByIdAndUpdate(matchId, {
-      roundDeadline: new Date(Date.now() - 10_000),
-    });
+    // Fast-forward deadline to past
+    await Match.findByIdAndUpdate(matchId, { roundDeadline: new Date(Date.now() - 10_000) });
 
     const res = await predictRoute(jsonPost("/api/matches/predict", {
       matchId,
       playerAddress: PLAYER_A,
       prediction: "UP",
     }));
-
-    expect(res.status).toBe(409);
+    // Server auto-resolves — returns 200 with resolved state
+    expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.error).toContain("deadline");
+    expect(body.rounds.length).toBeGreaterThanOrEqual(1);
   });
 
   // 3. Creating second match while one is active
@@ -146,44 +142,32 @@ describe("Match Integrity — Exploit Tests", () => {
     expect(body.error).toContain("already in an active match");
   });
 
-  // 4. Bot result idempotency (double settlement)
-  it("returns idempotent response on duplicate bot result submission", async () => {
-    const matchId = await createActiveBotMatch(PLAYER_A, 3);
+  // 3. Match completion via predict — stats processed once
+  it("match completes via predict and stats are updated", async () => {
+    const matchId = await createActiveBotMatch(PLAYER_A, 5);
     const addr = normalizeAddress(PLAYER_A);
 
-    const body = {
-      idempotencyKey: "test-bot-key-1",
-      matchId,
-      playerAddress: PLAYER_A,
-      rounds: [
-        { roundNum: 1, playerPrediction: "UP", rivalPrediction: "DOWN", actual: "UP", playerCorrect: true, rivalCorrect: false },
-        { roundNum: 2, playerPrediction: "DOWN", rivalPrediction: "DOWN", actual: "DOWN", playerCorrect: true, rivalCorrect: true },
-        { roundNum: 3, playerPrediction: "UP", rivalPrediction: "DOWN", actual: "UP", playerCorrect: true, rivalCorrect: false },
-      ],
-      playerScore: 3,
-      rivalScore: 1,
-      winner: "player",
-      playerChar: "dreamer",
-    };
+    let roundsPlayed = 0;
+    for (let i = 0; i < 5; i++) {
+      const res = await predictRoute(jsonPost("/api/matches/predict", {
+        matchId,
+        playerAddress: PLAYER_A,
+        prediction: "UP",
+      }));
+      expect(res.status).toBe(200);
+      roundsPlayed++;
+      const body = await res.json();
+      if (body.status === "COMPLETED") break;
+    }
 
-    const res1 = await botResultRoute(jsonPost("/api/matches/bot-result", body));
-    expect(res1.status).toBe(200);
-    const b1 = await res1.json();
-    expect(b1.deduped).toBeUndefined();
-
-    const res2 = await botResultRoute(jsonPost("/api/matches/bot-result", body));
-    expect(res2.status).toBe(200);
-    const b2 = await res2.json();
-    expect(b2.deduped).toBe(true);
-
-    // Verify stats weren't double-counted
-    const stats = await PlayerStats.findById(addr);
-    expect(stats!.botMatches).toBe(1);
-    expect(stats!.botWins).toBe(1);
+    const matchAfter = await Match.findById(matchId);
+    expect(matchAfter!.status).toBe("COMPLETED");
+    expect(matchAfter!.rounds.length).toBe(roundsPlayed);
+    expect(matchAfter!.statsProcessed).toBe("COMPLETE");
   });
 
-  // 5. PvP result idempotency (double settlement)
-  it("returns idempotent response on duplicate PvP result", async () => {
+  // 5. PvP result endpoint — returns server state, ignores client scores
+  it("result endpoint returns server-authoritative state", async () => {
     const addrB = normalizeAddress(PLAYER_B);
     const addrC = normalizeAddress(PLAYER_C);
     const matchId = `pvp-result-test-${Date.now()}`;
@@ -202,41 +186,27 @@ describe("Match Integrity — Exploit Tests", () => {
       playerScore: 2,
       rivalScore: 1,
       winner: "player",
-      status: "ACTIVE",
+      status: "COMPLETED",
       opponentType: "player",
       player2Address: addrC,
       player1Ready: true,
       player2Ready: true,
     });
 
-    const body = {
+    const { POST: resultRoute } = await import("@/app/api/matches/result/route");
+    const res = await resultRoute(jsonPost("/api/matches/result", {
       matchId,
       playerAddress: PLAYER_B,
-      rounds: [
-        { roundNum: 1, playerPrediction: "UP", rivalPrediction: "DOWN", actual: "UP", playerCorrect: true, rivalCorrect: false },
-        { roundNum: 2, playerPrediction: "DOWN", rivalPrediction: "UP", actual: "DOWN", playerCorrect: true, rivalCorrect: false },
-        { roundNum: 3, playerPrediction: "UP", rivalPrediction: "DOWN", actual: "DOWN", playerCorrect: false, rivalCorrect: true },
-      ],
-      playerScore: 2,
-      rivalScore: 1,
-    };
-
-    const res1 = await resultRoute(jsonPost("/api/matches/result", body));
-    expect(res1.status).toBe(200);
-
-    const res2 = await resultRoute(jsonPost("/api/matches/result", body));
-    expect(res2.status).toBe(200);
-    const b2 = await res2.json();
-    expect(b2.idempotent).toBe(true);
-
-    // Verify both players' stats exist
-    const stats1 = await PlayerStats.findById(addrB);
-    expect(stats1!.pvpMatches).toBe(1);
-    const stats2 = await PlayerStats.findById(addrC);
-    expect(stats2!.pvpMatches).toBe(1);
+    }));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    // Returns server-authoritative state, not client input
+    expect(body.winner).toBe("player");
+    expect(body.playerScore).toBe(2);
+    expect(body.rivalScore).toBe(1);
   });
 
-  // 6. Submitting prediction for non-participant match
+  // 6. Non-participant cannot predict
   it("rejects prediction from non-participant", async () => {
     const matchId = await createActiveBotMatch(PLAYER_A, 3);
 
@@ -251,43 +221,7 @@ describe("Match Integrity — Exploit Tests", () => {
     expect(body.error).toContain("not a player");
   });
 
-  // 7. Match settlement when already settled
-  it("prevents double match settlement", async () => {
-    const matchId = await createActiveBotMatch(PLAYER_A, 3);
-    const addr = normalizeAddress(PLAYER_A);
-
-    const body = {
-      idempotencyKey: "test-bot-key-2",
-      matchId,
-      playerAddress: PLAYER_A,
-      rounds: [
-        { roundNum: 1, playerPrediction: "UP", rivalPrediction: "DOWN", actual: "UP", playerCorrect: true, rivalCorrect: false },
-        { roundNum: 2, playerPrediction: "DOWN", rivalPrediction: "DOWN", actual: "DOWN", playerCorrect: true, rivalCorrect: true },
-        { roundNum: 3, playerPrediction: "UP", rivalPrediction: "DOWN", actual: "UP", playerCorrect: true, rivalCorrect: false },
-      ],
-      playerScore: 3,
-      rivalScore: 1,
-      winner: "player",
-      playerChar: "dreamer",
-    };
-
-    const res1 = await botResultRoute(jsonPost("/api/matches/bot-result", body));
-    expect(res1.status).toBe(200);
-
-    const matchAfter = await Match.findById(matchId);
-    expect(matchAfter!.status).toBe("COMPLETED");
-
-    // Second attempt with different key should still return idempotent
-    const res2 = await botResultRoute(jsonPost("/api/matches/bot-result", {
-      ...body,
-      idempotencyKey: "test-bot-key-3",
-    }));
-    expect(res2.status).toBe(200);
-    const b2 = await res2.json();
-    expect(b2.deduped).toBe(true);
-  });
-
-  // 8. DreamDEX double execution (idempotency guard)
+  // 8. DreamDEX idempotency guard
   it("executeGameRound returns cached result on duplicate call", async () => {
     const { executeGameRound } = await import("@/lib/operator");
     const fn = executeGameRound as any;
@@ -300,7 +234,7 @@ describe("Match Integrity — Exploit Tests", () => {
     expect(result2.txHash).toBe(txHash1);
   });
 
-  // Extra: active match endpoint doesn't leak opponent wallet
+  // 9. Active match doesn't leak wallet addresses
   it("active match response does not contain raw wallet addresses", async () => {
     await createActiveBotMatch(PLAYER_A, 3);
 

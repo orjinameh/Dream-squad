@@ -4,8 +4,10 @@ import { Schema, model } from "mongoose";
 export const MATCH_STATUS = ["ACTIVE", "COMPLETED", "ABANDONED"] as const;
 export type MatchStatus = (typeof MATCH_STATUS)[number];
 
-export const ROUND_PHASE = ["WAITING", "ACTIVE", "LOCKED", "REVEALED"] as const;
+export const ROUND_PHASE = ["WAITING", "ACTIVE", "EXECUTING", "REVEALED", "TRANSITIONING"] as const;
 export type RoundPhase = (typeof ROUND_PHASE)[number];
+
+export type StatsProcessedStatus = "PENDING" | "PROCESSING" | "COMPLETE" | "FAILED";
 
 export interface RoundRecord {
   roundNum: number;
@@ -14,6 +16,13 @@ export interface RoundRecord {
   actual: "UP" | "DOWN";
   playerCorrect: boolean;
   rivalCorrect: boolean;
+  // Server-authoritative combat
+  roundWinner: "player" | "rival" | "draw";
+  damage: number;
+  playerDamage: number;
+  rivalDamage: number;
+  isCritical: boolean;
+  knockout: boolean;
   // DreamDEX execution tracking
   playerExecution?: {
     status: "PENDING" | "EXECUTED" | "FAILED";
@@ -77,13 +86,13 @@ export interface MatchDoc {
     poolAddress: string;
     amountPerRound: number;
   };
-  // Combat state
+  // Server-authoritative combat state
   playerHP: number;
   rivalHP: number;
   playerStreak: number;
   rivalStreak: number;
-  // Stats idempotency
-  statsProcessed: boolean;
+  // Stats idempotency (lifecycle)
+  statsProcessed: StatsProcessedStatus;
 }
 
 const ROUND_DURATION_MS = 10_000;
@@ -99,6 +108,13 @@ const RoundSchema = new Schema<RoundRecord>(
     actual: { type: String, enum: ["UP", "DOWN"], required: true },
     playerCorrect: { type: Boolean, required: true },
     rivalCorrect: { type: Boolean, required: true },
+    // Server-authoritative combat
+    roundWinner: { type: String, enum: ["player", "rival", "draw"], required: true },
+    damage: { type: Number, default: 0 },
+    playerDamage: { type: Number, default: 0 },
+    rivalDamage: { type: Number, default: 0 },
+    isCritical: { type: Boolean, default: false },
+    knockout: { type: Boolean, default: false },
     playerExecution: {
       status: { type: String, enum: ["PENDING", "EXECUTED", "FAILED"] },
       txHash: { type: String },
@@ -164,12 +180,12 @@ const MatchSchema = new Schema<MatchDoc>(
       poolAddress: { type: String, default: "0x259fD6559214dd5aD3752322426eA9F9fABEFff4" },
       amountPerRound: { type: Number, default: 1 },
     },
-    // Combat state
+    // Server-authoritative combat state
     playerHP: { type: Number, default: 100 },
     rivalHP: { type: Number, default: 100 },
     playerStreak: { type: Number, default: 0 },
     rivalStreak: { type: Number, default: 0 },
-    statsProcessed: { type: Boolean, default: false },
+    statsProcessed: { type: String, enum: ["PENDING", "PROCESSING", "COMPLETE", "FAILED"], default: "PENDING" },
   },
   { versionKey: false },
 );

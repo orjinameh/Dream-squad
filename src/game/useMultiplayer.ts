@@ -14,7 +14,7 @@ export interface ServerMatchState {
   mode: string;
   totalRounds: number;
   currentRound: number;
-  roundPhase: "WAITING" | "ACTIVE" | "LOCKED" | "REVEALED";
+  roundPhase: "WAITING" | "ACTIVE" | "EXECUTING" | "REVEALED" | "TRANSITIONING";
   roundStartTime: string;
   roundDeadline: string;
   serverTime: string;
@@ -29,11 +29,57 @@ export interface ServerMatchState {
     actual: "UP" | "DOWN";
     playerCorrect: boolean;
     rivalCorrect: boolean;
+    roundWinner?: "player" | "rival" | "draw";
+    damage?: number;
+    playerDamage?: number;
+    rivalDamage?: number;
+    isCritical?: boolean;
+    knockout?: boolean;
+    playerExecution?: {
+      status: string;
+      txHash?: string;
+      direction?: string;
+      error?: string;
+    };
+    rivalExecution?: {
+      status: string;
+      txHash?: string;
+      direction?: string;
+      error?: string;
+    };
   }>;
   winner: string;
   playerChar?: string;
   rivalChar?: string;
   rivalName?: string;
+  // Server-authoritative combat
+  playerHP: number;
+  rivalHP: number;
+  playerStreak: number;
+  rivalStreak: number;
+  lastRound?: {
+    roundNum: number;
+    playerPrediction: "UP" | "DOWN" | null;
+    rivalPrediction: "UP" | "DOWN" | null;
+    actual: "UP" | "DOWN";
+    playerCorrect: boolean;
+    rivalCorrect: boolean;
+    roundWinner?: "player" | "rival" | "draw";
+    damage?: number;
+    playerDamage?: number;
+    rivalDamage?: number;
+    isCritical?: boolean;
+    knockout?: boolean;
+    playerExecution?: any;
+    rivalExecution?: any;
+  };
+  opponentType?: string;
+  hasOpponent?: boolean;
+  botDifficulty?: string;
+  player1Ready?: boolean;
+  player2Ready?: boolean;
+  predictionAsset?: string;
+  predictionQuestion?: string;
 }
 
 export interface CreateMatchResult {
@@ -237,7 +283,7 @@ export function useMultiplayer(): UseMultiplayerReturn {
         mode: input.mode,
         totalRounds: input.totalRounds,
         currentRound: 1,
-        roundPhase: "WAITING",
+        roundPhase: "ACTIVE",
         roundStartTime: data.roundStartTime,
         roundDeadline: data.roundDeadline,
         serverTime: data.serverTime,
@@ -250,6 +296,10 @@ export function useMultiplayer(): UseMultiplayerReturn {
         playerChar: input.playerChar,
         rivalChar: input.rivalChar,
         rivalName: input.rivalName,
+        playerHP: 100,
+        rivalHP: 100,
+        playerStreak: 0,
+        rivalStreak: 0,
       });
       startPolling(data.matchId);
       setIsLoading(false);
