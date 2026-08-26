@@ -2,10 +2,11 @@
 
 import { useState, useEffect } from "react";
 import { useGameState } from "./useGameState";
-import { RetroCharacter } from "./RetroCharacter";
+import { RetroCharacter, FlameBall } from "./RetroCharacter";
 import { CHARACTERS } from "./characters";
 import { GAME_MODES, PREDICTIONS, type GameMode, type PredictionConfig, type BotDifficulty, type FighterState } from "./types";
 import { WalletModal } from "@/components/WalletModal";
+import { MarketChart } from "./MarketChart";
 import { useMatchmaking } from "./useMatchmaking";
 import { useAccount } from "wagmi";
 import { useDreamDEX } from "./useDreamDEX";
@@ -738,7 +739,7 @@ function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
     }
     if (game.phase === "ROUND_IMPACT" && game.roundResult) {
       if (game.roundResult.isDraw) {
-        setImpactText("WEAPONS CLASH!");
+        setImpactText("SPELLS CLASH!");
       } else if (game.roundResult.playerCorrect) {
         setImpactText(game.roundResult.isCritical ? "CRITICAL STRIKE!" : game.playerStreak >= 4 ? "UNSTOPPABLE" : game.playerStreak === 3 ? "ON FIRE!" : game.playerStreak === 2 ? "COMBO!" : "STRIKE!");
       } else {
@@ -879,37 +880,56 @@ function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
           </div>
         )}
 
-        {/* Characters */}
+        {/* Characters — small, at edges */}
         {(game.phase !== "MATCH_INTRO" && !game.koOverlay) && (
           <div style={{
-            display: "flex", alignItems: "flex-end", justifyContent: "center",
-            gap: game.combatPhase === "clash" ? 20 : 80,
-            marginBottom: 24, position: "relative",
+            display: "flex", alignItems: "flex-end", justifyContent: "space-between",
+            width: "100%", maxWidth: 600, margin: "0 auto",
+            padding: "0 20px", marginBottom: 24, position: "relative",
+            minHeight: 120,
           }}>
             <div style={{
               textAlign: "center", position: "relative",
-              transform: game.combatPhase === "strike" && game.lastDamage?.target === "rival"
-                ? "translateX(20px)" : undefined,
-              transition: "transform 0.2s ease-out",
             }}>
-              <RetroCharacter char={game.playerChar!} state={game.playerCharState} size={2} aura={game.playerStreak >= 3 ? "#fbbf24" : undefined} />
-              <div style={{ fontSize: 11, color: game.playerChar?.colors.accent, letterSpacing: "0.1em", marginTop: 4 }}>{game.playerChar?.name}</div>
+              <RetroCharacter char={game.playerChar!} state={game.playerCharState} size={0.8} aura={game.playerStreak >= 3 ? "#fbbf24" : undefined} />
+              <div style={{ fontSize: 10, color: game.playerChar?.colors.accent, letterSpacing: "0.1em", marginTop: 4 }}>{game.playerChar?.name}</div>
               {game.lastDamage?.target === "player" && (
                 <DamageNumber amount={game.lastDamage.amount} isCritical={game.lastDamage.isCritical} />
               )}
             </div>
+
+            {/* Flame ball projectile during combat */}
+            <FlameBall
+              fromLeft={game.combatPhase === "strike"}
+              color={game.combatPhase === "strike" && game.lastDamage?.target === "rival"
+                ? (game.playerChar?.spell.color ?? "#fbbf24")
+                : (game.rivalChar?.spell.color ?? "#ef4444")}
+              active={game.combatPhase === "strike"}
+              size={1.2}
+            />
+
             <div style={{
               textAlign: "center", position: "relative",
-              transform: game.combatPhase === "strike" && game.lastDamage?.target === "player"
-                ? "translateX(-20px)" : undefined,
-              transition: "transform 0.2s ease-out",
             }}>
-              <RetroCharacter char={game.rivalChar!} state={game.rivalCharState} size={2} flip aura={game.rivalStreak >= 3 ? "#ef4444" : undefined} />
-              <div style={{ fontSize: 11, color: game.rivalChar?.colors.accent, letterSpacing: "0.1em", marginTop: 4 }}>{game.rivalName}</div>
+              <RetroCharacter char={game.rivalChar!} state={game.rivalCharState} size={0.8} flip aura={game.rivalStreak >= 3 ? "#ef4444" : undefined} />
+              <div style={{ fontSize: 10, color: game.rivalChar?.colors.accent, letterSpacing: "0.1em", marginTop: 4 }}>{game.rivalName}</div>
               {game.lastDamage?.target === "rival" && (
                 <DamageNumber amount={game.lastDamage.amount} isCritical={game.lastDamage.isCritical} />
               )}
             </div>
+          </div>
+        )}
+
+        {/* Market Chart — center of arena */}
+        {(game.phase === "ROUND_ACTIVE" || game.phase === "ROUND_LOCKED" || game.phase === "ROUND_REVEAL" || game.phase === "ROUND_IMPACT") && (
+          <div style={{ width: "100%", maxWidth: 400, margin: "0 auto 16px" }}>
+            <MarketChart
+              asset={game.selectedPrediction?.asset ?? "BTC"}
+              question={game.selectedPrediction?.question ?? "WILL BTC GO UP OR DOWN?"}
+              roundActive={game.phase === "ROUND_ACTIVE"}
+              roundDeadline={Date.now() + game.timeLeft * 1000}
+              size="compact"
+            />
           </div>
         )}
 
@@ -1144,55 +1164,6 @@ function MatchResult({ game, onRematch }: { game: ReturnType<typeof useGameState
   const won = game.playerScore > game.rivalScore;
   const draw = game.playerScore === game.rivalScore;
 
-  useEffect(() => {
-    if (game.roundHistory.length === 0 || !address) return;
-
-    if (game.isBotMatch) {
-      const idempotencyKey = `bot-${game.roundHistory.length}-${game.playerScore}-${game.rivalScore}-${game.mode?.id}`;
-      fetch("/api/matches/bot-result", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          idempotencyKey,
-          playerAddress: address,
-          rounds: game.roundHistory.map((r) => ({
-            roundNum: r.roundNum,
-            playerPrediction: r.playerPredicted,
-            rivalPrediction: r.rivalPredicted,
-            actual: r.actual,
-            playerCorrect: r.playerCorrect,
-            rivalCorrect: r.rivalCorrect,
-          })),
-          playerScore: game.playerScore,
-          rivalScore: game.rivalScore,
-          winner: won ? "player" : draw ? "draw" : "rival",
-          playerChar: game.playerChar?.id ?? "dreamer",
-        }),
-      }).catch(() => {});
-      return;
-    }
-
-    if (!game.matchId) return;
-    fetch("/api/matches/result", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        matchId: game.matchId,
-        playerAddress: address,
-        rounds: game.roundHistory.map((r) => ({
-          roundNum: r.roundNum,
-          playerPrediction: r.playerPredicted,
-          rivalPrediction: r.rivalPredicted,
-          actual: r.actual,
-          playerCorrect: r.playerCorrect,
-          rivalCorrect: r.rivalCorrect,
-        })),
-        playerScore: game.playerScore,
-        rivalScore: game.rivalScore,
-      }),
-    }).catch(() => {});
-  }, [game.matchId, game.roundHistory, game.playerScore, game.rivalScore, game.isBotMatch, game.mode, game.playerChar, game.rivalChar, won, draw, address]);
-
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "40px 20px" }}>
       {game.koOverlay && (
@@ -1267,6 +1238,33 @@ function MatchResult({ game, onRematch }: { game: ReturnType<typeof useGameState
             </div>
           ))}
         </div>
+      </div>
+
+      {/* Trading P&L */}
+      <div style={{
+        background: "rgba(15,23,42,0.9)", border: "2px solid #1e293b", borderRadius: 8,
+        padding: "12px 20px", marginBottom: 24, textAlign: "center", maxWidth: 320, width: "100%",
+      }}>
+        <div style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.1em", marginBottom: 6 }}>TRADING P&L</div>
+        {(() => {
+          const correct = game.roundHistory.filter((r) => r.playerCorrect && !r.isDraw).length;
+          const wrong = game.roundHistory.filter((r) => !r.playerCorrect && !r.isDraw).length;
+          const pnl = (correct * 0.8) - (wrong * 1.0);
+          return (
+            <>
+              <div style={{
+                fontSize: 22, fontWeight: 900,
+                color: pnl >= 0 ? "#10b981" : "#ef4444",
+                letterSpacing: "0.05em",
+              }}>
+                {pnl >= 0 ? "+" : ""}{pnl.toFixed(2)} STT
+              </div>
+              <div style={{ fontSize: 10, color: "#64748b", marginTop: 4 }}>
+                {correct} wins / {wrong} losses / {game.roundHistory.length - correct - wrong} draws
+              </div>
+            </>
+          );
+        })()}
       </div>
 
       <div style={{ display: "flex", gap: 16 }}>
@@ -1839,20 +1837,6 @@ const globalCSS = `
     30% { transform: translate(-50%, -50%) scale(1.3) rotate(5deg); opacity: 1; }
     60% { transform: translate(-50%, -50%) scale(0.95) rotate(-2deg); opacity: 1; }
     100% { transform: translate(-50%, -50%) scale(1) rotate(0deg); opacity: 0; }
-  }
-  @keyframes weaponSwing {
-    0% { transform: rotate(0deg); }
-    50% { transform: rotate(-60deg); }
-    100% { transform: rotate(0deg); }
-  }
-  @keyframes weaponClash {
-    0%, 100% { transform: rotate(0deg); }
-    50% { transform: rotate(-10deg); }
-  }
-  @keyframes weaponDrop {
-    0% { transform: rotate(0deg); filter: brightness(1); }
-    20% { transform: rotate(-15deg); filter: brightness(1.5); }
-    100% { transform: rotate(0deg); filter: brightness(1); }
   }
   @keyframes glow {
     0%, 100% { text-shadow: 0 0 10px currentColor; }

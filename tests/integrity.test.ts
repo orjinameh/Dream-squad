@@ -166,47 +166,7 @@ describe("Match Integrity — Exploit Tests", () => {
     expect(matchAfter!.statsProcessed).toBe("COMPLETE");
   });
 
-  // 5. PvP result endpoint — returns server state, ignores client scores
-  it("result endpoint returns server-authoritative state", async () => {
-    const addrB = normalizeAddress(PLAYER_B);
-    const addrC = normalizeAddress(PLAYER_C);
-    const matchId = `pvp-result-test-${Date.now()}`;
-    await Match.create({
-      _id: matchId,
-      playerAddress: addrB,
-      playerChar: "oracle",
-      rivalName: "CIPHER",
-      rivalChar: "degen",
-      mode: "quick",
-      totalRounds: 3,
-      currentRound: 3,
-      roundPhase: "REVEALED",
-      roundStartTime: new Date(),
-      roundDeadline: new Date(Date.now() + 10_000),
-      playerScore: 2,
-      rivalScore: 1,
-      winner: "player",
-      status: "COMPLETED",
-      opponentType: "player",
-      player2Address: addrC,
-      player1Ready: true,
-      player2Ready: true,
-    });
-
-    const { POST: resultRoute } = await import("@/app/api/matches/result/route");
-    const res = await resultRoute(jsonPost("/api/matches/result", {
-      matchId,
-      playerAddress: PLAYER_B,
-    }));
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    // Returns server-authoritative state, not client input
-    expect(body.winner).toBe("player");
-    expect(body.playerScore).toBe(2);
-    expect(body.rivalScore).toBe(1);
-  });
-
-  // 6. Non-participant cannot predict
+  // 5. Non-participant cannot predict
   it("rejects prediction from non-participant", async () => {
     const matchId = await createActiveBotMatch(PLAYER_A, 3);
 

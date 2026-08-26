@@ -1,6 +1,6 @@
 import { connectToDatabase } from "@/db/connect";
 import { PlayerStats } from "@/db/models/PlayerStats";
-import { jsonError } from "@/lib/syndicates";
+import { jsonError } from "@/lib/utils";
 import { getRankLabel } from "@/lib/rank";
 
 export const dynamic = "force-dynamic";

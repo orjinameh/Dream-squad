@@ -1,8 +1,10 @@
 import { connectToDatabase } from "@/db/connect";
 import { Match, type RoundPhase, type StatsProcessedStatus } from "@/db/models/Match";
+import { PlayerStats } from "@/db/models/PlayerStats";
 import { normalizeAddress } from "@/lib/addresses";
-import { jsonError } from "@/lib/syndicates";
+import { jsonError } from "@/lib/utils";
 import { deriveRoundOutcome } from "@/lib/operator";
+import { getPvpWinPoints } from "@/lib/rank";
 
 export const dynamic = "force-dynamic";
 
@@ -64,6 +66,9 @@ export async function GET(req: Request): Promise<Response> {
         });
 
         const updated = await Match.findById(matchId);
+        if (updated && isLastRound) {
+          await updateStatsForAutoResolved(updated, now);
+        }
         if (updated) {
           return Response.json(buildState(updated, now, isViewerP2, viewerAddress));
         }
@@ -77,6 +82,35 @@ export async function GET(req: Request): Promise<Response> {
     console.error("state failed", err);
     return jsonError(500, "failed to fetch state");
   }
+}
+
+async function updateStatsForAutoResolved(match: any, now: Date) {
+  const matchId = match._id;
+  const addr = normalizeAddress(match.playerAddress);
+
+  const totalWins = match.winner === "player" ? 1 : 0;
+  const totalLosses = match.winner === "rival" ? 1 : 0;
+  const totalDraws = match.winner === "draw" ? 1 : 0;
+  const isBot = match.opponentType === "bot";
+  const rankDelta = getPvpWinPoints(totalWins === 1, totalDraws === 1);
+
+  await PlayerStats.findOneAndUpdate(
+    { _id: addr, processedMatches: { $ne: matchId } },
+    {
+      $setOnInsert: { address: addr },
+      $inc: {
+        totalWins, totalLosses, totalDraws,
+        totalMatches: 1, totalRounds: match.totalRounds,
+        ...(isBot
+          ? { botWins: totalWins, botLosses: totalLosses, botDraws: totalDraws, botMatches: 1, botRounds: match.totalRounds }
+          : { pvpWins: totalWins, pvpLosses: totalLosses, pvpDraws: totalDraws, pvpMatches: 1, pvpRounds: match.totalRounds }),
+        rankPoints: rankDelta,
+      },
+      $addToSet: { processedMatches: matchId },
+      $set: { lastPlayedAt: now, favoriteChar: match.playerChar },
+    },
+    { upsert: true },
+  );
 }
 
 function buildState(match: any, serverTime: Date, isViewerP2: boolean, viewerAddress: string | null) {

@@ -2,24 +2,41 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import mongoose from "mongoose";
 
-// Keep tests hermetic: never hit the live RPC for warmup checks.
 vi.mock("@/lib/warmup", () => ({
-  checkAccountWarmup: async (address: string) => ({ warm: address.length > 0, balance: 1, minRequired: 0.05 }),
+  checkAccountWarmup: async () => ({ warm: true, balance: 10, minRequired: 0.05 }),
 }));
 
-import { POST as createRoute } from "@/app/api/syndicates/create/route";
-import { POST as joinRoute } from "@/app/api/syndicates/join/route";
-import { GET as statusRoute } from "@/app/api/syndicates/[id]/route";
+vi.mock("@/lib/operator", () => ({
+  executeGameRound: vi.fn(async () => ({
+    success: true,
+    txHash: "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+    blockNumber: 1000n,
+    blockHash: "0xhash",
+    gasUsed: 21000n,
+    direction: "BUY",
+    amount: 1,
+    marketSymbol: "SOMI:USDso",
+    roundOutcome: "UP" as const,
+  })),
+  deriveRoundOutcome: vi.fn(() => "UP" as const),
+  checkPlayerDelegation: vi.fn(async () => true),
+  ensurePlayerVault: vi.fn(async () => ({ funded: true, vaultTxHash: null })),
+}));
 
-const CREATOR = "0x9196d7670eea0CB723af11465d4285541a2eA86a";
-const JOINER_A = "0xdd68998C099f7570E59019ae35469E5603cEDA11";
-const JOINER_B = "0x66D913034C8F5A2C096c706C4f437A59ec73f016"; // any well-formed address
+import { POST as createRoute } from "@/app/api/matches/create/route";
+import { POST as predictRoute } from "@/app/api/matches/predict/route";
+import { GET as stateRoute } from "@/app/api/matches/state/route";
+import { GET as leaderboardRoute } from "@/app/api/leaderboard/route";
+import { Match } from "@/db/models/Match";
+import { normalizeAddress } from "@/lib/addresses";
 
 let mongo: MongoMemoryServer;
+const PLAYER = "0x9196d7670eea0CB723af11465d4285541a2eA86a";
 
 beforeAll(async () => {
   mongo = await MongoMemoryServer.create();
   process.env.MONGODB_URI = mongo.getUri();
+  await mongoose.connect(mongo.getUri());
 });
 
 afterAll(async () => {
@@ -27,7 +44,7 @@ afterAll(async () => {
   await mongo.stop();
 });
 
-function jsonReq(url: string, body: unknown): Request {
+function jsonPost(url: string, body: unknown): Request {
   return new Request(`http://test${url}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -35,133 +52,113 @@ function jsonReq(url: string, body: unknown): Request {
   });
 }
 
-async function createBatch(amount = 1) {
-  const res = await createRoute(
-    jsonReq("/api/syndicates/create", {
-      creatorAddress: CREATOR,
-      market: "SOMI:USDso",
-      direction: "BUY",
-      durationSeconds: 300,
-      amount,
-    }),
-  );
-  return { res, body: await res.json() };
+function jsonGet(url: string): Request {
+  return new Request(`http://test${url}`);
 }
 
-describe("POST /api/syndicates/create", () => {
-  it("creates a batch + creator intent and returns the invite id", async () => {
-    const { res, body } = await createBatch(2);
+describe("POST /api/matches/create", () => {
+  it("creates a bot match and returns match info", async () => {
+    const res = await createRoute(jsonPost("/api/matches/create", {
+      playerAddress: PLAYER,
+      playerChar: "dreamer",
+      rivalName: "BOT",
+      rivalChar: "oracle",
+      mode: "quick",
+      totalRounds: 3,
+    }));
     expect(res.status).toBe(201);
-    expect(body.batchId).toMatch(/^squad-somi-[0-9a-f]{4}$/);
-    expect(new Date(body.closesAt).getTime()).toBeGreaterThan(Date.now() + 250_000);
-    expect(body.totalPool).toBe(2);
-    expect(body.tradeId).toBeTruthy();
-  });
-
-  it("rejects amounts below the pool minimum before anything is saved", async () => {
-    const res = await createRoute(jsonReq("/api/syndicates/create", {
-      creatorAddress: CREATOR,
-      market: "SOMI:USDso",
-      direction: "BUY",
-      durationSeconds: 60,
-      amount: 0.05, // below minQty of 1 SOMI -- Phase 1 learning
-    }));
     const body = await res.json();
-    expect(res.status).toBe(400);
-    expect(body.error).toContain("below the pool minimum");
+    expect(body.matchId).toBeTruthy();
+    expect(body.roundStartTime).toBeTruthy();
+    expect(body.roundDeadline).toBeTruthy();
   });
 
-  it("rejects malformed input", async () => {
-    const res = await createRoute(jsonReq("/api/syndicates/create", {
-      creatorAddress: "not-an-address",
-      market: "SOMI:USDso",
-      direction: "SIDEWAYS",
-      durationSeconds: 45,
-      amount: -3,
+  it("rejects duplicate active matches for same wallet", async () => {
+    await createRoute(jsonPost("/api/matches/create", {
+      playerAddress: PLAYER,
+      playerChar: "dreamer",
+      rivalName: "BOT",
+      rivalChar: "oracle",
+      mode: "quick",
+      totalRounds: 3,
     }));
-    expect([400, 500]).toContain(res.status); // validation error path
-  });
-});
-
-describe("POST /api/syndicates/join", () => {
-  it("accumulates the pool atomically and reports the new total", async () => {
-    const { body: batch } = await createBatch(1);
-
-    const a = await joinRoute(jsonReq("/api/syndicates/join", {
-      userAddress: JOINER_A, batchId: batch.batchId, amount: 1.5,
+    const res = await createRoute(jsonPost("/api/matches/create", {
+      playerAddress: PLAYER,
+      playerChar: "dreamer",
+      rivalName: "BOT2",
+      rivalChar: "oracle",
+      mode: "quick",
+      totalRounds: 3,
     }));
-    expect(a.status).toBe(201);
-
-    const b = await joinRoute(jsonReq("/api/syndicates/join", {
-      userAddress: JOINER_B, batchId: batch.batchId, amount: 2,
-    }));
-    const bBody = await b.json();
-    expect(b.status).toBe(201);
-    expect(bBody.totalPool).toBeCloseTo(4.5); // 1 creator + 1.5 + 2
-  });
-
-  it("rejects a duplicate pledge and rolls back the pool reservation", async () => {
-    const { body: batch } = await createBatch(1);
-    await joinRoute(jsonReq("/api/syndicates/join", {
-      userAddress: JOINER_A, batchId: batch.batchId, amount: 1,
-    }));
-
-    const dup = await joinRoute(jsonReq("/api/syndicates/join", {
-      userAddress: JOINER_A, batchId: batch.batchId, amount: 5,
-    }));
-    expect(dup.status).toBe(409);
-
-    const status = await statusRoute(new Request(`http://test/x`), { params: Promise.resolve({ id: batch.batchId }) });
-    const sBody = await status.json();
-    expect(sBody.totalPool).toBe(2); // creator 1 + joiner 1, NOT +5
-  });
-
-  it("rejects pledges to an expired syndicate", async () => {
-    const { body: batch } = await createBatch(1);
-    // Force-expire directly in the DB; the worker will eventually sweep these.
-    const { Batch } = await import("@/db/models/Batch");
-    await Batch.findByIdAndUpdate(batch.batchId, { closesAt: new Date(Date.now() - 1000) });
-
-    const late = await joinRoute(jsonReq("/api/syndicates/join", {
-      userAddress: JOINER_A, batchId: batch.batchId, amount: 1,
-    }));
-    expect(late.status).toBe(409);
-  });
-
-  it("rejects under-sized pledges against the BATCH's market minimum", async () => {
-    const { body: batch } = await createBatch(1);
-    const small = await joinRoute(jsonReq("/api/syndicates/join", {
-      userAddress: JOINER_A, batchId: batch.batchId, amount: 0.01,
-    }));
-    expect(small.status).toBe(400);
+    expect(res.status).toBe(409);
   });
 });
 
-describe("GET /api/syndicates/[id]", () => {
-  it("returns scrubbed participants and pool volume", async () => {
-    const { body: batch } = await createBatch(1.25);
-    await joinRoute(jsonReq("/api/syndicates/join", {
-      userAddress: JOINER_A, batchId: batch.batchId, amount: 1,
-    }));
-
-    const res = await statusRoute(new Request("http://test/x"), {
-      params: Promise.resolve({ id: batch.batchId }),
+describe("POST /api/matches/predict", () => {
+  it("resolves a round and returns match state", async () => {
+    const matchId = `test-predict-${Date.now()}`;
+    const addr = normalizeAddress(PLAYER);
+    await Match.create({
+      _id: matchId,
+      playerAddress: addr,
+      playerChar: "dreamer",
+      rivalName: "BOT",
+      rivalChar: "oracle",
+      mode: "quick",
+      totalRounds: 3,
+      currentRound: 1,
+      roundPhase: "ACTIVE",
+      roundStartTime: new Date(),
+      roundDeadline: new Date(Date.now() + 60_000),
+      status: "ACTIVE",
+      opponentType: "bot",
     });
-    const body = await res.json();
 
+    const res = await predictRoute(jsonPost("/api/matches/predict", {
+      matchId,
+      playerAddress: PLAYER,
+      prediction: "UP",
+    }));
     expect(res.status).toBe(200);
-    expect(body.status).toBe("OPEN");
-    expect(body.creator).toMatch(/^0x9196\.\.\.A86a$/);
-    expect(body.participants).toBe(2);
-    expect(body.pledges.map((p: { user: string }) => p.user)).not.toContain(CREATOR);
-    expect(body.timeRemainingMs).toBeGreaterThan(0);
-    expect(body.receipt).toBeUndefined(); // only present once executed/failed
+    const body = await res.json();
+    expect(body.rounds.length).toBe(1);
+    expect(body.rounds[0].actual).toBeTruthy();
   });
+});
 
-  it("404s on an unknown slug", async () => {
-    const res = await statusRoute(new Request("http://test/x"), {
-      params: Promise.resolve({ id: "squad-nope-0000" }),
+describe("GET /api/matches/state", () => {
+  it("returns match state for active match", async () => {
+    const matchId = `test-state-${Date.now()}`;
+    const addr = normalizeAddress(PLAYER);
+    await Match.create({
+      _id: matchId,
+      playerAddress: addr,
+      playerChar: "dreamer",
+      rivalName: "BOT",
+      rivalChar: "oracle",
+      mode: "quick",
+      totalRounds: 3,
+      currentRound: 1,
+      roundPhase: "ACTIVE",
+      roundStartTime: new Date(),
+      roundDeadline: new Date(Date.now() + 60_000),
+      status: "ACTIVE",
+      opponentType: "bot",
     });
-    expect(res.status).toBe(404);
+
+    const res = await stateRoute(jsonGet(`/api/matches/state?matchId=${matchId}&address=${PLAYER}`));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.matchId).toBe(matchId);
+    expect(body.status).toBe("ACTIVE");
+  });
+});
+
+describe("GET /api/leaderboard", () => {
+  it("returns leaderboard data", async () => {
+    const res = await leaderboardRoute(jsonGet("/api/leaderboard?limit=10"));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(Array.isArray(body.leaderboard)).toBe(true);
   });
 });

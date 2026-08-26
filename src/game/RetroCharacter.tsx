@@ -13,7 +13,6 @@ interface Props {
 
 export function RetroCharacter({ char, state = "idle", flip = false, size = 1, aura }: Props) {
   const c = char.colors;
-  const w = char.weapon;
   const s = (px: number) => px * size;
 
   const animName =
@@ -122,7 +121,7 @@ export function RetroCharacter({ char, state = "idle", flip = false, size = 1, a
         }} />
       </div>
 
-      {/* Left Arm (weapon arm) */}
+      {/* Left Arm */}
       <div style={{
         position: "absolute", top: s(44), left: s(4),
         width: s(14), height: s(28),
@@ -140,7 +139,7 @@ export function RetroCharacter({ char, state = "idle", flip = false, size = 1, a
         }} />
       </div>
 
-      {/* Right Arm (shield arm) */}
+      {/* Right Arm */}
       <div style={{
         position: "absolute", top: s(44), right: s(4),
         width: s(14), height: s(28),
@@ -156,9 +155,6 @@ export function RetroCharacter({ char, state = "idle", flip = false, size = 1, a
           background: c.skin, border: `${Math.max(1, s(1))}px solid ${darken(c.skin, 30)}`,
         }} />
       </div>
-
-      {/* WEAPON */}
-      <WeaponRender weapon={w} state={state} size={size} flip={flip} />
 
       {/* Left Leg */}
       <div style={{
@@ -268,203 +264,64 @@ export function RetroCharacter({ char, state = "idle", flip = false, size = 1, a
           0% { transform: rotate(0deg); }
           100% { transform: rotate(360deg); }
         }
-        @keyframes weaponGlow {
-          0%, 100% { filter: brightness(1) drop-shadow(0 0 2px ${w.color1}); }
-          50% { filter: brightness(1.4) drop-shadow(0 0 6px ${w.color1}); }
-        }
       `}</style>
     </div>
   );
 }
 
-function WeaponRender({ weapon, state, size, flip }: {
-  weapon: CharacterDef["weapon"];
-  state: FighterState;
-  size: number;
-  flip: boolean;
-}) {
+interface FlameBallProps {
+  fromLeft: boolean;
+  color: string;
+  size?: number;
+  active: boolean;
+}
+
+export function FlameBall({ fromLeft, color, size = 1, active }: FlameBallProps) {
+  if (!active) return null;
+  
   const s = (px: number) => px * size;
-  const sc = weapon.size;
-  const isActive = state === "attack" || state === "windup";
-  const isClashing = state === "block";
-  const isHit = state === "hit" || state === "knockback" || state === "stunned";
-
-  const baseStyle: React.CSSProperties = {
-    position: "absolute",
-    top: s(38),
-    left: s(-2),
-    transformOrigin: "bottom center",
-    animation: isActive ? "weaponSwing 0.3s steps(3) infinite" :
-               isClashing ? "weaponClash 0.2s steps(2) infinite" :
-               isHit ? "weaponDrop 0.4s ease-out" :
-               "weaponGlow 2s ease-in-out infinite",
-    zIndex: 10,
-  };
-
-  switch (weapon.type) {
-    case "sword":
-      return (
-        <div style={baseStyle}>
-          {/* Blade */}
-          <div style={{
-            width: s(6 * sc), height: s(30 * sc),
-            background: `linear-gradient(180deg, ${lighten(weapon.color1, 40)}, ${weapon.color1}, ${darken(weapon.color1, 30)})`,
-            borderRadius: `${s(2)}px ${s(2)}px ${s(1)}px ${s(1)}px`,
-            border: `${Math.max(1, s(1))}px solid ${darken(weapon.color1, 40)}`,
-            boxShadow: `inset ${s(1)}px 0 0 ${lighten(weapon.color1, 30)}`,
-          }} />
-          {/* Crossguard */}
-          <div style={{
-            width: s(14 * sc), height: s(4 * sc), marginTop: s(-1),
-            background: weapon.color2,
-            borderRadius: s(2),
-            border: `${Math.max(1, s(1))}px solid ${darken(weapon.color2, 20)}`,
-          }} />
-          {/* Grip */}
-          <div style={{
-            width: s(4 * sc), height: s(8 * sc),
-            background: `linear-gradient(180deg, ${weapon.color2}, ${darken(weapon.color2, 20)})`,
-            borderRadius: s(2),
-            margin: "0 auto",
-          }} />
-        </div>
-      );
-
-    case "axe":
-      return (
-        <div style={baseStyle}>
-          {/* Handle */}
-          <div style={{
-            width: s(4 * sc), height: s(28 * sc),
-            background: `linear-gradient(180deg, ${weapon.color2}, ${darken(weapon.color2, 15)})`,
-            borderRadius: s(2),
-            margin: "0 auto",
-            border: `${Math.max(1, s(1))}px solid ${darken(weapon.color2, 30)}`,
-          }} />
-          {/* Axe head */}
-          <div style={{
-            position: "absolute", top: s(2), left: s(-6 * sc),
-            width: s(18 * sc), height: s(16 * sc),
-            background: `linear-gradient(135deg, ${lighten(weapon.color1, 20)}, ${weapon.color1}, ${darken(weapon.color1, 20)})`,
-            borderRadius: `${s(8)}px ${s(2)}px ${s(8)}px ${s(2)}px`,
-            border: `${Math.max(1, s(1))}px solid ${darken(weapon.color1, 30)}`,
-            clipPath: "polygon(50% 0%, 100% 30%, 100% 100%, 0% 100%, 0% 30%)",
-          }} />
-        </div>
-      );
-
-    case "hammer":
-      return (
-        <div style={baseStyle}>
-          {/* Handle */}
-          <div style={{
-            width: s(4 * sc), height: s(26 * sc),
-            background: `linear-gradient(180deg, ${weapon.color2}, ${darken(weapon.color2, 15)})`,
-            borderRadius: s(2),
-            margin: "0 auto",
-            border: `${Math.max(1, s(1))}px solid ${darken(weapon.color2, 30)}`,
-          }} />
-          {/* Hammer head */}
-          <div style={{
-            position: "absolute", top: s(0), left: s(-8 * sc),
-            width: s(22 * sc), height: s(12 * sc),
-            background: `linear-gradient(180deg, ${lighten(weapon.color1, 15)}, ${weapon.color1}, ${darken(weapon.color1, 20)})`,
-            borderRadius: s(3),
-            border: `${Math.max(1, s(1))}px solid ${darken(weapon.color1, 30)}`,
-            boxShadow: `inset ${s(2)}px ${s(1)}px 0 ${lighten(weapon.color1, 30)}`,
-          }} />
-        </div>
-      );
-
-    case "spear":
-      return (
-        <div style={baseStyle}>
-          {/* Shaft */}
-          <div style={{
-            width: s(3 * sc), height: s(36 * sc),
-            background: `linear-gradient(180deg, ${weapon.color2}, ${darken(weapon.color2, 10)})`,
-            borderRadius: s(1),
-            margin: "0 auto",
-            border: `${Math.max(1, s(0.5))}px solid ${darken(weapon.color2, 20)}`,
-          }} />
-          {/* Spearhead */}
-          <div style={{
-            position: "absolute", top: s(-2), left: s(-3 * sc),
-            width: s(8 * sc), height: s(10 * sc),
-            background: `linear-gradient(180deg, ${lighten(weapon.color1, 30)}, ${weapon.color1})`,
-            clipPath: "polygon(50% 0%, 100% 100%, 0% 100%)",
-            filter: `drop-shadow(0 0 3px ${weapon.color1})`,
-          }} />
-        </div>
-      );
-
-    case "energy-staff":
-      return (
-        <div style={baseStyle}>
-          {/* Staff shaft */}
-          <div style={{
-            width: s(3 * sc), height: s(34 * sc),
-            background: `linear-gradient(180deg, ${weapon.color2}, ${darken(weapon.color2, 10)})`,
-            borderRadius: s(1),
-            margin: "0 auto",
-            border: `${Math.max(1, s(0.5))}px solid ${darken(weapon.color2, 20)}`,
-          }} />
-          {/* Energy orb */}
-          <div style={{
-            position: "absolute", top: s(-4), left: s(-3 * sc),
-            width: s(10 * sc), height: s(10 * sc),
-            borderRadius: "50%",
-            background: `radial-gradient(circle at 30% 30%, ${lighten(weapon.color1, 60)}, ${weapon.color1}, ${darken(weapon.color1, 30)})`,
-            border: `${Math.max(1, s(1))}px solid ${lighten(weapon.color1, 20)}`,
-            boxShadow: `0 0 ${s(8)}px ${weapon.color1}, 0 0 ${s(16)}px ${weapon.color1}60`,
-          }} />
-        </div>
-      );
-
-    case "dual-daggers":
-      return (
-        <>
-          {/* Left dagger */}
-          <div style={{
-            ...baseStyle,
-            top: s(42),
-            left: s(-4),
-          }}>
-            <div style={{
-              width: s(4 * sc), height: s(18 * sc),
-              background: `linear-gradient(180deg, ${lighten(weapon.color1, 30)}, ${weapon.color1})`,
-              borderRadius: `${s(2)}px ${s(2)}px ${s(1)}px ${s(1)}px`,
-              border: `${Math.max(1, s(0.5))}px solid ${darken(weapon.color1, 30)}`,
-            }} />
-            <div style={{
-              width: s(10 * sc), height: s(3 * sc), marginTop: s(-0.5),
-              background: weapon.color2, borderRadius: s(1),
-            }} />
-          </div>
-          {/* Right dagger */}
-          <div style={{
-            ...baseStyle,
-            top: s(42),
-            left: s(72),
-            transform: "scaleX(-1)",
-          }}>
-            <div style={{
-              width: s(4 * sc), height: s(18 * sc),
-              background: `linear-gradient(180deg, ${lighten(weapon.color1, 30)}, ${weapon.color1})`,
-              borderRadius: `${s(2)}px ${s(2)}px ${s(1)}px ${s(1)}px`,
-              border: `${Math.max(1, s(0.5))}px solid ${darken(weapon.color1, 30)}`,
-            }} />
-            <div style={{
-              width: s(10 * sc), height: s(3 * sc), marginTop: s(-0.5),
-              background: weapon.color2, borderRadius: s(1),
-            }} />
-          </div>
-        </>
-      );
-
-    default:
-      return null;
-  }
+  
+  return (
+    <div style={{
+      position: "absolute",
+      top: "50%",
+      left: fromLeft ? "20%" : "auto",
+      right: fromLeft ? "auto" : "20%",
+      transform: "translateY(-50%)",
+      zIndex: 20,
+      animation: fromLeft ? "flameBallRight 0.3s ease-out forwards" : "flameBallLeft 0.3s ease-out forwards",
+    }}>
+      {/* Outer glow */}
+      <div style={{
+        width: s(24), height: s(24),
+        borderRadius: "50%",
+        background: `radial-gradient(circle at 40% 40%, ${color}, ${color}80, transparent)`,
+        boxShadow: `0 0 ${s(20)}px ${color}80, 0 0 ${s(40)}px ${color}40`,
+        animation: "flamePulse 0.15s ease-in-out infinite alternate",
+      }} />
+      {/* Inner core */}
+      <div style={{
+        position: "absolute", top: s(4), left: s(4),
+        width: s(16), height: s(16),
+        borderRadius: "50%",
+        background: `radial-gradient(circle at 30% 30%, #fff, ${color}, ${color}80)`,
+      }} />
+      <style>{`
+        @keyframes flameBallRight {
+          0% { left: 20%; opacity: 0.3; transform: translateY(-50%) scale(0.5); }
+          100% { left: 50%; opacity: 1; transform: translateY(-50%) scale(1); }
+        }
+        @keyframes flameBallLeft {
+          0% { right: 20%; opacity: 0.3; transform: translateY(-50%) scale(0.5); }
+          100% { right: 50%; opacity: 1; transform: translateY(-50%) scale(1); }
+        }
+        @keyframes flamePulse {
+          0% { transform: scale(0.9); }
+          100% { transform: scale(1.1); }
+        }
+      `}</style>
+    </div>
+  );
 }
 
 function darken(hex: string, pct: number): string {

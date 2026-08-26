@@ -39,7 +39,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
               <a href="/" style={{ fontSize: 12, color: "#94a3b8", letterSpacing: "0.1em", textDecoration: "none" }}>ARENA</a>
               <a href="/leaderboard" style={{ fontSize: 12, color: "#94a3b8", letterSpacing: "0.1em", textDecoration: "none" }}>RANKS</a>
-              <a href="/create" style={{ fontSize: 12, color: "#64748b", letterSpacing: "0.1em", textDecoration: "none" }}>SYNDICATES</a>
               <WalletButton />
             </div>
           </nav>

@@ -1,7 +1,5 @@
 import { type CharacterDef } from "./characters";
 
-export type WeaponType = "sword" | "axe" | "hammer" | "spear" | "energy-staff" | "dual-daggers";
-
 export type FighterState =
   | "idle"
   | "thinking"

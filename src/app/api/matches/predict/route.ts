@@ -2,7 +2,7 @@ import { connectToDatabase } from "@/db/connect";
 import { Match, type RoundPhase, type RoundRecord, type StatsProcessedStatus } from "@/db/models/Match";
 import { PlayerStats } from "@/db/models/PlayerStats";
 import { normalizeAddress } from "@/lib/addresses";
-import { jsonError } from "@/lib/syndicates";
+import { jsonError } from "@/lib/utils";
 import { executeGameRound, deriveRoundOutcome, type RoundExecutionResult } from "@/lib/operator";
 import { MARKETS } from "@/lib/markets";
 import { getPvpWinPoints } from "@/lib/rank";
@@ -65,8 +65,22 @@ async function resolveRound(match: any, now: Date): Promise<{
   const matchId = match._id;
 
   const isPvP = match.opponentType === "player";
+  const isBot = match.opponentType === "bot";
   const playerPred = match.playerPrediction as "UP" | "DOWN" | null;
-  const rivalPred = match.rivalPrediction as "UP" | "DOWN" | null;
+
+  // Bot prediction: generate based on difficulty BEFORE execution
+  let rivalPred: "UP" | "DOWN" | null = match.rivalPrediction as "UP" | "DOWN" | null;
+  if (isBot && !rivalPred) {
+    const difficulty = match.botDifficulty ?? "normal";
+    const accuracy = difficulty === "easy" ? 0.30 : difficulty === "hard" ? 0.70 : 0.50;
+    // Bot uses a simple bias: slightly favor UP (market uptrend) unless difficulty randomizes
+    const randomFactor = Math.random();
+    rivalPred = randomFactor < accuracy
+      ? (playerPred ?? "UP")  // Match player's likely correct prediction
+      : (playerPred === "UP" ? "DOWN" : "UP");  // Opposite of player
+    // Ensure bot always has a prediction
+    if (!rivalPred) rivalPred = Math.random() > 0.5 ? "UP" : "DOWN";
+  }
 
   let playerResult: RoundExecutionResult | null = null;
   let rivalResult: RoundExecutionResult | null = null;
@@ -75,6 +89,9 @@ async function resolveRound(match: any, now: Date): Promise<{
   if (playerPred) {
     playerResult = await executeGameRound(marketSymbol, match.playerAddress, playerPred, roundNumber, matchId);
   }
+
+  // Bot matches: bot's DreamDEX order is NOT executed on-chain (no real funds)
+  // Bot just predicts and outcome is derived from player's execution
 
   if (isPvP && rivalPred && match.player2Address) {
     rivalResult = await executeGameRound(marketSymbol, match.player2Address, rivalPred, roundNumber, matchId);
@@ -89,8 +106,6 @@ async function resolveRound(match: any, now: Date): Promise<{
   } else if (playerResult?.success) {
     actual = playerResult!.roundOutcome;
   } else {
-    // BOTH FAILED: return error state, no fake outcome
-    // Caller must handle execution failure
     throw new Error("DREAMDEX_EXECUTION_FAILED");
   }
 
@@ -128,7 +143,7 @@ async function resolveRound(match: any, now: Date): Promise<{
   const roundRecord: RoundRecord = {
     roundNum: roundNumber,
     playerPrediction: playerPred,
-    rivalPrediction: rivalPred ?? (isPvP ? null : rivalPred),
+    rivalPrediction: rivalPred,
     actual,
     playerCorrect,
     rivalCorrect,
@@ -180,15 +195,21 @@ async function resolveRound(match: any, now: Date): Promise<{
  */
 async function updatePlayerStatsAtomic(match: any, allRounds: any[], winner: string, now: Date) {
   const matchId = match._id;
+  const BET_PER_ROUND = match.executionConfig?.amountPerRound ?? 1;
+  const PAYOUT_MULTIPLIER = 1.8;
 
   // Player 1 stats — atomic: only process if not already processed
   const p1CorrectCount = allRounds.filter((r: any) => r.playerCorrect).length;
+  const p1WrongCount = allRounds.filter((r: any) => !r.playerCorrect && r.playerPrediction).length;
   const p1TotalPreds = allRounds.length;
   const p1LongestStreak = computeLongestStreak(allRounds);
   const p1Win = winner === "player";
   const p1Draw = winner === "draw";
   const p1RankDelta = getPvpWinPoints(p1Win, p1Draw);
   const hasKO = allRounds.some((r: any) => r.knockout);
+
+  // P&L: correct prediction = +bet*(multiplier-1), wrong = -bet
+  const p1PnL = (p1CorrectCount * BET_PER_ROUND * (PAYOUT_MULTIPLIER - 1)) - (p1WrongCount * BET_PER_ROUND);
 
   await PlayerStats.findOneAndUpdate(
     { _id: normalizeAddress(match.playerAddress), processedMatches: { $ne: matchId } },
@@ -220,6 +241,8 @@ async function updatePlayerStatsAtomic(match: any, allRounds: any[], winner: str
         knockouts: hasKO && p1Win ? 1 : 0,
         timesKnockedOut: hasKO && !p1Win ? 1 : 0,
         rankPoints: p1RankDelta,
+        balance: p1PnL,
+        totalPnL: p1PnL,
       },
       $max: { longestStreak: p1LongestStreak },
       $addToSet: { processedMatches: matchId },
@@ -231,12 +254,14 @@ async function updatePlayerStatsAtomic(match: any, allRounds: any[], winner: str
   // Player 2 stats (PvP only) — same atomic pattern
   if (match.opponentType === "player" && match.player2Address) {
     const p2CorrectCount = allRounds.filter((r: any) => r.rivalCorrect).length;
+    const p2WrongCount = allRounds.filter((r: any) => !r.rivalCorrect && r.rivalPrediction).length;
     const p2Rounds = allRounds.map((r: any) => ({ playerCorrect: r.rivalCorrect }));
     const p2LongestStreak = computeLongestStreak(p2Rounds);
     const p2Win = winner === "rival";
     const p2Draw = winner === "draw";
     const p2RankDelta = getPvpWinPoints(p2Win, p2Draw);
     const p2Addr = normalizeAddress(match.player2Address);
+    const p2PnL = (p2CorrectCount * BET_PER_ROUND * (PAYOUT_MULTIPLIER - 1)) - (p2WrongCount * BET_PER_ROUND);
 
     await PlayerStats.findOneAndUpdate(
       { _id: p2Addr, processedMatches: { $ne: matchId } },
@@ -259,6 +284,8 @@ async function updatePlayerStatsAtomic(match: any, allRounds: any[], winner: str
           knockouts: hasKO && p2Win ? 1 : 0,
           timesKnockedOut: hasKO && !p2Win ? 1 : 0,
           rankPoints: p2RankDelta,
+          balance: p2PnL,
+          totalPnL: p2PnL,
         },
         $max: { longestStreak: p2LongestStreak },
         $addToSet: { processedMatches: matchId },

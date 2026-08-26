@@ -2,7 +2,7 @@ import { connectToDatabase } from "@/db/connect";
 import { PlayerStats } from "@/db/models/PlayerStats";
 import { Match } from "@/db/models/Match";
 import { normalizeAddress } from "@/lib/addresses";
-import { jsonError } from "@/lib/syndicates";
+import { jsonError } from "@/lib/utils";
 import { getRankLabel, getRankFromPoints } from "@/lib/rank";
 
 export const dynamic = "force-dynamic";

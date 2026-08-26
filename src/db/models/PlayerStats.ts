@@ -40,7 +40,10 @@ export interface PlayerStatsDoc {
   timesKnockedOut: number;
   // Rank
   rankPoints: number;
-  // Idempotency: processed match IDs
+  // Balance & P&L (simulated STT balance)
+  balance: number;
+  totalPnL: number;
+  // Idempotency: processed match IDs (capped at 200 most recent)
   processedMatches: string[];
 }
 
@@ -84,7 +87,10 @@ const PlayerStatsSchema = new Schema<PlayerStatsDoc>(
     knockouts: { type: Number, default: 0 },
     timesKnockedOut: { type: Number, default: 0 },
     // Rank
-    rankPoints: { type: Number, default: 500 },
+    rankPoints: { type: Number, default: 0 },
+    // Balance & P&L
+    balance: { type: Number, default: 100 },
+    totalPnL: { type: Number, default: 0 },
     // Idempotency
     processedMatches: { type: [String], default: [] },
   },

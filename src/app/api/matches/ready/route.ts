@@ -1,7 +1,7 @@
 import { connectToDatabase } from "@/db/connect";
 import { Match, ROUND_TIMINGS } from "@/db/models/Match";
 import { normalizeAddress } from "@/lib/addresses";
-import { jsonError } from "@/lib/syndicates";
+import { jsonError } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
 
