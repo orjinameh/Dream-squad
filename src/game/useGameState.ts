@@ -54,7 +54,6 @@ export interface GameHook {
   rivalCharState: "idle" | "thinking" | "locked" | "attack" | "hit" | "victory" | "defeat";
   matchId: string | null;
   isBotMatch: boolean;
-  playerAddress: `0x${string}` | undefined;
   connectionStatus: ConnectionStatus;
   pingMs: number;
   predictionStatus: "idle" | "selected" | "submitting" | "confirmed" | "error";
@@ -64,7 +63,7 @@ export interface GameHook {
   actions: GameActions;
 }
 
-export function useGameState(walletAddress?: `0x${string}`): GameHook {
+export function useGameState(): GameHook {
   const mp = useMultiplayer();
 
   const [phase, setPhase] = useState<GamePhase>("HOME");
@@ -98,7 +97,7 @@ export function useGameState(walletAddress?: `0x${string}`): GameHook {
   const botRoundRef = useRef(0);
   const botScoresRef = useRef({ player: 0, rival: 0, pStreak: 0, rStreak: 0 });
   const enteredFromIntroRef = useRef(false);
-  const playerAddressRef = useRef<`0x${string}` | undefined>(walletAddress);
+  const localPredictionRef = useRef<Prediction>(null);
 
   const clearAllTimers = useCallback(() => {
     phaseTimersRef.current.forEach(clearTimeout);
@@ -107,6 +106,9 @@ export function useGameState(walletAddress?: `0x${string}`): GameHook {
   }, []);
 
   useEffect(() => () => { clearAllTimers(); cancelAnimationFrame(animFrameRef.current); }, [clearAllTimers]);
+
+  // Keep localPredictionRef in sync so resolveBotRound never reads stale value
+  useEffect(() => { localPredictionRef.current = localPrediction; }, [localPrediction]);
 
   const scheduleTimer = useCallback((fn: () => void, ms: number) => {
     const t = setTimeout(fn, ms);
@@ -137,7 +139,7 @@ export function useGameState(walletAddress?: `0x${string}`): GameHook {
   }, [scheduleTimer]);
 
   const resolveBotRound = useCallback((rNum: number, totalRounds: number) => {
-    const pred = localPrediction as "UP" | "DOWN";
+    const pred = localPredictionRef.current as "UP" | "DOWN";
     const actual = randomOutcome();
     const rivalPred = Math.random() < 0.5 ? ("UP" as const) : ("DOWN" as const);
     const playerCorrect = pred === actual;
@@ -297,7 +299,6 @@ export function useGameState(walletAddress?: `0x${string}`): GameHook {
     setTimeLeft(ROUND_TIME);
     setDisplayRound(1);
     setIsBotMatch(true);
-    playerAddressRef.current = walletAddress;
     enteredFromIntroRef.current = true;
 
     scheduleTimer(() => {
@@ -306,7 +307,6 @@ export function useGameState(walletAddress?: `0x${string}`): GameHook {
         setPhase("ROUND_ACTIVE");
         setPlayerCharState("thinking");
         setRivalCharState("thinking");
-        startBotTimer(mode?.rounds ?? 7);
       }, ROUND_TRANSITION_DELAY);
     }, MATCH_INTRO_DURATION);
   }, [playerChar, mode, scheduleTimer]);
@@ -396,7 +396,6 @@ export function useGameState(walletAddress?: `0x${string}`): GameHook {
     playerCharState, rivalCharState,
     matchId: isBotMatch ? null : (mp.state.serverState?.matchId ?? null),
     isBotMatch,
-    playerAddress: playerAddressRef.current ?? walletAddress,
     connectionStatus: connectionDisplay,
     pingMs: mp.state.pingMs,
     predictionStatus: mp.state.predictionStatus === "idle" ? predictionUIStatus : mp.state.predictionStatus,
