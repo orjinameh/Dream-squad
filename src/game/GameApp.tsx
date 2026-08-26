@@ -45,12 +45,14 @@ export default function GameApp() {
 
 function ConnectionIndicator({ status, pingMs }: { status: string; pingMs: number }) {
   const getColor = () => {
+    if (status === "local") return "#64748b";
     if (status === "offline") return "#475569";
     if (status === "reconnecting") return "#ef4444";
     if (status === "high") return "#f59e0b";
     return "#10b981";
   };
   const getLabel = () => {
+    if (status === "local") return "LOCAL BOT";
     if (status === "offline") return "OFFLINE";
     if (status === "reconnecting") return "RECONNECTING";
     if (status === "high") return "HIGH PING";
@@ -527,6 +529,56 @@ function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
 function MatchResult({ game }: { game: ReturnType<typeof useGameState> }) {
   const won = game.playerScore > game.rivalScore;
   const draw = game.playerScore === game.rivalScore;
+
+  useEffect(() => {
+    if (game.roundHistory.length === 0) return;
+
+    if (game.isBotMatch) {
+      // Bot match: submit to bot-result endpoint (no Match doc needed)
+      const idempotencyKey = `bot-${game.roundHistory.length}-${game.playerScore}-${game.rivalScore}-${game.mode?.id}`;
+      fetch("/api/matches/bot-result", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          idempotencyKey,
+          playerAddress: "0x0000000000000000000000000000000000000000",
+          rounds: game.roundHistory.map((r) => ({
+            roundNum: r.roundNum,
+            playerPrediction: r.playerPredicted,
+            rivalPrediction: r.rivalPredicted,
+            actual: r.actual,
+            playerCorrect: r.playerCorrect,
+            rivalCorrect: r.rivalCorrect,
+          })),
+          playerScore: game.playerScore,
+          rivalScore: game.rivalScore,
+          winner: won ? "player" : draw ? "draw" : "rival",
+          playerChar: game.playerChar?.id ?? "dreamer",
+        }),
+      }).catch(() => {});
+      return;
+    }
+
+    if (!game.matchId) return;
+    fetch("/api/matches/result", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        matchId: game.matchId,
+        playerAddress: "0x0000000000000000000000000000000000000000",
+        rounds: game.roundHistory.map((r) => ({
+          roundNum: r.roundNum,
+          playerPrediction: r.playerPredicted,
+          rivalPrediction: r.rivalPredicted,
+          actual: r.actual,
+          playerCorrect: r.playerCorrect,
+          rivalCorrect: r.rivalCorrect,
+        })),
+        playerScore: game.playerScore,
+        rivalScore: game.rivalScore,
+      }),
+    }).catch(() => {});
+  }, [game.matchId, game.roundHistory, game.playerScore, game.rivalScore, game.isBotMatch, game.mode, game.playerChar, game.rivalChar, won, draw]);
 
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "40px 20px" }}>

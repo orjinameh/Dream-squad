@@ -1,5 +1,6 @@
 import { connectToDatabase } from "@/db/connect";
 import { Match, ROUND_TIMINGS } from "@/db/models/Match";
+import { PlayerStats } from "@/db/models/PlayerStats";
 import { normalizeAddress } from "@/lib/addresses";
 import { jsonError } from "@/lib/syndicates";
 import { z } from "zod";
@@ -14,6 +15,20 @@ const predictSchema = z.object({
 
 function randomOutcome(): "UP" | "DOWN" {
   return Math.random() < 0.5 ? "UP" : "DOWN";
+}
+
+function computeLongestStreak(rounds: Array<{ playerCorrect: boolean }>): number {
+  let max = 0;
+  let current = 0;
+  for (const r of rounds) {
+    if (r.playerCorrect) {
+      current++;
+      if (current > max) max = current;
+    } else {
+      current = 0;
+    }
+  }
+  return max;
 }
 
 export async function POST(req: Request): Promise<Response> {
@@ -42,7 +57,7 @@ export async function POST(req: Request): Promise<Response> {
     }
 
     // IDEMPOTENCY: if already predicted this round, return current state
-    if (match.playerPrediction && match.currentRound === (await getCurrentRound(match))) {
+    if (match.playerPrediction && match.currentRound === match.currentRound) {
       return Response.json(buildState(match, now));
     }
 
@@ -66,11 +81,13 @@ export async function POST(req: Request): Promise<Response> {
     const newPlayerScore = match.playerScore + (playerCorrect ? 1 : 0);
     const newRivalScore = match.rivalScore + (rivalCorrect ? 1 : 0);
     const isLastRound = match.currentRound >= match.totalRounds;
-    const nextRound = match.currentRound + 1;
     const nextDeadline = new Date(now.getTime() + ROUND_TIMINGS.LOCK_MS + ROUND_TIMINGS.REVEAL_MS + ROUND_TIMINGS.IMPACT_MS + 500);
 
     if (isLastRound) {
       const winner = newPlayerScore > newRivalScore ? "player" : newRivalScore > newPlayerScore ? "rival" : "draw";
+      const allRounds = [...(match.rounds as any[]), roundRecord];
+
+      // Update match to COMPLETED
       await Match.findByIdAndUpdate(match._id, {
         $push: { rounds: roundRecord },
         $set: {
@@ -84,6 +101,28 @@ export async function POST(req: Request): Promise<Response> {
           completedAt: now,
         },
       });
+
+      // Update player stats in MongoDB (idempotent: only reached once because status check above blocks re-entry)
+      const correctCount = allRounds.filter((r) => r.playerCorrect).length;
+      const longestStreak = computeLongestStreak(allRounds);
+
+      await PlayerStats.findOneAndUpdate(
+        { _id: address },
+        {
+          $setOnInsert: { address },
+          $inc: {
+            totalWins: winner === "player" ? 1 : 0,
+            totalLosses: winner === "rival" ? 1 : 0,
+            totalDraws: winner === "draw" ? 1 : 0,
+            totalMatches: 1,
+            totalRounds: allRounds.length,
+            correctPredictions: correctCount,
+          },
+          $max: { longestStreak },
+          $set: { lastPlayedAt: now, favoriteChar: match.playerChar },
+        },
+        { upsert: true },
+      );
     } else {
       await Match.findByIdAndUpdate(match._id, {
         $push: { rounds: roundRecord },
@@ -106,10 +145,6 @@ export async function POST(req: Request): Promise<Response> {
     console.error("predict failed", err);
     return jsonError(500, "failed to submit prediction");
   }
-}
-
-async function getCurrentRound(match: any): Promise<number> {
-  return match.currentRound;
 }
 
 export interface MatchStateResponse {

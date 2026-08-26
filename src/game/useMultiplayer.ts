@@ -6,7 +6,7 @@ const POLL_INTERVAL_MS = 800;
 const PING_HISTORY_SIZE = 8;
 const RECONNECT_INTERVAL_MS = 1500;
 
-export type ConnectionStatus = "offline" | "connecting" | "good" | "high" | "reconnecting";
+export type ConnectionStatus = "local" | "offline" | "connecting" | "good" | "high" | "reconnecting";
 
 export interface ServerMatchState {
   matchId: string;
