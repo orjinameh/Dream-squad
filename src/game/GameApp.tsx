@@ -916,7 +916,7 @@ function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
         )}
 
         {/* Critical hit flash */}
-        {game.roundResult?.isCritical && game.combatPhase === "impact" && (
+        {game.roundResult?.isCritical && game.phase === "ROUND_IMPACT" && (
           <div style={{
             position: "absolute", top: "30%", left: "50%", transform: "translate(-50%, -50%)",
             fontSize: 36, fontWeight: 900, color: "#fbbf24", letterSpacing: "0.2em",
@@ -1032,7 +1032,7 @@ function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
                 onClick={() => game.actions.makePrediction("UP")}
                 style={{
                   ...predictionBtnStyle("#10b981"),
-                  opacity: game.playerPrediction === "UP" ? 1.2 : 1,
+                  filter: game.playerPrediction === "UP" ? "brightness(1.2)" : undefined,
                   transform: game.playerPrediction === "UP" ? "scale(1.05)" : undefined,
                   borderColor: game.playerPrediction === "UP" ? "#10b981" : undefined,
                   boxShadow: game.playerPrediction === "UP" ? "0 0 12px rgba(16,185,129,0.5)" : undefined,
@@ -1044,7 +1044,7 @@ function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
                 onClick={() => game.actions.makePrediction("DOWN")}
                 style={{
                   ...predictionBtnStyle("#ef4444"),
-                  opacity: game.playerPrediction === "DOWN" ? 1.2 : 1,
+                  filter: game.playerPrediction === "DOWN" ? "brightness(1.2)" : undefined,
                   transform: game.playerPrediction === "DOWN" ? "scale(1.05)" : undefined,
                   borderColor: game.playerPrediction === "DOWN" ? "#ef4444" : undefined,
                   boxShadow: game.playerPrediction === "DOWN" ? "0 0 12px rgba(239,68,68,0.5)" : undefined,
@@ -1182,17 +1182,20 @@ function MatchResult({ game, onRematch }: { game: ReturnType<typeof useGameState
     }).catch(() => {});
   }, [game.matchId, game.roundHistory, game.playerScore, game.rivalScore, game.isBotMatch, game.mode, game.playerChar, game.rivalChar, won, draw, address]);
 
-  const koRound = game.roundHistory.find((r) => r.knockout);
-
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "40px 20px" }}>
       {game.koOverlay && (
         <div style={{
           fontSize: 42, fontWeight: 900, color: "#ef4444", letterSpacing: "0.2em",
           textShadow: "3px 3px 0 #7f1d1d, 0 0 30px rgba(239,68,68,0.5)",
-          marginBottom: 8,
+          marginBottom: 4,
         }}>
           K.O.!
+        </div>
+      )}
+      {game.roundHistory.find((r) => r.knockout) && (
+        <div style={{ fontSize: 14, color: "#ef4444", marginBottom: 8, letterSpacing: "0.1em" }}>
+          KO in Round {game.roundHistory.find((r) => r.knockout)!.roundNum}
         </div>
       )}
       <h2 style={{ fontSize: 36, fontWeight: 900, letterSpacing: "0.15em", color: "#fbbf24", textShadow: "3px 3px 0 #92400e", marginBottom: 24, textAlign: "center" }}>
@@ -1244,12 +1247,12 @@ function MatchResult({ game, onRematch }: { game: ReturnType<typeof useGameState
               border: `1px solid ${r.isDraw ? "#fbbf24" : r.playerCorrect ? "#10b981" : "#ef4444"}`,
               color: r.isDraw ? "#fbbf24" : r.playerCorrect ? "#10b981" : "#ef4444",
             }}>
-              {r.isDraw ? "\u2694" : r.playerCorrect ? "\u2713" : "\u2717"}
-              {!r.isDraw && (
-                <span style={{ fontSize: 8, opacity: 0.8 }}>
-                  {r.playerCorrect ? `-${r.rivalDamage}` : `-${r.playerDamage}`}
-                </span>
-              )}
+                  {r.isDraw ? "\u2694" : r.playerCorrect ? "\u2713" : "\u2717"}
+                  {!r.isDraw && (
+                    <span style={{ fontSize: 8, opacity: 0.8 }}>
+                      {r.playerCorrect ? `-${r.rivalDamage ?? 0}` : `-${r.playerDamage ?? 0}`}
+                    </span>
+                  )}
             </div>
           ))}
         </div>
@@ -1268,7 +1271,7 @@ function MatchResult({ game, onRematch }: { game: ReturnType<typeof useGameState
 }
 
 function HealthBar({ current, max, color, wide }: { current: number; max: number; color: string; wide?: boolean }) {
-  const pct = Math.max(0, Math.min(100, (current / max) * 100));
+  const pct = max > 0 ? Math.max(0, Math.min(100, (current / max) * 100)) : 0;
   const barColor = pct > 60 ? color : pct > 30 ? "#f59e0b" : "#ef4444";
   const segments = 10;
   const segWidth = wide ? 8 : 5;
@@ -1397,6 +1400,10 @@ const globalCSS = `
   @keyframes glow {
     0%, 100% { text-shadow: 0 0 10px currentColor; }
     50% { text-shadow: 0 0 20px currentColor, 0 0 40px currentColor; }
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 0.2; transform: scale(0.8); }
+    50% { opacity: 1; transform: scale(1.2); }
   }
 `;
 

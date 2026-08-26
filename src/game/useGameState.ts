@@ -157,6 +157,8 @@ export function useGameState(): GameHook {
   const phaseRef = useRef<GamePhase>("HOME");
   const playerHPRef = useRef(MAX_HP);
   const rivalHPRef = useRef(MAX_HP);
+  const playerStreakRef = useRef(0);
+  const rivalStreakRef = useRef(0);
 
   // Round lifecycle guards
   const roundIdentityRef = useRef<string | null>(null);
@@ -376,14 +378,12 @@ export function useGameState(): GameHook {
   }, [scheduleTimer, playerChar, rivalName]);
 
   // --- PvP version of proceedToReveal ---
-  const proceedToPvPReveal = useCallback((rNum: number, totalRounds: number, ko: boolean) => {
+  const proceedToPvPReveal = useCallback((rNum: number, totalRounds: number, ko: boolean, pScore: number, rScore: number) => {
     scheduleTimer(() => setPhase("ROUND_REVEAL"), 200);
     scheduleTimer(() => { setPhase("ROUND_IMPACT"); setHitEffect("none"); }, 200 + REVEAL_DURATION);
     scheduleTimer(() => {
       roundPhaseRef.current = "RESOLVED";
       if (ko) {
-        const pScore = playerScore;
-        const rScore = rivalScore;
         const playerWon = pScore > rScore;
         setKoOverlay(playerWon ? `${playerChar?.name ?? "PLAYER"} WINS!` : `${rivalName} WINS!`);
         setCombatPhase("ko");
@@ -397,8 +397,6 @@ export function useGameState(): GameHook {
         }, 2000);
       } else if (rNum >= totalRounds) {
         setPhase("MATCH_RESULT");
-        const pScore = playerScore;
-        const rScore = rivalScore;
         const won = pScore > rScore;
         const draw = pScore === rScore;
         setPlayerCharState(won ? "victory" : draw ? "idle" : "defeat");
@@ -418,7 +416,7 @@ export function useGameState(): GameHook {
         }, ROUND_TRANSITION_DELAY);
       }
     }, 200 + REVEAL_DURATION + IMPACT_DURATION);
-  }, [scheduleTimer, playerChar, rivalName, playerScore, rivalScore]);
+  }, [scheduleTimer, playerChar, rivalName]);
 
   // --- BOT COUNTDOWN TIMER ---
   // Deadline-based: single timer per round, auto-locks at 0
@@ -468,37 +466,9 @@ export function useGameState(): GameHook {
         });
 
         // Run local visual cascade (server result arrives via polling)
+        // resolveBotRoundImpl handles all post-combat transitions via proceedToReveal
         scheduleTimer(() => {
           resolveBotRoundImpl(rNum, totalRounds);
-          scheduleTimer(() => setPhase("ROUND_REVEAL"), LOCK_DURATION);
-          scheduleTimer(() => { setPhase("ROUND_IMPACT"); setHitEffect("none"); }, LOCK_DURATION + REVEAL_DURATION);
-          scheduleTimer(() => {
-            roundPhaseRef.current = "RESOLVED";
-            const s = botScoresRef.current;
-            const rem = totalRounds - rNum;
-            const earlyVictory = s.player > s.rival + rem || s.rival > s.player + rem;
-            if (rNum >= totalRounds || earlyVictory) {
-              setPhase("MATCH_RESULT");
-              const won = s.player > s.rival;
-              const draw = s.player === s.rival;
-              setPlayerCharState(won ? "victory" : draw ? "idle" : "defeat");
-              setRivalCharState(won ? "defeat" : draw ? "idle" : "victory");
-            } else {
-              setPlayerCharState("idle"); setRivalCharState("idle");
-              setLocalPrediction(null); setPlayerPrediction(null);
-              setRoundResult(null);
-              const nextRound = rNum + 1;
-              setDisplayRound(nextRound);
-              activeRoundNumRef.current = nextRound;
-              roundPhaseRef.current = "LOCKED";
-              setPhase("ROUND_START");
-              scheduleTimer(() => {
-                roundIdentityRef.current = `bot-${nextRound}`;
-                setPhase("ROUND_ACTIVE");
-                setPlayerCharState("thinking"); setRivalCharState("thinking");
-              }, ROUND_TRANSITION_DELAY);
-            }
-          }, LOCK_DURATION + REVEAL_DURATION + IMPACT_DURATION);
         }, 300);
         return;
       }
@@ -568,34 +538,33 @@ export function useGameState(): GameHook {
 
         const isDraw = lastRound.playerCorrect === lastRound.rivalCorrect;
 
-        // Calculate damage + streaks for PvP
-        let pStreakVal = 0;
-        let rStreakVal = 0;
+        // Calculate damage + streaks for PvP — read from refs (sync) not setState (async)
         let playerDamage = 0;
         let rivalDamage = 0;
         let isCritical = false;
 
-        // Read current streaks from state
-        setPlayerStreak((prev) => {
-          pStreakVal = lastRound.playerCorrect ? prev + 1 : 0;
-          if (pStreakVal >= 4) setShowStreak("UNSTOPPABLE");
-          else if (pStreakVal === 3) setShowStreak("ON_FIRE");
-          else if (pStreakVal === 2) setShowStreak("COMBO");
-          else if (pStreakVal >= 1) setShowStreak("STRIKE");
-          return pStreakVal;
-        });
-        setRivalStreak((prev) => {
-          rStreakVal = lastRound.rivalCorrect ? prev + 1 : 0;
-          return rStreakVal;
-        });
+        const oldPStreak = playerStreakRef.current;
+        const oldRStreak = rivalStreakRef.current;
+        const newPStreak = lastRound.playerCorrect ? oldPStreak + 1 : 0;
+        const newRStreak = lastRound.rivalCorrect ? oldRStreak + 1 : 0;
+        playerStreakRef.current = newPStreak;
+        rivalStreakRef.current = newRStreak;
+        setPlayerStreak(newPStreak);
+        setRivalStreak(newRStreak);
+
+        if (newPStreak >= 4) setShowStreak("UNSTOPPABLE");
+        else if (newPStreak === 3) setShowStreak("ON_FIRE");
+        else if (newPStreak === 2) setShowStreak("COMBO");
+        else if (newPStreak >= 1) setShowStreak("STRIKE");
+        else setShowStreak(null);
 
         if (!isDraw) {
           if (lastRound.playerCorrect) {
-            const d = calcDamage(pStreakVal - 1);
+            const d = calcDamage(oldPStreak);
             rivalDamage = d.damage;
             isCritical = d.isCritical;
           } else {
-            const d = calcDamage(rStreakVal - 1);
+            const d = calcDamage(oldRStreak);
             playerDamage = d.damage;
             isCritical = d.isCritical;
           }
@@ -630,6 +599,10 @@ export function useGameState(): GameHook {
         if (lastRound.playerCorrect) setPlayerScore((sc) => sc + 1);
         if (lastRound.rivalCorrect) setRivalScore((sc) => sc + 1);
 
+        // Capture post-update scores for use in timers (closure would be stale)
+        const updatedPScore = lastRound.playerCorrect ? playerScore + 1 : playerScore;
+        const updatedRScore = lastRound.rivalCorrect ? rivalScore + 1 : rivalScore;
+
         // Run combat animation sequence
         setCombatPhase("windup");
         setLastDamage(null);
@@ -652,7 +625,7 @@ export function useGameState(): GameHook {
           scheduleTimer(() => {
             setCombatPhase("idle");
             setHitEffect("none");
-            proceedToPvPReveal(lastRound.roundNum, ss.totalRounds, ko);
+            proceedToPvPReveal(lastRound.roundNum, ss.totalRounds, ko, updatedPScore, updatedRScore);
           }, WINDUP_MS / 2 + CLASH_MS + RECOVERY_MS);
         } else {
           const attackerWins = lastRound.playerCorrect;
@@ -689,7 +662,7 @@ export function useGameState(): GameHook {
             setDefender("idle");
             setCombatPhase("idle");
             setHitEffect("none");
-            proceedToPvPReveal(lastRound.roundNum, ss.totalRounds, ko);
+            proceedToPvPReveal(lastRound.roundNum, ss.totalRounds, ko, updatedPScore, updatedRScore);
           }, WINDUP_MS + STRIKE_MS + HITSTOP_MS + IMPACT_MS + KNOCKBACK_MS);
         }
       }
@@ -742,6 +715,7 @@ export function useGameState(): GameHook {
     setExecutionStatus("idle"); setExecutionError(null); setLastTxHash(null);
     setPlayerHP(MAX_HP); setRivalHP(MAX_HP);
     playerHPRef.current = MAX_HP; rivalHPRef.current = MAX_HP;
+    playerStreakRef.current = 0; rivalStreakRef.current = 0;
     setCombatPhase("idle"); setLastDamage(null); setKoOverlay(null);
     setIsFinalRound((mode?.rounds ?? 7) <= 1);
     enteredFromIntroRef.current = true;
@@ -833,6 +807,7 @@ export function useGameState(): GameHook {
     setDisplayRound(1);
     setPlayerHP(MAX_HP); setRivalHP(MAX_HP);
     playerHPRef.current = MAX_HP; rivalHPRef.current = MAX_HP;
+    playerStreakRef.current = 0; rivalStreakRef.current = 0;
     setCombatPhase("idle"); setLastDamage(null); setKoOverlay(null);
     setIsFinalRound(false);
   }, [clearAllTimers, mp.actions]);
