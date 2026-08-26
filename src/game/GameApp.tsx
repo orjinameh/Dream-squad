@@ -5,9 +5,11 @@ import { useGameState } from "./useGameState";
 import { RetroCharacter } from "./RetroCharacter";
 import { CHARACTERS } from "./characters";
 import { GAME_MODES, type GameMode } from "./types";
+import { WalletGate, useWalletInfo } from "@/components/WalletGate";
 
 export default function GameApp() {
-  const g = useGameState();
+  const wallet = useWalletInfo();
+  const g = useGameState(wallet.address);
   const [screenShake, setScreenShake] = useState(false);
 
   useEffect(() => {
@@ -19,6 +21,7 @@ export default function GameApp() {
   }, [g.shakeScreen]);
 
   return (
+    <WalletGate>
     <div style={{
       minHeight: "100vh", background: "#080810",
       fontFamily: "'Courier New', monospace",
@@ -29,7 +32,7 @@ export default function GameApp() {
     }}>
       <style>{globalCSS}</style>
 
-      {g.phase === "HOME" && <HomeScreen onEnter={g.actions.goToModeSelect} onLeaderboard={g.actions.goToLeaderboard} />}
+      {g.phase === "HOME" && <HomeScreen onEnter={g.actions.goToModeSelect} onLeaderboard={g.actions.goToLeaderboard} wallet={wallet} playerAddress={g.playerAddress} />}
       {g.phase === "MODE_SELECT" && <ModeSelect onSelect={g.actions.selectMode} onBack={g.actions.goToHome} />}
       {g.phase === "CHAR_SELECT" && <CharSelect onSelect={g.actions.selectChar} onBack={g.actions.goToModeSelect} />}
       {g.phase === "DUEL_CONFIRM" && <DuelConfirm mode={g.mode!} char={g.playerChar!} onConfirm={g.actions.confirmDuel} onBack={g.actions.goToCharSelect} />}
@@ -40,6 +43,7 @@ export default function GameApp() {
 
       {g.isReconnecting && <ReconnectOverlay />}
     </div>
+    </WalletGate>
   );
 }
 
@@ -115,10 +119,32 @@ function ReconnectOverlay() {
   );
 }
 
-function HomeScreen({ onEnter, onLeaderboard }: { onEnter: () => void; onLeaderboard: () => void }) {
+function HomeScreen({ onEnter, onLeaderboard, wallet, playerAddress }: { onEnter: () => void; onLeaderboard: () => void; wallet: ReturnType<typeof useWalletInfo>; playerAddress?: `0x${string}` }) {
+  const [profile, setProfile] = useState<{ totalWins: number; totalMatches: number; accuracy: number; longestStreak: number; rank: number } | null>(null);
+
+  useEffect(() => {
+    if (!playerAddress) return;
+    fetch(`/api/player/profile?address=${playerAddress}`)
+      .then((r) => r.json())
+      .then((d) => { if (d.totalWins !== undefined) setProfile(d); })
+      .catch(() => {});
+  }, [playerAddress]);
+
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "100vh", padding: "40px 20px" }}>
       <div style={{ position: "absolute", inset: 0, background: "radial-gradient(ellipse at 50% 30%, rgba(168,85,247,0.08) 0%, transparent 60%)", pointerEvents: "none" }} />
+
+      {/* Wallet info */}
+      {wallet.isConnected && (
+        <div style={{
+          position: "absolute", top: 60, right: 24,
+          display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4,
+        }}>
+          <div style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.1em" }}>WALLET</div>
+          <div style={{ fontSize: 13, color: "#e2e8f0", fontWeight: 700 }}>{wallet.shortAddress}</div>
+          <div style={{ fontSize: 10, color: "#10b981", letterSpacing: "0.05em" }}>SOMNIA TESTNET</div>
+        </div>
+      )}
 
       <div style={{ display: "flex", alignItems: "flex-end", gap: 24, marginBottom: 32 }}>
         <RetroCharacter char={CHARACTERS[0]} state="idle" size={1.5} />
@@ -138,6 +164,29 @@ function HomeScreen({ onEnter, onLeaderboard }: { onEnter: () => void; onLeaderb
       <button onClick={onLeaderboard} style={{ ...ctaButtonStyle, background: "transparent", border: "3px solid #64748b", color: "#94a3b8", marginTop: 12, fontSize: 14, padding: "12px 32px" }}>
         {"\uD83C\uDFC6"} HALL OF DREAMERS
       </button>
+
+      {/* Player profile card */}
+      {profile && (
+        <div style={{
+          marginTop: 32, padding: "16px 24px", borderRadius: 8,
+          background: "rgba(15,23,42,0.8)", border: "1px solid #1e293b",
+          maxWidth: 320, width: "100%",
+        }}>
+          <div style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.1em", marginBottom: 8, textAlign: "center" }}>PLAYER PROFILE</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px 16px" }}>
+            <div style={{ fontSize: 11, color: "#64748b" }}>MATCHES</div>
+            <div style={{ fontSize: 11, color: "#e2e8f0", textAlign: "right", fontWeight: 700 }}>{profile.totalMatches}</div>
+            <div style={{ fontSize: 11, color: "#64748b" }}>WINS</div>
+            <div style={{ fontSize: 11, color: "#10b981", textAlign: "right", fontWeight: 700 }}>{profile.totalWins}</div>
+            <div style={{ fontSize: 11, color: "#64748b" }}>WIN RATE</div>
+            <div style={{ fontSize: 11, color: "#a855f7", textAlign: "right", fontWeight: 700 }}>{profile.accuracy}%</div>
+            <div style={{ fontSize: 11, color: "#64748b" }}>BEST STREAK</div>
+            <div style={{ fontSize: 11, color: "#fbbf24", textAlign: "right", fontWeight: 700 }}>{profile.longestStreak}</div>
+            <div style={{ fontSize: 11, color: "#64748b" }}>RANK</div>
+            <div style={{ fontSize: 11, color: "#f59e0b", textAlign: "right", fontWeight: 700 }}>#{profile.rank}</div>
+          </div>
+        </div>
+      )}
 
       <div style={{ display: "flex", gap: 8, marginTop: 48, flexWrap: "wrap", justifyContent: "center" }}>
         {["Enter a duel", "Choose rounds", "Predict in 10s", "Strike your rival", "Win the match"].map((s, i) => (
@@ -541,7 +590,7 @@ function MatchResult({ game }: { game: ReturnType<typeof useGameState> }) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           idempotencyKey,
-          playerAddress: "0x0000000000000000000000000000000000000000",
+          playerAddress: game.playerAddress,
           rounds: game.roundHistory.map((r) => ({
             roundNum: r.roundNum,
             playerPrediction: r.playerPredicted,
@@ -565,7 +614,7 @@ function MatchResult({ game }: { game: ReturnType<typeof useGameState> }) {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         matchId: game.matchId,
-        playerAddress: "0x0000000000000000000000000000000000000000",
+        playerAddress: game.playerAddress,
         rounds: game.roundHistory.map((r) => ({
           roundNum: r.roundNum,
           playerPrediction: r.playerPredicted,

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { useAccount } from "wagmi";
 import { CHARACTERS } from "@/game/characters";
 
 interface Leader {
@@ -17,6 +18,7 @@ interface Leader {
 }
 
 export default function LeaderboardPage() {
+  const { address } = useAccount();
   const [leaders, setLeaders] = useState<Leader[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -70,11 +72,13 @@ export default function LeaderboardPage() {
 
         {leaders.map((l) => {
           const ch = getChar(l.favoriteChar);
+          const isCurrentPlayer = address && l.address.toLowerCase() === address.toLowerCase();
           return (
             <div key={l.rank} style={{
               display: "grid", gridTemplateColumns: "50px 1fr 60px 60px 60px 60px 80px",
               padding: "14px 16px", borderBottom: "1px solid #1e293b",
-              background: l.rank <= 3 ? "rgba(251,191,36,0.04)" : "transparent",
+              background: isCurrentPlayer ? "rgba(168,85,247,0.08)" : l.rank <= 3 ? "rgba(251,191,36,0.04)" : "transparent",
+              borderLeft: isCurrentPlayer ? "3px solid #a855f7" : "3px solid transparent",
               alignItems: "center",
             }}>
               <div style={{

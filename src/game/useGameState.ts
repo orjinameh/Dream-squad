@@ -54,6 +54,7 @@ export interface GameHook {
   rivalCharState: "idle" | "thinking" | "locked" | "attack" | "hit" | "victory" | "defeat";
   matchId: string | null;
   isBotMatch: boolean;
+  playerAddress: `0x${string}` | undefined;
   connectionStatus: ConnectionStatus;
   pingMs: number;
   predictionStatus: "idle" | "selected" | "submitting" | "confirmed" | "error";
@@ -63,7 +64,7 @@ export interface GameHook {
   actions: GameActions;
 }
 
-export function useGameState(): GameHook {
+export function useGameState(walletAddress?: `0x${string}`): GameHook {
   const mp = useMultiplayer();
 
   const [phase, setPhase] = useState<GamePhase>("HOME");
@@ -97,6 +98,7 @@ export function useGameState(): GameHook {
   const botRoundRef = useRef(0);
   const botScoresRef = useRef({ player: 0, rival: 0, pStreak: 0, rStreak: 0 });
   const enteredFromIntroRef = useRef(false);
+  const playerAddressRef = useRef<`0x${string}` | undefined>(walletAddress);
 
   const clearAllTimers = useCallback(() => {
     phaseTimersRef.current.forEach(clearTimeout);
@@ -295,6 +297,7 @@ export function useGameState(): GameHook {
     setTimeLeft(ROUND_TIME);
     setDisplayRound(1);
     setIsBotMatch(true);
+    playerAddressRef.current = walletAddress;
     enteredFromIntroRef.current = true;
 
     scheduleTimer(() => {
@@ -393,6 +396,7 @@ export function useGameState(): GameHook {
     playerCharState, rivalCharState,
     matchId: isBotMatch ? null : (mp.state.serverState?.matchId ?? null),
     isBotMatch,
+    playerAddress: playerAddressRef.current ?? walletAddress,
     connectionStatus: connectionDisplay,
     pingMs: mp.state.pingMs,
     predictionStatus: mp.state.predictionStatus === "idle" ? predictionUIStatus : mp.state.predictionStatus,
