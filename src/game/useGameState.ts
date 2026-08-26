@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useRef, useEffect } from "react";
 import { type CharacterDef, CHARACTERS, RIVAL_NAMES } from "./characters";
-import { type GamePhase, type GameMode, type Prediction, type RoundResult, GAME_MODES } from "./types";
+import { type GamePhase, type GameMode, type Prediction, type RoundResult, type PredictionConfig, type BotDifficulty, GAME_MODES, PREDICTIONS } from "./types";
 import {
   useMultiplayer,
   type ConnectionStatus,
@@ -28,6 +28,8 @@ export interface GameActions {
   selectMode: (mode: GameMode) => void;
   selectChar: (char: CharacterDef) => void;
   confirmDuel: () => void;
+  selectPrediction: (pred: PredictionConfig) => void;
+  selectDifficulty: (diff: BotDifficulty) => void;
   makePrediction: (pred: "UP" | "DOWN") => void;
   rematch: () => void;
   joinMatchmaking: (rounds: number) => void;
@@ -66,6 +68,8 @@ export interface GameHook {
   lastError: string | null;
   connectionMessage: string | null;
   isReconnecting: boolean;
+  selectedPrediction: PredictionConfig;
+  botDifficulty: BotDifficulty;
   actions: GameActions;
 }
 
@@ -101,6 +105,8 @@ export function useGameState(): GameHook {
   const [isBotMatch, setIsBotMatch] = useState(true);
   const [connectionMessage, setConnectionMessage] = useState<string | null>(null);
   const [displayRound, setDisplayRound] = useState(1);
+  const [selectedPrediction, setSelectedPrediction] = useState<PredictionConfig>(PREDICTIONS[0]);
+  const [botDifficulty, setBotDifficulty] = useState<BotDifficulty>("normal");
 
   const animFrameRef = useRef<number>(0);
   const phaseTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
@@ -230,11 +236,15 @@ export function useGameState(): GameHook {
           scheduleTimer(() => { setPhase("ROUND_IMPACT"); setHitEffect("none"); }, LOCK_DURATION + REVEAL_DURATION);
           scheduleTimer(() => {
             roundPhaseRef.current = "RESOLVED";
-            if (rNum >= totalRounds) {
+            const s = botScoresRef.current;
+            const remaining = totalRounds - rNum;
+            const earlyVictory = s.player > s.rival + remaining || s.rival > s.player + remaining;
+            if (rNum >= totalRounds || earlyVictory) {
               setPhase("MATCH_RESULT");
-              const won = botScoresRef.current.player > botScoresRef.current.rival;
-              setPlayerCharState(won ? "victory" : "defeat");
-              setRivalCharState(won ? "defeat" : "victory");
+              const won = s.player > s.rival;
+              const draw = s.player === s.rival;
+              setPlayerCharState(won ? "victory" : draw ? "idle" : "defeat");
+              setRivalCharState(won ? "defeat" : draw ? "idle" : "victory");
             } else {
               setPlayerCharState("idle"); setRivalCharState("idle");
               setLocalPrediction(null); setPlayerPrediction(null);
@@ -442,7 +452,9 @@ export function useGameState(): GameHook {
   const goToLeaderboard = useCallback(() => { setPhase("HOME"); }, []);
   const selectMode = useCallback((m: GameMode) => { setMode(m); setPhase("CHAR_SELECT"); }, []);
   const selectChar = useCallback((c: CharacterDef) => { setPlayerChar(c); setPhase("DUEL_CONFIRM"); }, []);
-  const confirmDuel = useCallback(() => { startMatch(); }, [startMatch]);
+  const confirmDuel = useCallback(() => { setPhase("PREDICTION_SELECT"); }, []);
+  const selectPrediction = useCallback((pred: PredictionConfig) => { setSelectedPrediction(pred); startMatch(); }, [startMatch]);
+  const selectDifficulty = useCallback((diff: BotDifficulty) => { setBotDifficulty(diff); }, []);
 
   const joinMatchmaking = useCallback((selectedRounds: number) => {
     clearAllTimers();
@@ -521,9 +533,11 @@ export function useGameState(): GameHook {
     lastError: mp.state.lastError,
     connectionMessage,
     isReconnecting: !isBotMatch && mp.state.connectionStatus === "reconnecting",
+    selectedPrediction,
+    botDifficulty,
     actions: {
       goToHome, goToModeSelect, goToCharSelect, goToLeaderboard,
-      selectMode, selectChar, confirmDuel, makePrediction, rematch,
+      selectMode, selectChar, confirmDuel, selectPrediction, selectDifficulty, makePrediction, rematch,
       joinMatchmaking, startPvPMatch, setReady, cancelMatchmaking, fightBotInstead,
     },
   };

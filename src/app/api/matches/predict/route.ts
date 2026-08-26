@@ -98,8 +98,11 @@ export async function POST(req: Request): Promise<Response> {
     }
 
     // Bot match: resolve immediately (AI prediction generated here)
-    const rivalPred = Math.random() < 0.5 ? ("UP" as const) : ("DOWN" as const);
+    const difficulty = match.botDifficulty || "normal";
+    const botCorrectBias = difficulty === "easy" ? 0.35 : difficulty === "hard" ? 0.65 : 0.5;
     const actual = randomOutcome();
+    const botShouldBeCorrect = Math.random() < botCorrectBias;
+    const rivalPred = botShouldBeCorrect ? actual : (actual === "UP" ? "DOWN" as const : "UP" as const);
     const playerCorrect = input.prediction === actual;
     const rivalCorrect = rivalPred === actual;
 
@@ -159,65 +162,48 @@ async function finalizeRound(
       },
     });
 
-    // Update Player 1 stats
-    const p1CorrectCount = allRounds.filter((r: any) => r.playerCorrect).length;
-    const p1LongestStreak = computeLongestStreak(allRounds);
-
-    await PlayerStats.findOneAndUpdate(
-      { _id: normalizeAddress(match.playerAddress) },
-      {
-        $setOnInsert: { address: normalizeAddress(match.playerAddress) },
-        $inc: {
-          totalWins: winner === "player" ? 1 : 0,
-          totalLosses: winner === "rival" ? 1 : 0,
-          totalDraws: winner === "draw" ? 1 : 0,
-          totalMatches: 1,
-          totalRounds: allRounds.length,
-          correctPredictions: p1CorrectCount,
-        },
-        $max: { longestStreak: p1LongestStreak },
-        $set: { lastPlayedAt: now, favoriteChar: match.playerChar },
-      },
-      { upsert: true },
-    );
-
-    // Update Player 2 stats (PvP only)
-    if (match.opponentType === "player" && match.player2Address) {
-      const p2CorrectCount = allRounds.filter((r: any) => r.rivalCorrect).length;
-      const p2Rounds = allRounds.map((r: any) => ({ playerCorrect: r.rivalCorrect }));
-      const p2LongestStreak = computeLongestStreak(p2Rounds);
-
-      await PlayerStats.findOneAndUpdate(
-        { _id: normalizeAddress(match.player2Address) },
-        {
-          $setOnInsert: { address: normalizeAddress(match.player2Address) },
-          $inc: {
-            totalWins: winner === "rival" ? 1 : 0,
-            totalLosses: winner === "player" ? 1 : 0,
-            totalDraws: winner === "draw" ? 1 : 0,
-            totalMatches: 1,
-            totalRounds: allRounds.length,
-            correctPredictions: p2CorrectCount,
-          },
-          $max: { longestStreak: p2LongestStreak },
-          $set: { lastPlayedAt: now, favoriteChar: match.player2Char || "dreamer" },
-        },
-        { upsert: true },
-      );
-    }
+    await updatePlayerStats(match, allRounds, winner, now);
   } else {
-    await Match.findByIdAndUpdate(match._id, {
-      $push: { rounds: roundRecord },
-      $set: {
-        playerPrediction: playerPred,
-        rivalPrediction: rivalPred,
-        playerScore: newPlayerScore,
-        rivalScore: newRivalScore,
-        roundPhase: "LOCKED",
-        roundStartTime: now,
-        roundDeadline: nextDeadline,
-      },
-    });
+    // Check early victory: can the trailing player still catch up?
+    const remainingRounds = match.totalRounds - match.currentRound;
+    const playerMaxPossible = newPlayerScore + remainingRounds;
+    const rivalMaxPossible = newRivalScore + remainingRounds;
+    const matchDecided = newPlayerScore > rivalMaxPossible || newRivalScore > playerMaxPossible;
+
+    if (matchDecided) {
+      const winner = newPlayerScore > newRivalScore ? "player" : newRivalScore > newPlayerScore ? "rival" : "draw";
+      const allRounds = [...(match.rounds as any[]), roundRecord];
+
+      await Match.findByIdAndUpdate(match._id, {
+        $push: { rounds: roundRecord },
+        $set: {
+          playerPrediction: playerPred,
+          rivalPrediction: rivalPred,
+          playerScore: newPlayerScore,
+          rivalScore: newRivalScore,
+          winner,
+          status: "COMPLETED",
+          completedAt: now,
+        },
+      });
+
+      // Update both players' stats
+      await updatePlayerStats(match, allRounds, winner, now);
+    } else {
+      await Match.findByIdAndUpdate(match._id, {
+        $push: { rounds: roundRecord },
+        $set: {
+          playerPrediction: playerPred,
+          rivalPrediction: rivalPred,
+          playerScore: newPlayerScore,
+          rivalScore: newRivalScore,
+          currentRound: match.currentRound + 1,
+          roundPhase: "LOCKED",
+          roundStartTime: now,
+          roundDeadline: nextDeadline,
+        },
+      });
+    }
   }
 
   const updated = await Match.findById(match._id);
@@ -252,6 +238,55 @@ export interface MatchStateResponse {
   player2Char?: string;
   player1Ready?: boolean;
   player2Ready?: boolean;
+  predictionAsset?: string;
+  predictionQuestion?: string;
+  botDifficulty?: string;
+}
+
+async function updatePlayerStats(match: any, allRounds: any[], winner: string, now: Date) {
+  // Player 1 stats
+  const p1CorrectCount = allRounds.filter((r: any) => r.playerCorrect).length;
+  const p1LongestStreak = computeLongestStreak(allRounds);
+  await PlayerStats.findOneAndUpdate(
+    { _id: normalizeAddress(match.playerAddress) },
+    {
+      $setOnInsert: { address: normalizeAddress(match.playerAddress) },
+      $inc: {
+        totalWins: winner === "player" ? 1 : 0,
+        totalLosses: winner === "rival" ? 1 : 0,
+        totalDraws: winner === "draw" ? 1 : 0,
+        totalMatches: 1,
+        totalRounds: allRounds.length,
+        correctPredictions: p1CorrectCount,
+      },
+      $max: { longestStreak: p1LongestStreak },
+      $set: { lastPlayedAt: now, favoriteChar: match.playerChar },
+    },
+    { upsert: true },
+  );
+  // Player 2 stats (PvP only)
+  if (match.opponentType === "player" && match.player2Address) {
+    const p2CorrectCount = allRounds.filter((r: any) => r.rivalCorrect).length;
+    const p2Rounds = allRounds.map((r: any) => ({ playerCorrect: r.rivalCorrect }));
+    const p2LongestStreak = computeLongestStreak(p2Rounds);
+    await PlayerStats.findOneAndUpdate(
+      { _id: normalizeAddress(match.player2Address) },
+      {
+        $setOnInsert: { address: normalizeAddress(match.player2Address) },
+        $inc: {
+          totalWins: winner === "rival" ? 1 : 0,
+          totalLosses: winner === "player" ? 1 : 0,
+          totalDraws: winner === "draw" ? 1 : 0,
+          totalMatches: 1,
+          totalRounds: allRounds.length,
+          correctPredictions: p2CorrectCount,
+        },
+        $max: { longestStreak: p2LongestStreak },
+        $set: { lastPlayedAt: now, favoriteChar: match.player2Char || "dreamer" },
+      },
+      { upsert: true },
+    );
+  }
 }
 
 function buildState(match: any, serverTime: Date): MatchStateResponse {
@@ -276,5 +311,8 @@ function buildState(match: any, serverTime: Date): MatchStateResponse {
     player2Char: match.player2Char,
     player1Ready: match.player1Ready,
     player2Ready: match.player2Ready,
+    predictionAsset: match.predictionAsset,
+    predictionQuestion: match.predictionQuestion,
+    botDifficulty: match.botDifficulty,
   };
 }

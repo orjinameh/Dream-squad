@@ -13,6 +13,7 @@ export interface PlayerStatsDoc {
   currentStreak: number;
   favoriteChar: string;
   lastPlayedAt: Date;
+  lastBotResultKey?: string;
 }
 
 const PlayerStatsSchema = new Schema<PlayerStatsDoc>(
@@ -29,6 +30,7 @@ const PlayerStatsSchema = new Schema<PlayerStatsDoc>(
     currentStreak: { type: Number, default: 0 },
     favoriteChar: { type: String, default: "dreamer" },
     lastPlayedAt: { type: Date, default: () => new Date() },
+    lastBotResultKey: { type: String },
   },
   { versionKey: false },
 );

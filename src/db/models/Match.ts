@@ -43,6 +43,11 @@ export interface MatchDoc {
   player2Char?: string;
   player1Ready: boolean;
   player2Ready: boolean;
+  // Prediction config
+  predictionAsset: string;
+  predictionQuestion: string;
+  // Bot difficulty
+  botDifficulty: "easy" | "normal" | "hard";
 }
 
 const ROUND_DURATION_MS = 10_000;
@@ -90,6 +95,11 @@ const MatchSchema = new Schema<MatchDoc>(
     player2Char: { type: String },
     player1Ready: { type: Boolean, default: true },
     player2Ready: { type: Boolean, default: false },
+    // Prediction config
+    predictionAsset: { type: String, default: "BTC" },
+    predictionQuestion: { type: String, default: "WILL BTC GO UP OR DOWN?" },
+    // Bot difficulty
+    botDifficulty: { type: String, enum: ["easy", "normal", "hard"], default: "normal" },
   },
   { versionKey: false },
 );

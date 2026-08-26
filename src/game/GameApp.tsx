@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import { useGameState } from "./useGameState";
 import { RetroCharacter } from "./RetroCharacter";
 import { CHARACTERS } from "./characters";
-import { GAME_MODES, type GameMode } from "./types";
+import { GAME_MODES, PREDICTIONS, type GameMode, type PredictionConfig, type BotDifficulty } from "./types";
 import { WalletModal } from "@/components/WalletModal";
 import { useMatchmaking } from "./useMatchmaking";
 import { useAccount } from "wagmi";
@@ -67,7 +67,8 @@ export default function GameApp() {
       {g.phase === "HOME" && <HomeScreen onEnter={g.actions.goToModeSelect} onLeaderboard={g.actions.goToLeaderboard} onRejoin={activeMatchId ? rejoinMatch : undefined} />}
       {g.phase === "MODE_SELECT" && <ModeSelect onSelect={g.actions.selectMode} onBack={g.actions.goToHome} />}
       {g.phase === "CHAR_SELECT" && <CharSelect onSelect={g.actions.selectChar} onBack={g.actions.goToModeSelect} />}
-      {g.phase === "DUEL_CONFIRM" && <DuelConfirm mode={g.mode!} char={g.playerChar!} onConfirm={() => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.confirmDuel(); }} onBack={g.actions.goToCharSelect} onQuickMatch={(rounds) => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.joinMatchmaking(rounds); }} walletConnected={isConnected} />}
+      {g.phase === "DUEL_CONFIRM" && <DuelConfirm mode={g.mode!} char={g.playerChar!} difficulty={g.botDifficulty} onConfirm={() => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.confirmDuel(); }} onBack={g.actions.goToCharSelect} onQuickMatch={(rounds) => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.joinMatchmaking(rounds); }} onSelectDifficulty={g.actions.selectDifficulty} />}
+      {g.phase === "PREDICTION_SELECT" && <PredictionSelect onSelect={(pred) => { g.actions.selectPrediction(pred); }} onBack={g.actions.goToCharSelect} onSelectDifficulty={g.actions.selectDifficulty} difficulty={g.botDifficulty} char={g.playerChar!} mode={g.mode!} />}
       {g.phase === "MATCHMAKING" && <MatchmakingScreen matchmaking={mm} onFightBot={g.actions.fightBotInstead} onHome={g.actions.cancelMatchmaking} />}
       {g.phase === "MATCH_FOUND" && <MatchFoundScreen game={g} />}
       {g.phase === "READY_UP" && <ReadyUpScreen game={g} onReady={g.actions.setReady} />}
@@ -278,7 +279,12 @@ function CharSelect({ onSelect, onBack }: { onSelect: (c: typeof CHARACTERS[0]) 
   );
 }
 
-function DuelConfirm({ mode, char, onConfirm, onBack, onQuickMatch, walletConnected }: { mode: GameMode; char: typeof CHARACTERS[0]; onConfirm: () => void; onBack: () => void; onQuickMatch: (rounds: number) => void; walletConnected: boolean }) {
+function DuelConfirm({ mode, char, difficulty, onConfirm, onBack, onQuickMatch, onSelectDifficulty }: { mode: GameMode; char: typeof CHARACTERS[0]; difficulty: BotDifficulty; onConfirm: () => void; onBack: () => void; onQuickMatch: (rounds: number) => void; onSelectDifficulty: (d: BotDifficulty) => void }) {
+  const difficulties: { id: BotDifficulty; label: string; color: string; desc: string }[] = [
+    { id: "easy", label: "EASY", color: "#10b981", desc: "Bot struggles" },
+    { id: "normal", label: "NORMAL", color: "#f59e0b", desc: "Fair match" },
+    { id: "hard", label: "HARD", color: "#ef4444", desc: "Bot is sharp" },
+  ];
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "40px 20px" }}>
       <div style={{ position: "absolute", inset: 0, background: `radial-gradient(ellipse at 50% 40%, ${char.colors.accent}12 0%, transparent 50%)`, pointerEvents: "none" }} />
@@ -295,11 +301,35 @@ function DuelConfirm({ mode, char, onConfirm, onBack, onQuickMatch, walletConnec
 
       <div style={{
         background: "rgba(15,23,42,0.9)", border: "2px solid #334155", borderRadius: 8,
-        padding: "20px 28px", maxWidth: 400, textAlign: "center", marginBottom: 32,
+        padding: "20px 28px", maxWidth: 400, textAlign: "center", marginBottom: 24,
       }}>
         <p style={{ fontSize: 13, color: "#94a3b8", lineHeight: 1.6, margin: 0 }}>
           <span style={{ color: "#fbbf24", fontWeight: 700 }}>Rounds: {mode.rounds}</span> | <span style={{ color: "#a855f7", fontWeight: 700 }}>10s per round</span>
         </p>
+      </div>
+
+      {/* Bot difficulty selector */}
+      <div style={{ marginBottom: 24, textAlign: "center" }}>
+        <div style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.1em", marginBottom: 8 }}>BOT DIFFICULTY</div>
+        <div style={{ display: "flex", gap: 8 }}>
+          {difficulties.map((d) => (
+            <button
+              key={d.id}
+              onClick={() => onSelectDifficulty(d.id)}
+              style={{
+                padding: "8px 16px", borderRadius: 6, fontSize: 12, fontWeight: 700,
+                letterSpacing: "0.08em", cursor: "pointer", transition: "all 0.15s",
+                fontFamily: "'Courier New', monospace",
+                background: difficulty === d.id ? `${d.color}25` : "transparent",
+                border: `2px solid ${difficulty === d.id ? d.color : "#334155"}`,
+                color: difficulty === d.id ? d.color : "#64748b",
+                transform: difficulty === d.id ? "scale(1.05)" : undefined,
+              }}
+            >
+              {d.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 12, alignItems: "center" }}>
@@ -315,6 +345,138 @@ function DuelConfirm({ mode, char, onConfirm, onBack, onQuickMatch, walletConnec
         </button>
         <span style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.1em" }}>INSTANT AI OPPONENT</span>
       </div>
+
+      <button onClick={onBack} style={{ marginTop: 24, background: "none", border: "none", color: "#64748b", fontSize: 12, cursor: "pointer", letterSpacing: "0.1em" }}>
+        BACK
+      </button>
+    </div>
+  );
+}
+
+function PredictionSelect({ onSelect, onBack, onSelectDifficulty, difficulty, char, mode }: {
+  onSelect: (pred: PredictionConfig) => void;
+  onBack: () => void;
+  onSelectDifficulty: (d: BotDifficulty) => void;
+  difficulty: BotDifficulty;
+  char: typeof CHARACTERS[0];
+  mode: GameMode;
+}) {
+  const [localAsset, setLocalAsset] = useState<PredictionConfig>(PREDICTIONS[0]);
+  const [localPrediction, setLocalPrediction] = useState<"UP" | "DOWN" | null>(null);
+
+  const handleConfirm = () => {
+    if (!localPrediction) return;
+    onSelect({ ...localAsset, prediction: localPrediction });
+  };
+
+  const difficulties: { id: BotDifficulty; label: string; color: string; desc: string }[] = [
+    { id: "easy", label: "EASY", color: "#10b981", desc: "Bot struggles" },
+    { id: "normal", label: "NORMAL", color: "#f59e0b", desc: "Fair match" },
+    { id: "hard", label: "HARD", color: "#ef4444", desc: "Bot is sharp" },
+  ];
+
+  return (
+    <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "40px 20px" }}>
+      <div style={{ position: "absolute", inset: 0, background: `radial-gradient(ellipse at 50% 40%, ${char.colors.accent}12 0%, transparent 50%)`, pointerEvents: "none" }} />
+
+      <h2 style={{ fontSize: 28, fontWeight: 900, letterSpacing: "0.1em", color: "#f59e0b", textShadow: "2px 2px 0 #92400e", marginBottom: 8, textAlign: "center" }}>
+        {"\uD83D\uDD2E"} PREDICTION
+      </h2>
+      <p style={{ fontSize: 13, color: "#64748b", marginBottom: 24 }}>What will the market do this round?</p>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 24 }}>
+        {PREDICTIONS.map((pred) => (
+          <button
+            key={pred.id}
+            onClick={() => setLocalAsset(pred)}
+            style={{
+              width: 320, padding: "14px 20px", borderRadius: 8,
+              background: localAsset.id === pred.id ? "rgba(245,158,11,0.12)" : "rgba(15,23,42,0.8)",
+              border: `2px solid ${localAsset.id === pred.id ? "#f59e0b" : "#334155"}`,
+              color: localAsset.id === pred.id ? "#f59e0b" : "#94a3b8",
+              fontWeight: 700, fontSize: 15, cursor: "pointer", textAlign: "left",
+              fontFamily: "'Courier New', monospace", letterSpacing: "0.05em",
+              transition: "all 0.15s",
+            }}
+            onMouseEnter={(e) => { if (localAsset.id !== pred.id) { e.currentTarget.style.borderColor = "#475569"; e.currentTarget.style.color = "#cbd5e1"; } }}
+            onMouseLeave={(e) => { if (localAsset.id !== pred.id) { e.currentTarget.style.borderColor = "#334155"; e.currentTarget.style.color = "#94a3b8"; } }}
+          >
+            {pred.asset} <span style={{ fontSize: 12, opacity: 0.7 }}>- {pred.question}</span>
+          </button>
+        ))}
+      </div>
+
+      {/* Select the actual prediction */}
+      <p style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.1em", marginBottom: 8 }}>YOUR PREDICTION THIS ROUND</p>
+      <div style={{ display: "flex", gap: 12, marginBottom: 28 }}>
+        <button onClick={() => setLocalPrediction("UP")} style={{
+          padding: "12px 28px", borderRadius: 8, fontSize: 14, fontWeight: 900, letterSpacing: "0.08em",
+          cursor: "pointer", fontFamily: "'Courier New', monospace",
+          background: localPrediction === "UP" ? "rgba(16,185,129,0.15)" : "rgba(15,23,42,0.8)",
+          border: `2px solid ${localPrediction === "UP" ? "#10b981" : "#334155"}`,
+          color: localPrediction === "UP" ? "#10b981" : "#64748b",
+        }}>
+          {"\u2B06\uFE0F"} UP
+        </button>
+        <button onClick={() => setLocalPrediction("DOWN")} style={{
+          padding: "12px 28px", borderRadius: 8, fontSize: 14, fontWeight: 900, letterSpacing: "0.08em",
+          cursor: "pointer", fontFamily: "'Courier New', monospace",
+          background: localPrediction === "DOWN" ? "rgba(239,68,68,0.15)" : "rgba(15,23,42,0.8)",
+          border: `2px solid ${localPrediction === "DOWN" ? "#ef4444" : "#334155"}`,
+          color: localPrediction === "DOWN" ? "#ef4444" : "#64748b",
+        }}>
+          {"\u2B07\uFE0F"} DOWN
+        </button>
+      </div>
+
+      {/* Difficulty */}
+      <div style={{ marginBottom: 28, textAlign: "center" }}>
+        <div style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.1em", marginBottom: 8 }}>BOT DIFFICULTY</div>
+        <div style={{ display: "flex", gap: 8 }}>
+          {difficulties.map((d) => (
+            <button
+              key={d.id}
+              onClick={() => onSelectDifficulty(d.id)}
+              style={{
+                padding: "8px 16px", borderRadius: 6, fontSize: 12, fontWeight: 700,
+                letterSpacing: "0.08em", cursor: "pointer", transition: "all 0.15s",
+                fontFamily: "'Courier New', monospace",
+                background: difficulty === d.id ? `${d.color}25` : "transparent",
+                border: `2px solid ${difficulty === d.id ? d.color : "#334155"}`,
+                color: difficulty === d.id ? d.color : "#64748b",
+              }}
+            >
+              {d.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 40, marginBottom: 24 }}>
+        <RetroCharacter char={char} state="idle" size={1.1} />
+        <div style={{ fontSize: 32, color: "#ef4444", fontWeight: 900 }}>VS</div>
+        <RetroCharacter char={CHARACTERS.find((c) => c.id !== char.id) ?? CHARACTERS[0]} state="idle" size={1.1} flip />
+      </div>
+
+      <div style={{ fontSize: 12, color: "#475569", marginBottom: 16 }}>
+        {mode.rounds} rounds | 10s per round
+      </div>
+
+      <button
+        onClick={handleConfirm}
+        disabled={!localPrediction}
+        style={{
+          ...ctaButtonStyle,
+          fontSize: 16, padding: "14px 40px",
+          background: localPrediction
+            ? "linear-gradient(135deg, #7c3aed, #a855f7)"
+            : "rgba(30,41,59,0.8)",
+          color: localPrediction ? "#fff" : "#475569",
+          cursor: localPrediction ? "pointer" : "not-allowed",
+        }}
+      >
+        CONFIRM & FIGHT
+      </button>
 
       <button onClick={onBack} style={{ marginTop: 24, background: "none", border: "none", color: "#64748b", fontSize: 12, cursor: "pointer", letterSpacing: "0.1em" }}>
         BACK
@@ -679,7 +841,7 @@ function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
         {game.phase === "ROUND_ACTIVE" && (
           <div style={{ textAlign: "center" }}>
             <div style={{ fontSize: 14, color: "#94a3b8", letterSpacing: "0.1em", marginBottom: 8 }}>
-              WILL THE MARKET GO UP OR DOWN?
+              {game.selectedPrediction.question}
             </div>
 
             {/* Countdown timer */}
@@ -773,21 +935,22 @@ function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
 }
 
 function MatchResult({ game, onRematch }: { game: ReturnType<typeof useGameState>; onRematch: () => void }) {
+  const { address } = useAccount();
   const won = game.playerScore > game.rivalScore;
   const draw = game.playerScore === game.rivalScore;
 
   useEffect(() => {
-    if (game.roundHistory.length === 0) return;
+    if (game.roundHistory.length === 0 || !address) return;
 
     if (game.isBotMatch) {
-      // Bot match: submit to bot-result endpoint (no Match doc needed)
       const idempotencyKey = `bot-${game.roundHistory.length}-${game.playerScore}-${game.rivalScore}-${game.mode?.id}`;
       fetch("/api/matches/bot-result", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           idempotencyKey,
-          playerAddress: "0x0000000000000000000000000000000000000000",          rounds: game.roundHistory.map((r) => ({
+          playerAddress: address,
+          rounds: game.roundHistory.map((r) => ({
             roundNum: r.roundNum,
             playerPrediction: r.playerPredicted,
             rivalPrediction: r.rivalPredicted,
@@ -810,7 +973,7 @@ function MatchResult({ game, onRematch }: { game: ReturnType<typeof useGameState
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         matchId: game.matchId,
-        playerAddress: "0x0000000000000000000000000000000000000000",
+        playerAddress: address,
         rounds: game.roundHistory.map((r) => ({
           roundNum: r.roundNum,
           playerPrediction: r.playerPredicted,
@@ -823,7 +986,7 @@ function MatchResult({ game, onRematch }: { game: ReturnType<typeof useGameState
         rivalScore: game.rivalScore,
       }),
     }).catch(() => {});
-  }, [game.matchId, game.roundHistory, game.playerScore, game.rivalScore, game.isBotMatch, game.mode, game.playerChar, game.rivalChar, won, draw]);
+  }, [game.matchId, game.roundHistory, game.playerScore, game.rivalScore, game.isBotMatch, game.mode, game.playerChar, game.rivalChar, won, draw, address]);
 
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "40px 20px" }}>

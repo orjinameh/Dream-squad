@@ -50,6 +50,12 @@ export async function POST(req: Request): Promise<Response> {
     await connectToDatabase();
     const address = normalizeAddress(input.playerAddress);
 
+    // Idempotency: check if this key was already processed
+    const existing = await PlayerStats.findOne({ _id: address, lastBotResultKey: input.idempotencyKey }).lean();
+    if (existing) {
+      return Response.json({ ok: true, winner: input.winner, deduped: true });
+    }
+
     const correctCount = input.rounds.filter((r) => r.playerCorrect).length;
     const longestStreak = computeLongestStreak(input.rounds);
 
@@ -66,7 +72,7 @@ export async function POST(req: Request): Promise<Response> {
           correctPredictions: correctCount,
         },
         $max: { longestStreak },
-        $set: { lastPlayedAt: new Date(), favoriteChar: input.playerChar },
+        $set: { lastPlayedAt: new Date(), favoriteChar: input.playerChar, lastBotResultKey: input.idempotencyKey },
       },
       { upsert: true },
     );

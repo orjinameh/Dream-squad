@@ -5,6 +5,7 @@ export type GamePhase =
   | "MODE_SELECT"
   | "CHAR_SELECT"
   | "DUEL_CONFIRM"
+  | "PREDICTION_SELECT"
   | "MATCHMAKING"
   | "MATCH_FOUND"
   | "READY_UP"
@@ -26,6 +27,22 @@ export const GAME_MODES: GameMode[] = [
 ];
 
 export type Prediction = "UP" | "DOWN" | null;
+
+export type BotDifficulty = "easy" | "normal" | "hard";
+
+export interface PredictionConfig {
+  id: string;
+  asset: string;
+  question: string;
+  color: string;
+  prediction?: "UP" | "DOWN";
+}
+
+export const PREDICTIONS: PredictionConfig[] = [
+  { id: "btc", asset: "BTC", question: "WILL BTC GO UP OR DOWN?", color: "#f59e0b" },
+  { id: "eth", asset: "ETH", question: "WILL ETH GO UP OR DOWN?", color: "#627eea" },
+  { id: "somi", asset: "SOMI", question: "WILL SOMI GO UP OR DOWN?", color: "#10b981" },
+];
 
 export interface RoundResult {
   roundNum: number;

@@ -61,6 +61,9 @@ export async function GET(req: Request): Promise<Response> {
       player2Char: match.player2Char,
       player1Ready: match.player1Ready ?? true,
       player2Ready: match.player2Ready ?? false,
+      predictionAsset: match.predictionAsset ?? "BTC",
+      predictionQuestion: match.predictionQuestion ?? "WILL BTC GO UP OR DOWN?",
+      botDifficulty: match.botDifficulty ?? "normal",
     });
   } catch (err) {
     console.error("state failed", err);
