@@ -29,6 +29,11 @@ export interface GameActions {
   confirmDuel: () => void;
   makePrediction: (pred: "UP" | "DOWN") => void;
   rematch: () => void;
+  joinMatchmaking: (rounds: number) => void;
+  startPvPMatch: (matchId: string) => void;
+  setReady: () => void;
+  cancelMatchmaking: () => void;
+  fightBotInstead: () => void;
 }
 
 export interface GameHook {
@@ -399,6 +404,58 @@ export function useGameState(): GameHook {
   const selectChar = useCallback((c: CharacterDef) => { setPlayerChar(c); setPhase("DUEL_CONFIRM"); }, []);
   const confirmDuel = useCallback(() => { startMatch(); }, [startMatch]);
 
+  const joinMatchmaking = useCallback((selectedRounds: number) => {
+    clearAllTimers();
+    roundProcessedRef.current = [];
+    botRoundRef.current = 0;
+    setIsBotMatch(false);
+    setMode(GAME_MODES.find((m) => m.rounds === selectedRounds) ?? GAME_MODES[2]);
+    setPhase("MATCHMAKING");
+  }, [clearAllTimers]);
+
+  const startPvPMatch = useCallback((pvpMatchId: string) => {
+    clearAllTimers();
+    roundProcessedRef.current = [];
+    botRoundRef.current = 0;
+    setIsBotMatch(false);
+
+    // Connect to the match via multiplayer
+    mp.actions.reconnectToMatch(pvpMatchId);
+
+    setPhase("MATCH_FOUND");
+    scheduleTimer(() => {
+      setPhase("READY_UP");
+    }, 2000);
+  }, [clearAllTimers, mp.actions, scheduleTimer]);
+
+  const setReady = useCallback(async () => {
+    const id = mp.state.serverState?.matchId;
+    const addr = (mp.state.serverState as any)?.player2Address;
+    if (!id) return;
+
+    await fetch("/api/matches/ready", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        matchId: id,
+        address: addr || "",
+        charId: playerChar?.id ?? "dreamer",
+      }),
+    });
+  }, [mp.state.serverState, playerChar]);
+
+  const cancelMatchmaking = useCallback(() => {
+    clearAllTimers();
+    setPhase("HOME");
+  }, [clearAllTimers]);
+
+  const fightBotInstead = useCallback(() => {
+    clearAllTimers();
+    mp.actions.reset();
+    setPhase("CHAR_SELECT");
+    setIsBotMatch(true);
+  }, [clearAllTimers, mp.actions]);
+
   const connectionDisplay: ConnectionStatus = isBotMatch ? "local" : mp.state.connectionStatus;
 
   return {
@@ -422,6 +479,7 @@ export function useGameState(): GameHook {
     actions: {
       goToHome, goToModeSelect, goToCharSelect, goToLeaderboard,
       selectMode, selectChar, confirmDuel, makePrediction, rematch,
+      joinMatchmaking, startPvPMatch, setReady, cancelMatchmaking, fightBotInstead,
     },
   };
 }

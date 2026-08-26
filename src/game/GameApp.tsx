@@ -6,13 +6,15 @@ import { RetroCharacter } from "./RetroCharacter";
 import { CHARACTERS } from "./characters";
 import { GAME_MODES, type GameMode } from "./types";
 import { WalletModal } from "@/components/WalletModal";
+import { useMatchmaking } from "./useMatchmaking";
 import { useAccount } from "wagmi";
 
 export default function GameApp() {
   const g = useGameState();
   const [screenShake, setScreenShake] = useState(false);
   const [showWalletModal, setShowWalletModal] = useState(false);
-  const { isConnected } = useAccount();
+  const { isConnected, address } = useAccount();
+  const mm = useMatchmaking(address as `0x${string}` | undefined);
 
   useEffect(() => {
     if (g.shakeScreen) {
@@ -21,6 +23,13 @@ export default function GameApp() {
       return () => clearTimeout(t);
     }
   }, [g.shakeScreen]);
+
+  // When matchmaking finds a match, transition to MATCH_FOUND
+  useEffect(() => {
+    if (mm.state.status === "matched" && mm.state.matchId && g.phase === "MATCHMAKING") {
+      g.actions.startPvPMatch(mm.state.matchId);
+    }
+  }, [mm.state.status, mm.state.matchId, g.phase, g.actions]);
 
   return (
     <div style={{
@@ -36,7 +45,10 @@ export default function GameApp() {
       {g.phase === "HOME" && <HomeScreen onEnter={g.actions.goToModeSelect} onLeaderboard={g.actions.goToLeaderboard} />}
       {g.phase === "MODE_SELECT" && <ModeSelect onSelect={g.actions.selectMode} onBack={g.actions.goToHome} />}
       {g.phase === "CHAR_SELECT" && <CharSelect onSelect={g.actions.selectChar} onBack={g.actions.goToModeSelect} />}
-      {g.phase === "DUEL_CONFIRM" && <DuelConfirm mode={g.mode!} char={g.playerChar!} onConfirm={() => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.confirmDuel(); }} onBack={g.actions.goToCharSelect} />}
+      {g.phase === "DUEL_CONFIRM" && <DuelConfirm mode={g.mode!} char={g.playerChar!} onConfirm={() => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.confirmDuel(); }} onBack={g.actions.goToCharSelect} onQuickMatch={(rounds) => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.joinMatchmaking(rounds); }} walletConnected={isConnected} />}
+      {g.phase === "MATCHMAKING" && <MatchmakingScreen matchmaking={mm} onFightBot={g.actions.fightBotInstead} onHome={g.actions.cancelMatchmaking} />}
+      {g.phase === "MATCH_FOUND" && <MatchFoundScreen game={g} />}
+      {g.phase === "READY_UP" && <ReadyUpScreen game={g} onReady={g.actions.setReady} />}
       {(g.phase === "MATCH_INTRO" || g.phase === "ROUND_START" || g.phase === "ROUND_ACTIVE" || g.phase === "ROUND_LOCKED" || g.phase === "ROUND_REVEAL" || g.phase === "ROUND_IMPACT") && (
         <ArenaScreen game={g} />
       )}
@@ -239,13 +251,13 @@ function CharSelect({ onSelect, onBack }: { onSelect: (c: typeof CHARACTERS[0]) 
   );
 }
 
-function DuelConfirm({ mode, char, onConfirm, onBack }: { mode: GameMode; char: typeof CHARACTERS[0]; onConfirm: () => void; onBack: () => void }) {
+function DuelConfirm({ mode, char, onConfirm, onBack, onQuickMatch, walletConnected }: { mode: GameMode; char: typeof CHARACTERS[0]; onConfirm: () => void; onBack: () => void; onQuickMatch: (rounds: number) => void; walletConnected: boolean }) {
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "40px 20px" }}>
       <div style={{ position: "absolute", inset: 0, background: `radial-gradient(ellipse at 50% 40%, ${char.colors.accent}12 0%, transparent 50%)`, pointerEvents: "none" }} />
 
       <h2 style={{ fontSize: 28, fontWeight: 900, letterSpacing: "0.1em", color: "#f59e0b", textShadow: "2px 2px 0 #92400e", marginBottom: 24, textAlign: "center" }}>
-        {"\u26A0 "} DUEL COMMITMENT
+        {"\u26A0 "} CHOOSE YOUR FIGHT
       </h2>
 
       <div style={{ display: "flex", alignItems: "center", gap: 40, marginBottom: 32 }}>
@@ -256,25 +268,221 @@ function DuelConfirm({ mode, char, onConfirm, onBack }: { mode: GameMode; char: 
 
       <div style={{
         background: "rgba(15,23,42,0.9)", border: "2px solid #334155", borderRadius: 8,
-        padding: "24px 32px", maxWidth: 400, textAlign: "center", marginBottom: 32,
+        padding: "20px 28px", maxWidth: 400, textAlign: "center", marginBottom: 32,
       }}>
-        <p style={{ fontSize: 14, color: "#e2e8f0", lineHeight: 1.8, margin: 0 }}>
-          You are entering a prediction battle.<br />
-          Once the duel begins, you must see it through.<br /><br />
-          <span style={{ color: "#fbbf24", fontWeight: 700 }}>Rounds: {mode.rounds}</span><br />
-          <span style={{ color: "#a855f7", fontWeight: 700 }}>Prediction window: 10 seconds each</span><br /><br />
-          <span style={{ color: "#ef4444", fontSize: 12 }}>NO FORFEIT AFTER ROUND 1.</span>
+        <p style={{ fontSize: 13, color: "#94a3b8", lineHeight: 1.6, margin: 0 }}>
+          <span style={{ color: "#fbbf24", fontWeight: 700 }}>Rounds: {mode.rounds}</span> | <span style={{ color: "#a855f7", fontWeight: 700 }}>10s per round</span>
         </p>
       </div>
 
-      <div style={{ display: "flex", gap: 16 }}>
-        <button onClick={onBack} style={{ ...ctaButtonStyle, background: "transparent", border: "2px solid #475569", color: "#94a3b8", fontSize: 14, padding: "12px 28px" }}>
-          BACK
+      <div style={{ display: "flex", flexDirection: "column", gap: 12, alignItems: "center" }}>
+        <button onClick={() => onQuickMatch(mode.rounds)} style={{ ...ctaButtonStyle, fontSize: 18, padding: "14px 48px", background: "linear-gradient(135deg, #b45309, #f59e0b)" }}>
+          {"\u2694\uFE0F"} QUICK MATCH
         </button>
-        <button onClick={onConfirm} style={{ ...ctaButtonStyle, fontSize: 18, padding: "14px 40px" }}>
-          ENTER ARENA {"\u2694\uFE0F"}
+        <span style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.1em" }}>FIND A REAL OPPONENT</span>
+
+        <div style={{ width: 200, height: 1, background: "#1e293b", margin: "8px 0" }} />
+
+        <button onClick={onConfirm} style={{ ...ctaButtonStyle, fontSize: 16, padding: "12px 40px", background: "linear-gradient(135deg, #7c3aed, #a855f7)" }}>
+          {"\uD83E\uDD16"} FIGHT BOT
+        </button>
+        <span style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.1em" }}>INSTANT AI OPPONENT</span>
+      </div>
+
+      <button onClick={onBack} style={{ marginTop: 24, background: "none", border: "none", color: "#64748b", fontSize: 12, cursor: "pointer", letterSpacing: "0.1em" }}>
+        BACK
+      </button>
+    </div>
+  );
+}
+
+function MatchmakingScreen({ matchmaking, onFightBot, onHome }: { matchmaking: ReturnType<typeof useMatchmaking>; onFightBot: () => void; onHome: () => void }) {
+  const { status, age, error } = matchmaking.state;
+  const elapsed = Math.floor(age / 1000);
+
+  return (
+    <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "40px 20px" }}>
+      <div style={{ position: "absolute", inset: 0, background: "radial-gradient(ellipse at 50% 40%, rgba(245,158,11,0.06) 0%, transparent 50%)", pointerEvents: "none" }} />
+
+      <div style={{
+        fontSize: 24, fontWeight: 900, letterSpacing: "0.15em",
+        color: status === "timeout" ? "#ef4444" : "#fbbf24",
+        textShadow: "2px 2px 0 #92400e",
+        marginBottom: 16, textAlign: "center",
+      }}>
+        {status === "timeout" ? "NO RIVAL FOUND" : "SEARCHING FOR RIVAL..."}
+      </div>
+
+      {status === "searching" && (
+        <div style={{ textAlign: "center", marginBottom: 32 }}>
+          <div style={{ fontSize: 14, color: "#94a3b8", letterSpacing: "0.08em", marginBottom: 8 }}>
+            Best of {matchmaking.state.rounds} rounds
+          </div>
+          <div style={{ fontSize: 12, color: "#64748b", letterSpacing: "0.05em" }}>
+            Waiting {elapsed}s...
+          </div>
+          {/* Animated dots */}
+          <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 16 }}>
+            {[0, 1, 2].map((i) => (
+              <div key={i} style={{
+                width: 8, height: 8, borderRadius: "50%",
+                background: "#fbbf24",
+                animation: `pulse 1.4s ease-in-out ${i * 0.2}s infinite`,
+              }} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {status === "timeout" && (
+        <div style={{ textAlign: "center", marginBottom: 32 }}>
+          <div style={{ fontSize: 13, color: "#64748b", letterSpacing: "0.05em", marginBottom: 20 }}>
+            No human opponent found after {elapsed}s
+          </div>
+        </div>
+      )}
+
+      {error && (
+        <div style={{ fontSize: 12, color: "#ef4444", marginBottom: 16 }}>{error}</div>
+      )}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 12, alignItems: "center" }}>
+        {status === "searching" && (
+          <button onClick={() => matchmaking.actions.leaveQueue()} style={{ ...ctaButtonStyle, background: "transparent", border: "2px solid #475569", color: "#94a3b8", fontSize: 14, padding: "12px 32px" }}>
+            CANCEL SEARCH
+          </button>
+        )}
+        {(status === "timeout" || status === "error") && (
+          <>
+            <button onClick={() => matchmaking.actions.joinQueue(matchmaking.state.rounds, "dreamer")} style={{ ...ctaButtonStyle, fontSize: 14, padding: "12px 32px" }}>
+              KEEP SEARCHING
+            </button>
+            <button onClick={() => { matchmaking.actions.leaveQueue(); onFightBot(); }} style={{ ...ctaButtonStyle, background: "linear-gradient(135deg, #7c3aed, #a855f7)", fontSize: 14, padding: "12px 32px" }}>
+              {"\uD83E\uDD16"} FIGHT A BOT
+            </button>
+          </>
+        )}
+        <button onClick={() => { matchmaking.actions.leaveQueue(); onHome(); }} style={{ marginTop: 8, background: "none", border: "none", color: "#64748b", fontSize: 12, cursor: "pointer", letterSpacing: "0.1em" }}>
+          BACK TO ARENA
         </button>
       </div>
+    </div>
+  );
+}
+
+function MatchFoundScreen({ game }: { game: ReturnType<typeof useGameState> }) {
+  const [countdown, setCountdown] = useState(3);
+
+  useEffect(() => {
+    if (countdown <= 0) return;
+    const t = setTimeout(() => setCountdown(countdown - 1), 700);
+    return () => clearTimeout(t);
+  }, [countdown]);
+
+  return (
+    <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "40px 20px" }}>
+      <div style={{ position: "absolute", inset: 0, background: "radial-gradient(ellipse at 50% 40%, rgba(251,191,36,0.1) 0%, transparent 50%)", pointerEvents: "none" }} />
+
+      <div style={{
+        fontSize: 36, fontWeight: 900, letterSpacing: "0.15em",
+        color: "#fbbf24", textShadow: "3px 3px 0 #92400e, 0 0 30px rgba(251,191,36,0.4)",
+        marginBottom: 32, textAlign: "center",
+        animation: "glow 1.5s ease-in-out infinite",
+      }}>
+        MATCH FOUND!
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 32, marginBottom: 24 }}>
+        <RetroCharacter char={game.playerChar ?? CHARACTERS[0]} state="idle" size={1.2} />
+        <div style={{ fontSize: 42, color: "#ef4444", fontWeight: 900, textShadow: "0 0 20px rgba(239,68,68,0.5)" }}>VS</div>
+        <RetroCharacter char={game.rivalChar ?? CHARACTERS[1]} state="idle" size={1.2} flip />
+      </div>
+
+      <div style={{ fontSize: 16, color: "#a855f7", letterSpacing: "0.12em", marginBottom: 32 }}>
+        BEST OF {game.totalRounds}
+      </div>
+
+      {countdown > 0 ? (
+        <div style={{ fontSize: 72, fontWeight: 900, color: "#fbbf24", textShadow: "3px 3px 0 #92400e" }}>
+          {countdown}
+        </div>
+      ) : (
+        <div style={{ fontSize: 48, fontWeight: 900, color: "#ef4444", textShadow: "3px 3px 0 #7f1d1d", letterSpacing: "0.2em" }}>
+          FIGHT!
+        </div>
+      )}
+
+      <div style={{ fontSize: 11, color: "#64748b", marginTop: 32, letterSpacing: "0.1em" }}>
+        PREPARE TO FIGHT...
+      </div>
+    </div>
+  );
+}
+
+function ReadyUpScreen({ game, onReady }: { game: ReturnType<typeof useGameState>; onReady: () => void }) {
+  const [ready, setReady] = useState(false);
+  const [opponentReady, setOpponentReady] = useState(false);
+  const [waiting, setWaiting] = useState(false);
+
+  // Poll for ready state
+  useEffect(() => {
+    if (!game.matchId) return;
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/matches/state?matchId=${game.matchId}`);
+        const data = await res.json();
+        if (data.player1Ready) setOpponentReady(true);
+        if (data.bothReady || (data.player1Ready && data.player2Ready)) {
+          // Both ready — match will auto-start via state polling
+        }
+      } catch { /* keep polling */ }
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [game.matchId]);
+
+  const handleReady = () => {
+    setReady(true);
+    onReady();
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "40px 20px" }}>
+      <div style={{ position: "absolute", inset: 0, background: "radial-gradient(ellipse at 50% 40%, rgba(168,85,247,0.06) 0%, transparent 50%)", pointerEvents: "none" }} />
+
+      <div style={{
+        fontSize: 24, fontWeight: 900, letterSpacing: "0.15em",
+        color: "#fbbf24", textShadow: "2px 2px 0 #92400e",
+        marginBottom: 32, textAlign: "center",
+      }}>
+        GET READY
+      </div>
+
+      <div style={{ display: "flex", gap: 48, marginBottom: 40 }}>
+        <div style={{ textAlign: "center" }}>
+          <RetroCharacter char={game.playerChar ?? CHARACTERS[0]} state="idle" size={1.2} />
+          <div style={{ marginTop: 12, fontSize: 13, color: "#94a3b8", letterSpacing: "0.1em" }}>YOU</div>
+          <div style={{ marginTop: 4, fontSize: 14, color: ready ? "#10b981" : "#f59e0b", fontWeight: 700 }}>
+            {ready ? "\u2713 READY" : "... WAITING"}
+          </div>
+        </div>
+        <div style={{ textAlign: "center" }}>
+          <RetroCharacter char={game.rivalChar ?? CHARACTERS[1]} state="idle" size={1.2} flip />
+          <div style={{ marginTop: 12, fontSize: 13, color: "#94a3b8", letterSpacing: "0.1em" }}>OPPONENT</div>
+          <div style={{ marginTop: 4, fontSize: 14, color: opponentReady ? "#10b981" : "#f59e0b", fontWeight: 700 }}>
+            {opponentReady ? "\u2713 READY" : "... WAITING"}
+          </div>
+        </div>
+      </div>
+
+      {!ready ? (
+        <button onClick={handleReady} style={{ ...ctaButtonStyle, fontSize: 18, padding: "14px 48px" }}>
+          {"\u2713"} READY UP
+        </button>
+      ) : (
+        <div style={{ fontSize: 14, color: "#a855f7", letterSpacing: "0.1em" }}>
+          Waiting for opponent...
+        </div>
+      )}
     </div>
   );
 }

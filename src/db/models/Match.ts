@@ -37,6 +37,12 @@ export interface MatchDoc {
   status: MatchStatus;
   createdAt: Date;
   completedAt?: Date;
+  // PvP fields
+  opponentType: "bot" | "player";
+  player2Address?: string;
+  player2Char?: string;
+  player1Ready: boolean;
+  player2Ready: boolean;
 }
 
 const ROUND_DURATION_MS = 10_000;
@@ -78,12 +84,19 @@ const MatchSchema = new Schema<MatchDoc>(
     status: { type: String, enum: MATCH_STATUS, default: "ACTIVE" },
     createdAt: { type: Date, default: () => new Date() },
     completedAt: { type: Date },
+    // PvP fields
+    opponentType: { type: String, enum: ["bot", "player"], default: "bot" },
+    player2Address: { type: String },
+    player2Char: { type: String },
+    player1Ready: { type: Boolean, default: true },
+    player2Ready: { type: Boolean, default: false },
   },
   { versionKey: false },
 );
 
 MatchSchema.index({ playerAddress: 1, status: 1 });
 MatchSchema.index({ playerAddress: 1, createdAt: -1 });
+MatchSchema.index({ player2Address: 1, status: 1 });
 
 export const ROUND_TIMINGS = { ROUND_DURATION_MS, LOCK_MS, REVEAL_MS, IMPACT_MS } as const;
 
