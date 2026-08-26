@@ -682,7 +682,7 @@ function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
               WILL THE MARKET GO UP OR DOWN?
             </div>
 
-            {/* Server-synced countdown */}
+            {/* Countdown timer */}
             <div style={{
               fontSize: 42, fontWeight: 900, letterSpacing: "0.08em", marginBottom: 16,
               color: urgency === "critical" ? "#ef4444" : urgency === "urgent" ? "#f59e0b" : "#10b981",
@@ -692,44 +692,50 @@ function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
               {game.timeLeft.toFixed(2)}
             </div>
 
-            {/* Prediction status display */}
-            {predStatus !== "idle" && (
+            {/* Selection status */}
+            {game.playerPrediction && (
               <div style={{
                 fontSize: 11, letterSpacing: "0.12em", marginBottom: 12, padding: "4px 12px",
                 borderRadius: 4, display: "inline-block",
-                background: predStatus === "confirmed" ? "rgba(16,185,129,0.15)" : predStatus === "error" ? "rgba(239,68,68,0.15)" : "rgba(245,158,11,0.15)",
-                border: `1px solid ${predStatus === "confirmed" ? "#10b981" : predStatus === "error" ? "#ef4444" : "#f59e0b"}`,
-                color: predStatus === "confirmed" ? "#10b981" : predStatus === "error" ? "#ef4444" : "#f59e0b",
+                background: "rgba(245,158,11,0.15)",
+                border: "1px solid #f59e0b",
+                color: "#f59e0b",
               }}>
-                {predStatus === "selected" && `\u2191 ${game.playerPrediction?.toUpperCase()} SELECTED`}
-                {predStatus === "submitting" && "SUBMITTING..."}
-                {predStatus === "confirmed" && "\uD83D\uDD12 LOCKED"}
-                {predStatus === "error" && "SUBMISSION FAILED"}
+                {game.playerPrediction === "UP" ? "\u2191" : "\u2193"} {game.playerPrediction} SELECTED — TAP TO CHANGE
+              </div>
+            )}
+            {predStatus === "submitting" && (
+              <div style={{
+                fontSize: 11, letterSpacing: "0.12em", marginBottom: 12, padding: "4px 12px",
+                borderRadius: 4, display: "inline-block",
+                background: "rgba(245,158,11,0.15)", border: "1px solid #f59e0b", color: "#f59e0b",
+              }}>
+                SUBMITTING...
               </div>
             )}
 
-            {/* YES / NO buttons — disabled after selection */}
+            {/* UP/DOWN buttons — enabled during ROUND_ACTIVE, highlighted when selected */}
             <div style={{ display: "flex", gap: 20, justifyContent: "center" }}>
               <button
                 onClick={() => game.actions.makePrediction("UP")}
-                disabled={predStatus !== "idle"}
                 style={{
                   ...predictionBtnStyle("#10b981"),
-                  opacity: predStatus !== "idle" ? 0.4 : 1,
-                  cursor: predStatus !== "idle" ? "not-allowed" : "pointer",
-                  transform: predStatus === "idle" ? undefined : "scale(0.95)",
+                  opacity: game.playerPrediction === "UP" ? 1.2 : 1,
+                  transform: game.playerPrediction === "UP" ? "scale(1.05)" : undefined,
+                  borderColor: game.playerPrediction === "UP" ? "#10b981" : undefined,
+                  boxShadow: game.playerPrediction === "UP" ? "0 0 12px rgba(16,185,129,0.5)" : undefined,
                 }}
               >
                 {"\u2191"} YES
               </button>
               <button
                 onClick={() => game.actions.makePrediction("DOWN")}
-                disabled={predStatus !== "idle"}
                 style={{
                   ...predictionBtnStyle("#ef4444"),
-                  opacity: predStatus !== "idle" ? 0.4 : 1,
-                  cursor: predStatus !== "idle" ? "not-allowed" : "pointer",
-                  transform: predStatus === "idle" ? undefined : "scale(0.95)",
+                  opacity: game.playerPrediction === "DOWN" ? 1.2 : 1,
+                  transform: game.playerPrediction === "DOWN" ? "scale(1.05)" : undefined,
+                  borderColor: game.playerPrediction === "DOWN" ? "#ef4444" : undefined,
+                  boxShadow: game.playerPrediction === "DOWN" ? "0 0 12px rgba(239,68,68,0.5)" : undefined,
                 }}
               >
                 {"\u2193"} NO
