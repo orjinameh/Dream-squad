@@ -14,6 +14,28 @@ export interface RoundRecord {
   actual: "UP" | "DOWN";
   playerCorrect: boolean;
   rivalCorrect: boolean;
+  // DreamDEX execution tracking
+  playerExecution?: {
+    status: "PENDING" | "EXECUTED" | "FAILED";
+    txHash?: string;
+    blockNumber?: number;
+    blockHash?: string;
+    gasUsed?: number;
+    direction?: "BUY" | "SELL";
+    amount?: number;
+    error?: string;
+  };
+  rivalExecution?: {
+    status: "PENDING" | "EXECUTED" | "FAILED";
+    txHash?: string;
+    blockNumber?: number;
+    blockHash?: string;
+    gasUsed?: number;
+    direction?: "BUY" | "SELL";
+    amount?: number;
+    error?: string;
+  };
+  resolvedAt?: Date;
 }
 
 export interface MatchDoc {
@@ -48,6 +70,13 @@ export interface MatchDoc {
   predictionQuestion: string;
   // Bot difficulty
   botDifficulty: "easy" | "normal" | "hard";
+  // DreamDEX market integration
+  marketId: string;
+  executionConfig: {
+    marketSymbol: string;
+    poolAddress: string;
+    amountPerRound: number;
+  };
 }
 
 const ROUND_DURATION_MS = 10_000;
@@ -63,6 +92,27 @@ const RoundSchema = new Schema<RoundRecord>(
     actual: { type: String, enum: ["UP", "DOWN"], required: true },
     playerCorrect: { type: Boolean, required: true },
     rivalCorrect: { type: Boolean, required: true },
+    playerExecution: {
+      status: { type: String, enum: ["PENDING", "EXECUTED", "FAILED"] },
+      txHash: { type: String },
+      blockNumber: { type: Number },
+      blockHash: { type: String },
+      gasUsed: { type: Number },
+      direction: { type: String, enum: ["BUY", "SELL"] },
+      amount: { type: Number },
+      error: { type: String },
+    },
+    rivalExecution: {
+      status: { type: String, enum: ["PENDING", "EXECUTED", "FAILED"] },
+      txHash: { type: String },
+      blockNumber: { type: Number },
+      blockHash: { type: String },
+      gasUsed: { type: Number },
+      direction: { type: String, enum: ["BUY", "SELL"] },
+      amount: { type: Number },
+      error: { type: String },
+    },
+    resolvedAt: { type: Date },
   },
   { _id: false, versionKey: false },
 );
@@ -100,6 +150,13 @@ const MatchSchema = new Schema<MatchDoc>(
     predictionQuestion: { type: String, default: "WILL BTC GO UP OR DOWN?" },
     // Bot difficulty
     botDifficulty: { type: String, enum: ["easy", "normal", "hard"], default: "normal" },
+    // DreamDEX market integration
+    marketId: { type: String, default: "SOMI:USDso" },
+    executionConfig: {
+      marketSymbol: { type: String, default: "SOMI:USDso" },
+      poolAddress: { type: String, default: "0x259fD6559214dd5aD3752322426eA9F9fABEFff4" },
+      amountPerRound: { type: Number, default: 1 },
+    },
   },
   { versionKey: false },
 );

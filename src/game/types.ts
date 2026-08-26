@@ -13,6 +13,7 @@ export type GamePhase =
   | "ROUND_START"
   | "ROUND_ACTIVE"
   | "ROUND_LOCKED"
+  | "ROUND_EXECUTING"
   | "ROUND_REVEAL"
   | "ROUND_IMPACT"
   | "MATCH_RESULT";
@@ -51,6 +52,18 @@ export interface RoundResult {
   rivalPredicted: Prediction;
   playerCorrect: boolean;
   rivalCorrect: boolean;
+  playerExecution?: {
+    status: "PENDING" | "EXECUTED" | "FAILED";
+    txHash?: string;
+    direction?: "BUY" | "SELL";
+    error?: string;
+  };
+  rivalExecution?: {
+    status: "PENDING" | "EXECUTED" | "FAILED";
+    txHash?: string;
+    direction?: "BUY" | "SELL";
+    error?: string;
+  };
 }
 
 export interface GameState {
@@ -72,4 +85,7 @@ export interface GameState {
   hitEffect: "none" | "player-hit" | "rival-hit" | "both-hit";
   shakeScreen: boolean;
   showStreak: string | null;
+  executionStatus: "idle" | "executing" | "success" | "failed" | "retrying";
+  executionError: string | null;
+  lastTxHash: string | null;
 }

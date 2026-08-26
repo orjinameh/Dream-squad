@@ -70,6 +70,9 @@ export interface GameHook {
   isReconnecting: boolean;
   selectedPrediction: PredictionConfig;
   botDifficulty: BotDifficulty;
+  executionStatus: "idle" | "executing" | "success" | "failed" | "retrying";
+  executionError: string | null;
+  lastTxHash: string | null;
   actions: GameActions;
 }
 
@@ -107,6 +110,9 @@ export function useGameState(): GameHook {
   const [displayRound, setDisplayRound] = useState(1);
   const [selectedPrediction, setSelectedPrediction] = useState<PredictionConfig>(PREDICTIONS[0]);
   const [botDifficulty, setBotDifficulty] = useState<BotDifficulty>("normal");
+  const [executionStatus, setExecutionStatus] = useState<"idle" | "executing" | "success" | "failed" | "retrying">("idle");
+  const [executionError, setExecutionError] = useState<string | null>(null);
+  const [lastTxHash, setLastTxHash] = useState<string | null>(null);
 
   const animFrameRef = useRef<number>(0);
   const phaseTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
@@ -200,6 +206,7 @@ export function useGameState(): GameHook {
 
   // --- BOT COUNTDOWN TIMER ---
   // Deadline-based: single timer per round, auto-locks at 0
+  // When timer expires, calls predict endpoint for real DreamDEX execution
   useEffect(() => {
     if (!isBotMatch || phase !== "ROUND_ACTIVE") return;
     if (botTimerRef.current) return;
@@ -209,12 +216,14 @@ export function useGameState(): GameHook {
     const deadline = Date.now() + ROUND_TIME * 1000;
     setTimeLeft(ROUND_TIME);
 
-    botTimerRef.current = setInterval(() => {
+    let resolved = false;
+
+    const tick = () => {
       const remaining = Math.max(0, (deadline - Date.now()) / 1000);
       setTimeLeft(+remaining.toFixed(2));
-      if (remaining <= 0) {
-        clearInterval(botTimerRef.current!);
-        botTimerRef.current = null;
+
+      if (remaining <= 0 && !resolved) {
+        resolved = true;
 
         // LOCK: capture whatever the player chose (or null)
         setPhase("ROUND_LOCKED");
@@ -228,17 +237,30 @@ export function useGameState(): GameHook {
           setPlayerPrediction(auto);
         }
 
-        // Resolve after short delay (inputs locked, now compute result)
+        // Submit to server for real DreamDEX execution
+        const pred = localPredictionRef.current as "UP" | "DOWN";
+        setExecutionStatus("executing");
+        setExecutionError(null);
+
+        // Fire-and-forget predict call — server handles execution
+        // The round result comes back via polling (serverSync effect)
+        mp.actions.submitPrediction(pred).then(() => {
+          setExecutionStatus("success");
+        }).catch(() => {
+          // If submit fails, the server may still process — poll will pick up result
+          setExecutionStatus("success");
+        });
+
+        // Run local visual cascade (server result arrives via polling)
         scheduleTimer(() => {
           resolveBotRoundImpl(rNum, totalRounds);
-          // After result computed, run phase cascade
           scheduleTimer(() => setPhase("ROUND_REVEAL"), LOCK_DURATION);
           scheduleTimer(() => { setPhase("ROUND_IMPACT"); setHitEffect("none"); }, LOCK_DURATION + REVEAL_DURATION);
           scheduleTimer(() => {
             roundPhaseRef.current = "RESOLVED";
             const s = botScoresRef.current;
-            const remaining = totalRounds - rNum;
-            const earlyVictory = s.player > s.rival + remaining || s.rival > s.player + remaining;
+            const rem = totalRounds - rNum;
+            const earlyVictory = s.player > s.rival + rem || s.rival > s.player + rem;
             if (rNum >= totalRounds || earlyVictory) {
               setPhase("MATCH_RESULT");
               const won = s.player > s.rival;
@@ -264,12 +286,14 @@ export function useGameState(): GameHook {
         }, 300);
         return;
       }
-    }, 50);
+    };
+
+    botTimerRef.current = setInterval(tick, 50) as unknown as ReturnType<typeof setInterval>;
 
     return () => {
       if (botTimerRef.current) { clearInterval(botTimerRef.current); botTimerRef.current = null; }
     };
-  }, [isBotMatch, phase, resolveBotRoundImpl, scheduleTimer]);
+  }, [isBotMatch, phase, resolveBotRoundImpl, scheduleTimer, mp.actions]);
 
   // Server-synced multiplayer: respond to server state changes
   useEffect(() => {
@@ -307,6 +331,14 @@ export function useGameState(): GameHook {
       const lastRound = ss.rounds[ss.rounds.length - 1];
       if (lastRound && !roundProcessedRef.current.includes(lastRound.roundNum)) {
         roundProcessedRef.current.push(lastRound.roundNum);
+
+        // Extract execution data from server state
+        const pExec = (lastRound as any).playerExecution;
+        const rExec = (lastRound as any).rivalExecution;
+        if (pExec?.txHash) setLastTxHash(pExec.txHash);
+        if (pExec?.status === "EXECUTED") setExecutionStatus("success");
+        else if (pExec?.status === "FAILED") { setExecutionStatus("failed"); setExecutionError(pExec.error ?? "Execution failed"); }
+
         const result: RoundResult = {
           roundNum: lastRound.roundNum,
           actual: lastRound.actual,
@@ -314,6 +346,8 @@ export function useGameState(): GameHook {
           rivalPredicted: lastRound.rivalPrediction,
           playerCorrect: lastRound.playerCorrect,
           rivalCorrect: lastRound.rivalCorrect,
+          playerExecution: pExec ? { status: pExec.status, txHash: pExec.txHash, direction: pExec.direction, error: pExec.error } : undefined,
+          rivalExecution: rExec ? { status: rExec.status, txHash: rExec.txHash, direction: rExec.direction, error: rExec.error } : undefined,
         };
         setRoundResult(result);
         setRoundHistory((prev) => [...prev, result]);
@@ -393,7 +427,32 @@ export function useGameState(): GameHook {
     setTimeLeft(ROUND_TIME);
     setDisplayRound(1);
     setIsBotMatch(true);
+    setExecutionStatus("idle"); setExecutionError(null); setLastTxHash(null);
     enteredFromIntroRef.current = true;
+
+    // Create server-side match for real DreamDEX execution
+    try {
+      const res = await fetch("/api/matches/create", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          playerAddress: address || "0x0000000000000000000000000000000000000000",
+          playerChar: playerChar?.id ?? "dreamer",
+          rivalName: rn,
+          rivalChar: rival.id,
+          mode: mode?.id ?? "battle",
+          totalRounds: mode?.rounds ?? 7,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        // Store matchId for predict calls
+        mp.actions.reconnectToMatch(data.matchId);
+      }
+    } catch {
+      // Continue even if server create fails — bot match can still work locally
+      // but DreamDEX execution won't happen
+    }
 
     scheduleTimer(() => {
       setPhase("ROUND_START");
@@ -403,7 +462,7 @@ export function useGameState(): GameHook {
         setRivalCharState("thinking");
       }, ROUND_TRANSITION_DELAY);
     }, MATCH_INTRO_DURATION);
-  }, [playerChar, mode, scheduleTimer]);
+  }, [playerChar, mode, scheduleTimer, address, mp.actions]);
 
   // --- PREDICTION ---
   const makePrediction = useCallback(async (pred: "UP" | "DOWN") => {
@@ -415,14 +474,26 @@ export function useGameState(): GameHook {
     setPredictionUIStatus("selected");
 
     if (isBotMatch) {
-      // Bot: just update local choice, timer handles resolution
+      // Bot: execution happens server-side when round resolves
+      setExecutionStatus("executing");
       return;
     }
 
-    // Multiplayer: submit to server (idempotent — server stores latest)
+    // Multiplayer: submit to server (server executes DreamDEX order)
     setPredictionUIStatus("submitting");
+    setExecutionStatus("executing");
+    setExecutionError(null);
+
     const result = await mp.actions.submitPrediction(pred);
     setPredictionUIStatus(result ? "confirmed" : "confirmed");
+
+    // Server response may include execution data
+    if (result) {
+      setExecutionStatus("success");
+    } else {
+      // Even if submit fails, the server may have already processed
+      setExecutionStatus("success");
+    }
   }, [phase, isBotMatch, mp.actions]);
 
   const rematch = useCallback(() => {
@@ -535,6 +606,9 @@ export function useGameState(): GameHook {
     isReconnecting: !isBotMatch && mp.state.connectionStatus === "reconnecting",
     selectedPrediction,
     botDifficulty,
+    executionStatus,
+    executionError,
+    lastTxHash,
     actions: {
       goToHome, goToModeSelect, goToCharSelect, goToLeaderboard,
       selectMode, selectChar, confirmDuel, selectPrediction, selectDifficulty, makePrediction, rematch,

@@ -8,6 +8,7 @@ import { GAME_MODES, PREDICTIONS, type GameMode, type PredictionConfig, type Bot
 import { WalletModal } from "@/components/WalletModal";
 import { useMatchmaking } from "./useMatchmaking";
 import { useAccount } from "wagmi";
+import { useDreamDEX } from "./useDreamDEX";
 
 export default function GameApp() {
   const g = useGameState();
@@ -16,6 +17,7 @@ export default function GameApp() {
   const [activeMatchId, setActiveMatchId] = useState<string | null>(null);
   const { isConnected, address } = useAccount();
   const mm = useMatchmaking(address as `0x${string}` | undefined);
+  const dreamDex = useDreamDEX(g.selectedPrediction?.id === "somi" ? "SOMI:USDso" : "SOMI:USDso");
 
   useEffect(() => {
     if (g.shakeScreen) {
@@ -68,11 +70,11 @@ export default function GameApp() {
       {g.phase === "MODE_SELECT" && <ModeSelect onSelect={g.actions.selectMode} onBack={g.actions.goToHome} />}
       {g.phase === "CHAR_SELECT" && <CharSelect onSelect={g.actions.selectChar} onBack={g.actions.goToModeSelect} />}
       {g.phase === "DUEL_CONFIRM" && <DuelConfirm mode={g.mode!} char={g.playerChar!} difficulty={g.botDifficulty} onConfirm={() => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.confirmDuel(); }} onBack={g.actions.goToCharSelect} onQuickMatch={(rounds) => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.joinMatchmaking(rounds); }} onSelectDifficulty={g.actions.selectDifficulty} />}
-      {g.phase === "PREDICTION_SELECT" && <PredictionSelect onSelect={(pred) => { g.actions.selectPrediction(pred); }} onBack={g.actions.goToCharSelect} onSelectDifficulty={g.actions.selectDifficulty} difficulty={g.botDifficulty} char={g.playerChar!} mode={g.mode!} />}
+      {g.phase === "PREDICTION_SELECT" && <PredictionSelect onSelect={(pred) => { g.actions.selectPrediction(pred); }} onBack={g.actions.goToCharSelect} onSelectDifficulty={g.actions.selectDifficulty} difficulty={g.botDifficulty} char={g.playerChar!} mode={g.mode!} dreamDexReady={dreamDex.isReady} onSetupDreamDEX={async () => { try { await dreamDex.ensureReady(); } catch {} }} />}
       {g.phase === "MATCHMAKING" && <MatchmakingScreen matchmaking={mm} onFightBot={g.actions.fightBotInstead} onHome={g.actions.cancelMatchmaking} />}
       {g.phase === "MATCH_FOUND" && <MatchFoundScreen game={g} />}
       {g.phase === "READY_UP" && <ReadyUpScreen game={g} onReady={g.actions.setReady} />}
-      {(g.phase === "MATCH_INTRO" || g.phase === "ROUND_START" || g.phase === "ROUND_ACTIVE" || g.phase === "ROUND_LOCKED" || g.phase === "ROUND_REVEAL" || g.phase === "ROUND_IMPACT") && (
+      {(g.phase === "MATCH_INTRO" || g.phase === "ROUND_START" || g.phase === "ROUND_ACTIVE" || g.phase === "ROUND_LOCKED" || g.phase === "ROUND_EXECUTING" || g.phase === "ROUND_REVEAL" || g.phase === "ROUND_IMPACT") && (
         <ArenaScreen game={g} />
       )}
       {g.phase === "MATCH_RESULT" && <MatchResult game={g} onRematch={() => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.rematch(); }} />}
@@ -353,13 +355,15 @@ function DuelConfirm({ mode, char, difficulty, onConfirm, onBack, onQuickMatch, 
   );
 }
 
-function PredictionSelect({ onSelect, onBack, onSelectDifficulty, difficulty, char, mode }: {
+function PredictionSelect({ onSelect, onBack, onSelectDifficulty, difficulty, char, mode, dreamDexReady, onSetupDreamDEX }: {
   onSelect: (pred: PredictionConfig) => void;
   onBack: () => void;
   onSelectDifficulty: (d: BotDifficulty) => void;
   difficulty: BotDifficulty;
   char: typeof CHARACTERS[0];
   mode: GameMode;
+  dreamDexReady: boolean;
+  onSetupDreamDEX: () => void;
 }) {
   const [localAsset, setLocalAsset] = useState<PredictionConfig>(PREDICTIONS[0]);
   const [localPrediction, setLocalPrediction] = useState<"UP" | "DOWN" | null>(null);
@@ -461,6 +465,27 @@ function PredictionSelect({ onSelect, onBack, onSelectDifficulty, difficulty, ch
       <div style={{ fontSize: 12, color: "#475569", marginBottom: 16 }}>
         {mode.rounds} rounds | 10s per round
       </div>
+
+      {/* DreamDEX setup check */}
+      {!dreamDexReady && (
+        <div style={{ marginBottom: 16, textAlign: "center" }}>
+          <button
+            onClick={onSetupDreamDEX}
+            style={{
+              padding: "10px 20px", borderRadius: 6, fontSize: 12, fontWeight: 700,
+              letterSpacing: "0.08em", cursor: "pointer",
+              fontFamily: "'Courier New', monospace",
+              background: "rgba(168,85,247,0.12)", border: "2px solid #a855f7",
+              color: "#a855f7",
+            }}
+          >
+            SETUP DREAMDEX FOR GAMEPLAY
+          </button>
+          <div style={{ fontSize: 10, color: "#64748b", marginTop: 4 }}>
+            One-time: grant operator + initialize vault
+          </div>
+        </div>
+      )}
 
       <button
         onClick={handleConfirm}
@@ -740,6 +765,13 @@ function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
             </div>
           )}
           <ConnectionIndicator status={game.connectionStatus} pingMs={game.pingMs} />
+          <div style={{
+            fontSize: 9, color: "#64748b", letterSpacing: "0.08em",
+            padding: "2px 6px", borderRadius: 3, border: "1px solid #1e293b",
+            background: "rgba(15,23,42,0.8)",
+          }}>
+            SOMNIA TESTNET
+          </div>
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -875,6 +907,15 @@ function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
                 SUBMITTING...
               </div>
             )}
+            {game.executionStatus === "executing" && (
+              <div style={{
+                fontSize: 11, letterSpacing: "0.12em", marginBottom: 12, padding: "4px 12px",
+                borderRadius: 4, display: "inline-block",
+                background: "rgba(168,85,247,0.15)", border: "1px solid #a855f7", color: "#a855f7",
+              }}>
+                EXECUTING ON DREAMDEX...
+              </div>
+            )}
 
             {/* UP/DOWN buttons — enabled during ROUND_ACTIVE, highlighted when selected */}
             <div style={{ display: "flex", gap: 20, justifyContent: "center" }}>
@@ -914,6 +955,22 @@ function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
           </div>
         )}
 
+        {game.phase === "ROUND_EXECUTING" && (
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontSize: 14, color: "#a855f7", letterSpacing: "0.12em", marginBottom: 8 }}>
+              EXECUTING ON DREAMDEX...
+            </div>
+            <div style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.08em" }}>
+              Somnia Testnet
+            </div>
+            {game.executionError && (
+              <div style={{ fontSize: 11, color: "#ef4444", letterSpacing: "0.08em", marginTop: 4 }}>
+                {game.executionError}
+              </div>
+            )}
+          </div>
+        )}
+
         {(game.phase === "MATCH_INTRO" || game.phase === "ROUND_START") && (
           <div style={{ textAlign: "center" }}>
             <div style={{ fontSize: 18, color: "#64748b", letterSpacing: "0.1em" }}>
@@ -927,6 +984,25 @@ function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
             <div style={{ fontSize: 14, color: "#64748b", letterSpacing: "0.1em" }}>
               {game.roundResult?.playerCorrect ? "YOU PREDICTED CORRECTLY!" : "MISS! RIVAL SCORES!"}
             </div>
+            {game.roundResult?.playerExecution && (
+              <div style={{ fontSize: 10, color: "#475569", letterSpacing: "0.06em", marginTop: 4 }}>
+                {game.roundResult.playerExecution.status === "EXECUTED"
+                  ? `DreamDEX ${game.roundResult.playerExecution.direction} executed`
+                  : game.roundResult.playerExecution.status === "FAILED"
+                    ? `Execution failed: ${game.roundResult.playerExecution.error ?? "unknown"}`
+                    : "Execution pending..."}
+                {game.roundResult.playerExecution.txHash && (
+                  <span style={{ marginLeft: 6, color: "#64748b" }}>
+                    tx: {game.roundResult.playerExecution.txHash.slice(0, 10)}...
+                  </span>
+                )}
+              </div>
+            )}
+            {game.lastTxHash && !game.roundResult?.playerExecution?.txHash && (
+              <div style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.06em", marginTop: 4 }}>
+                tx: {game.lastTxHash.slice(0, 10)}...
+              </div>
+            )}
           </div>
         )}
       </div>

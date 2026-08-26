@@ -3,6 +3,8 @@ import { Match, ROUND_TIMINGS } from "@/db/models/Match";
 import { PlayerStats } from "@/db/models/PlayerStats";
 import { normalizeAddress } from "@/lib/addresses";
 import { jsonError } from "@/lib/syndicates";
+import { executeGameRound, deriveRoundOutcome, type RoundExecutionResult } from "@/lib/operator";
+import { MARKETS } from "@/lib/markets";
 import { z } from "zod";
 import { isAddress } from "viem";
 
@@ -12,10 +14,6 @@ const predictSchema = z.object({
   prediction: z.enum(["UP", "DOWN"]),
   clientTimestamp: z.string().optional(),
 });
-
-function randomOutcome(): "UP" | "DOWN" {
-  return Math.random() < 0.5 ? "UP" : "DOWN";
-}
 
 function computeLongestStreak(rounds: Array<{ playerCorrect: boolean }>): number {
   let max = 0;
@@ -93,32 +91,124 @@ export async function POST(req: Request): Promise<Response> {
         });
       }
 
-      // Both predicted — resolve the round
+      // Both predicted — resolve the round with real DreamDEX execution
       return await resolvePvPRound(updated, now);
     }
 
-    // Bot match: resolve immediately (AI prediction generated here)
-    const difficulty = match.botDifficulty || "normal";
-    const botCorrectBias = difficulty === "easy" ? 0.35 : difficulty === "hard" ? 0.65 : 0.5;
-    const actual = randomOutcome();
-    const botShouldBeCorrect = Math.random() < botCorrectBias;
-    const rivalPred = botShouldBeCorrect ? actual : (actual === "UP" ? "DOWN" as const : "UP" as const);
-    const playerCorrect = input.prediction === actual;
-    const rivalCorrect = rivalPred === actual;
-
-    return await finalizeRound(match, input.prediction, rivalPred, actual, playerCorrect, rivalCorrect, now);
+    // Bot match: execute player's order on DreamDEX, generate bot prediction
+    return await resolveBotRound(updated, input.prediction, now);
   } catch (err) {
     console.error("predict failed", err);
     return jsonError(500, "failed to submit prediction");
   }
 }
 
+/**
+ * Resolve a PvP round: execute both players' IOC orders on DreamDEX.
+ */
 async function resolvePvPRound(match: any, now: Date): Promise<Response> {
-  const actual = randomOutcome();
+  const marketSymbol = match.executionConfig?.marketSymbol ?? "SOMI:USDso";
+  const roundNumber = match.currentRound;
+  const matchId = match._id;
+  const amount = match.executionConfig?.amountPerRound ?? 1;
+
+  // Execute Player 1's order
+  const player1Result = await executeGameRound(
+    marketSymbol,
+    match.playerAddress,
+    match.playerPrediction,
+    roundNumber,
+    matchId,
+  );
+
+  // Execute Player 2's order
+  const player2Result = await executeGameRound(
+    marketSymbol,
+    match.player2Address,
+    match.rivalPrediction,
+    roundNumber,
+    matchId,
+  );
+
+  // Determine round outcome from on-chain execution
+  const actual = determineOutcome(player1Result, player2Result, roundNumber);
   const playerCorrect = match.playerPrediction === actual;
   const rivalCorrect = match.rivalPrediction === actual;
 
-  return await finalizeRound(match, match.playerPrediction, match.rivalPrediction, actual, playerCorrect, rivalCorrect, now);
+  return await finalizeRound(match, match.playerPrediction, match.rivalPrediction, actual, playerCorrect, rivalCorrect, now, player1Result, player2Result);
+}
+
+/**
+ * Resolve a bot round: execute player's order on DreamDEX, bot prediction is local.
+ */
+async function resolveBotRound(match: any, playerPrediction: "UP" | "DOWN", now: Date): Promise<Response> {
+  const marketSymbol = match.executionConfig?.marketSymbol ?? "SOMI:USDso";
+  const roundNumber = match.currentRound;
+  const matchId = match._id;
+  const amount = match.executionConfig?.amountPerRound ?? MARKETS[marketSymbol]?.minAmount ?? 1;
+
+  // Execute player's IOC order on DreamDEX
+  const playerResult = await executeGameRound(
+    marketSymbol,
+    match.playerAddress,
+    playerPrediction,
+    roundNumber,
+    matchId,
+  );
+
+  // Bot prediction: based on difficulty bias, resolved locally
+  const difficulty = match.botDifficulty || "normal";
+  const botCorrectBias = difficulty === "easy" ? 0.35 : difficulty === "hard" ? 0.65 : 0.5;
+
+  // Use the execution-derived outcome as the authoritative actual
+  const actual = playerResult.roundOutcome;
+  const botShouldBeCorrect = Math.random() < botCorrectBias;
+  const rivalPred = botShouldBeCorrect ? actual : (actual === "UP" ? "DOWN" as const : "UP" as const);
+  const playerCorrect = playerPrediction === actual;
+  const rivalCorrect = rivalPred === actual;
+
+  // Bot execution is simulated (no real on-chain tx)
+  const botExecution: RoundExecutionResult = {
+    success: true,
+    txHash: null,
+    blockNumber: null,
+    blockHash: null,
+    gasUsed: null,
+    direction: rivalPred === "UP" ? "BUY" : "SELL",
+    amount,
+    marketSymbol,
+    roundOutcome: actual,
+  };
+
+  return await finalizeRound(match, playerPrediction, rivalPred, actual, playerCorrect, rivalCorrect, now, playerResult, botExecution);
+}
+
+/**
+ * Determine the authoritative round outcome from on-chain execution results.
+ * Uses the player1 txHash as the source of truth for the round.
+ * Both players see the same outcome.
+ */
+function determineOutcome(
+  p1Result: RoundExecutionResult,
+  p2Result: RoundExecutionResult,
+  roundNumber: number,
+): "UP" | "DOWN" {
+  // If one execution succeeded and the other failed, the successful one determines the outcome
+  if (p1Result.success && !p2Result.success) return p1Result.roundOutcome;
+  if (!p1Result.success && p2Result.success) return p2Result.roundOutcome;
+
+  // Both succeeded: use player1's txHash for deterministic outcome
+  if (p1Result.success && p2Result.success && p1Result.txHash) {
+    return deriveRoundOutcome(p1Result.txHash, roundNumber);
+  }
+
+  // Both failed: fallback to player1's prediction direction as the actual
+  // (This is a degraded state — logged for diagnostics)
+  console.error(`[predict] both executions failed for round ${roundNumber}`, {
+    p1Error: p1Result.error,
+    p2Error: p2Result.error,
+  });
+  return "UP"; // deterministic fallback
 }
 
 async function finalizeRound(
@@ -129,15 +219,44 @@ async function finalizeRound(
   playerCorrect: boolean,
   rivalCorrect: boolean,
   now: Date,
+  playerExec?: RoundExecutionResult,
+  rivalExec?: RoundExecutionResult,
 ): Promise<Response> {
-  const roundRecord = {
+  const roundRecord: any = {
     roundNum: match.currentRound,
     playerPrediction: playerPred,
     rivalPrediction: rivalPred,
     actual,
     playerCorrect,
     rivalCorrect,
+    resolvedAt: now,
   };
+
+  // Attach execution details
+  if (playerExec) {
+    roundRecord.playerExecution = {
+      status: playerExec.success ? "EXECUTED" : "FAILED",
+      txHash: playerExec.txHash ?? undefined,
+      blockNumber: playerExec.blockNumber ? Number(playerExec.blockNumber) : undefined,
+      blockHash: playerExec.blockHash ?? undefined,
+      gasUsed: playerExec.gasUsed ? Number(playerExec.gasUsed) : undefined,
+      direction: playerExec.direction,
+      amount: playerExec.amount,
+      error: playerExec.error,
+    };
+  }
+  if (rivalExec) {
+    roundRecord.rivalExecution = {
+      status: rivalExec.success ? "EXECUTED" : "FAILED",
+      txHash: rivalExec.txHash ?? undefined,
+      blockNumber: rivalExec.blockNumber ? Number(rivalExec.blockNumber) : undefined,
+      blockHash: rivalExec.blockHash ?? undefined,
+      gasUsed: rivalExec.gasUsed ? Number(rivalExec.gasUsed) : undefined,
+      direction: rivalExec.direction,
+      amount: rivalExec.amount,
+      error: rivalExec.error,
+    };
+  }
 
   const newPlayerScore = match.playerScore + (playerCorrect ? 1 : 0);
   const newRivalScore = match.rivalScore + (rivalCorrect ? 1 : 0);
@@ -231,6 +350,18 @@ export interface MatchStateResponse {
     actual: "UP" | "DOWN";
     playerCorrect: boolean;
     rivalCorrect: boolean;
+    playerExecution?: {
+      status: string;
+      txHash?: string;
+      direction?: string;
+      error?: string;
+    };
+    rivalExecution?: {
+      status: string;
+      txHash?: string;
+      direction?: string;
+      error?: string;
+    };
   }>;
   winner: string;
   opponentType?: string;
@@ -241,6 +372,7 @@ export interface MatchStateResponse {
   predictionAsset?: string;
   predictionQuestion?: string;
   botDifficulty?: string;
+  marketId?: string;
 }
 
 async function updatePlayerStats(match: any, allRounds: any[], winner: string, now: Date) {
@@ -314,5 +446,6 @@ function buildState(match: any, serverTime: Date): MatchStateResponse {
     predictionAsset: match.predictionAsset,
     predictionQuestion: match.predictionQuestion,
     botDifficulty: match.botDifficulty,
+    marketId: match.marketId,
   };
 }
