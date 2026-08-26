@@ -97,7 +97,10 @@ export function useGameState(): GameHook {
   const botRoundRef = useRef(0);
   const botScoresRef = useRef({ player: 0, rival: 0, pStreak: 0, rStreak: 0 });
   const enteredFromIntroRef = useRef(false);
-  const localPredictionRef = useRef<Prediction>(null);
+  const modeRef = useRef<GameMode | null>(null);
+
+  // Keep refs in sync for use inside intervals/timeouts
+  useEffect(() => { modeRef.current = mode; }, [mode]);
 
   const clearAllTimers = useCallback(() => {
     phaseTimersRef.current.forEach(clearTimeout);
@@ -107,38 +110,14 @@ export function useGameState(): GameHook {
 
   useEffect(() => () => { clearAllTimers(); cancelAnimationFrame(animFrameRef.current); }, [clearAllTimers]);
 
-  // Keep localPredictionRef in sync so resolveBotRound never reads stale value
-  useEffect(() => { localPredictionRef.current = localPrediction; }, [localPrediction]);
-
   const scheduleTimer = useCallback((fn: () => void, ms: number) => {
     const t = setTimeout(fn, ms);
     phaseTimersRef.current.push(t);
     return t;
   }, []);
 
-  const advanceToRound = useCallback((totalRounds: number, rNum: number) => {
-    if (rNum >= totalRounds) {
-      setPhase("MATCH_RESULT");
-      const won = botScoresRef.current.player > botScoresRef.current.rival;
-      setPlayerCharState(won ? "victory" : "defeat");
-      setRivalCharState(won ? "defeat" : "victory");
-    } else {
-      setPlayerCharState("idle");
-      setRivalCharState("idle");
-      setLocalPrediction(null);
-      setPlayerPrediction(null);
-      setRoundResult(null);
-      setDisplayRound(rNum + 1);
-      setPhase("ROUND_START");
-      scheduleTimer(() => {
-        setPhase("ROUND_ACTIVE");
-        setPlayerCharState("thinking");
-        setRivalCharState("thinking");
-      }, ROUND_TRANSITION_DELAY);
-    }
-  }, [scheduleTimer]);
-
-  const resolveBotRound = useCallback((rNum: number, totalRounds: number) => {
+  // --- BOT ROUND RESOLVER (no useCallback, reads from refs) ---
+  const resolveBotRoundImpl = useCallback((rNum: number, totalRounds: number) => {
     const pred = localPredictionRef.current as "UP" | "DOWN";
     const actual = randomOutcome();
     const rivalPred = Math.random() < 0.5 ? ("UP" as const) : ("DOWN" as const);
@@ -196,10 +175,68 @@ export function useGameState(): GameHook {
       scheduleTimer(() => {
         setPhase("ROUND_IMPACT");
         setHitEffect("none");
-        scheduleTimer(() => advanceToRound(totalRounds, rNum), IMPACT_DURATION);
+        scheduleTimer(() => {
+          if (rNum >= totalRounds) {
+            setPhase("MATCH_RESULT");
+            const won = botScoresRef.current.player > botScoresRef.current.rival;
+            setPlayerCharState(won ? "victory" : "defeat");
+            setRivalCharState(won ? "defeat" : "victory");
+          } else {
+            setPlayerCharState("idle");
+            setRivalCharState("idle");
+            setLocalPrediction(null);
+            setPlayerPrediction(null);
+            setRoundResult(null);
+            setDisplayRound(rNum + 1);
+            setPhase("ROUND_START");
+            scheduleTimer(() => {
+              setPhase("ROUND_ACTIVE");
+              setPlayerCharState("thinking");
+              setRivalCharState("thinking");
+            }, ROUND_TRANSITION_DELAY);
+          }
+        }, IMPACT_DURATION);
       }, REVEAL_DURATION);
     }, LOCK_DURATION);
-  }, [localPrediction, scheduleTimer, advanceToRound]);
+  }, [scheduleTimer]);
+
+  const localPredictionRef = useRef<Prediction>(null);
+  useEffect(() => { localPredictionRef.current = localPrediction; }, [localPrediction]);
+
+  // Resolve a bot round from a timeout (timer expired, auto-submit)
+  const resolveBotTimeout = useCallback(() => {
+    const totalRounds = modeRef.current?.rounds ?? 7;
+    const pred: "UP" | "DOWN" = Math.random() < 0.5 ? "UP" : "DOWN";
+    setLocalPrediction(pred);
+    setPlayerPrediction(pred);
+    resolveBotRoundImpl(botRoundRef.current + 1, totalRounds);
+    botRoundRef.current++;
+  }, [resolveBotRoundImpl]);
+
+  // --- BOT COUNTDOWN TIMER ---
+  // Uses useEffect keyed on phase + isBotMatch so it starts exactly once per ROUND_ACTIVE
+  useEffect(() => {
+    if (!isBotMatch || phase !== "ROUND_ACTIVE") return;
+    if (botTimerRef.current) return;
+
+    setTimeLeft(ROUND_TIME);
+    let time = ROUND_TIME;
+
+    botTimerRef.current = setInterval(() => {
+      time = +(time - 0.1).toFixed(1);
+      if (time <= 0) {
+        clearInterval(botTimerRef.current!);
+        botTimerRef.current = null;
+        resolveBotTimeout();
+        return;
+      }
+      setTimeLeft(time);
+    }, 100);
+
+    return () => {
+      if (botTimerRef.current) { clearInterval(botTimerRef.current); botTimerRef.current = null; }
+    };
+  }, [isBotMatch, phase, resolveBotTimeout]);
 
   // Server-synced multiplayer: respond to server state changes
   useEffect(() => {
@@ -311,26 +348,6 @@ export function useGameState(): GameHook {
     }, MATCH_INTRO_DURATION);
   }, [playerChar, mode, scheduleTimer]);
 
-  const startBotTimer = useCallback((totalRounds: number) => {
-    if (botTimerRef.current) clearInterval(botTimerRef.current);
-    setTimeLeft(ROUND_TIME);
-    let time = ROUND_TIME;
-    botTimerRef.current = setInterval(() => {
-      time = +(time - 0.1).toFixed(1);
-      if (time <= 0) {
-        if (botTimerRef.current) { clearInterval(botTimerRef.current); botTimerRef.current = null; }
-        // Auto-submit random prediction on timeout
-        const pred: "UP" | "DOWN" = Math.random() < 0.5 ? "UP" : "DOWN";
-        setLocalPrediction(pred);
-        setPlayerPrediction(pred);
-        resolveBotRound(botRoundRef.current + 1, totalRounds);
-        botRoundRef.current++;
-        return;
-      }
-      setTimeLeft(time);
-    }, 100);
-  }, [resolveBotRound]);
-
   // --- PREDICTION ---
   const makePrediction = useCallback(async (pred: "UP" | "DOWN") => {
     if (phase !== "ROUND_ACTIVE" || localPrediction !== null) return;
@@ -345,7 +362,7 @@ export function useGameState(): GameHook {
       // Stop the timer, resolve locally
       if (botTimerRef.current) { clearInterval(botTimerRef.current); botTimerRef.current = null; }
       const totalRounds = mode?.rounds ?? 7;
-      resolveBotRound(botRoundRef.current + 1, totalRounds);
+      resolveBotRoundImpl(botRoundRef.current + 1, totalRounds);
       botRoundRef.current++;
       setPredictionUIStatus("confirmed");
       return;
@@ -355,7 +372,7 @@ export function useGameState(): GameHook {
     setPredictionUIStatus("submitting");
     const result = await mp.actions.submitPrediction(pred);
     setPredictionUIStatus(result ? "confirmed" : "confirmed");
-  }, [phase, localPrediction, isBotMatch, mode, resolveBotRound, mp.actions]);
+  }, [phase, localPrediction, isBotMatch, mode, resolveBotRoundImpl, mp.actions]);
 
   const rematch = useCallback(() => {
     clearAllTimers();
