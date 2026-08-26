@@ -93,6 +93,14 @@ export async function executeTradeOnChain(
 
 // ─── Game-specific execution ───────────────────────────────────────────────────
 
+/** In-memory idempotency guard: key = `${matchId}:${roundNumber}:${playerAddress}` */
+const _executionCache = new Map<string, RoundExecutionResult>();
+const EXEC_CACHE_TTL_MS = 300_000; // 5 min TTL
+
+function _execCacheKey(matchId: string, roundNumber: number, playerAddress: string): string {
+  return `${matchId}:${roundNumber}:${playerAddress}`;
+}
+
 export interface RoundExecutionResult {
   success: boolean;
   txHash: string | null;
@@ -203,6 +211,14 @@ export async function executeGameRound(
   roundNumber: number,
   matchId: string,
 ): Promise<RoundExecutionResult> {
+  // IDEMPOTENCY GUARD: prevent double on-chain submission for same match+round+player
+  const cacheKey = _execCacheKey(matchId, roundNumber, playerAddress);
+  const cached = _executionCache.get(cacheKey);
+  if (cached) {
+    console.log(`[operator] idempotent hit for ${cacheKey}`);
+    return cached;
+  }
+
   const market = MARKETS[marketSymbol];
   if (!market) {
     return {
@@ -252,22 +268,31 @@ export async function executeGameRound(
     const receipt = await pc.waitForTransactionReceipt({ hash: txHash });
 
     if (receipt.status !== "success") {
-      return {
+      const revertResult: RoundExecutionResult = {
         success: false, txHash, blockNumber: receipt.blockNumber, blockHash: receipt.blockHash,
         gasUsed: receipt.gasUsed, direction, amount, marketSymbol,
         error: "tx reverted on-chain",
         roundOutcome: deriveRoundOutcome(txHash, roundNumber),
       };
+      _executionCache.set(cacheKey, revertResult);
+      setTimeout(() => _executionCache.delete(cacheKey), 30_000);
+      return revertResult;
     }
 
     // Derive round outcome from on-chain execution data
     const roundOutcome = deriveRoundOutcome(txHash, roundNumber);
 
-    return {
+    const result: RoundExecutionResult = {
       success: true, txHash, blockNumber: receipt.blockNumber, blockHash: receipt.blockHash,
       gasUsed: receipt.gasUsed, direction, amount, marketSymbol,
       roundOutcome,
     };
+
+    // Cache for idempotency
+    _executionCache.set(cacheKey, result);
+    setTimeout(() => _executionCache.delete(cacheKey), EXEC_CACHE_TTL_MS);
+
+    return result;
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     // Normalize common errors
@@ -278,11 +303,17 @@ export async function executeGameRound(
     else if (errMsg.includes("QuantityBelowMinimum")) normalized = "QUANTITY_BELOW_MINIMUM";
     else if (errMsg.includes("expired")) normalized = "ORDER_EXPIRED";
 
-    return {
+    const failResult: RoundExecutionResult = {
       success: false, txHash: null, blockNumber: null, blockHash: null, gasUsed: null,
       direction, amount, marketSymbol, error: normalized,
-      roundOutcome: "DOWN", // fallback, overridden by caller
+      roundOutcome: "DOWN",
     };
+
+    // Cache failures briefly to prevent retry storms
+    _executionCache.set(cacheKey, failResult);
+    setTimeout(() => _executionCache.delete(cacheKey), 30_000); // 30s for errors
+
+    return failResult;
   }
 }
 

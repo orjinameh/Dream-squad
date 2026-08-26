@@ -177,6 +177,7 @@ const MatchSchema = new Schema<MatchDoc>(
 MatchSchema.index({ playerAddress: 1, status: 1 });
 MatchSchema.index({ playerAddress: 1, createdAt: -1 });
 MatchSchema.index({ player2Address: 1, status: 1 });
+MatchSchema.index({ status: 1 });
 
 export const ROUND_TIMINGS = { ROUND_DURATION_MS, LOCK_MS, REVEAL_MS, IMPACT_MS } as const;
 

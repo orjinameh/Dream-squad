@@ -29,6 +29,7 @@ const MatchQueueSchema = new Schema(
 
 MatchQueueSchema.index({ status: 1, rounds: 1, createdAt: 1 });
 MatchQueueSchema.index({ address: 1, status: 1 }, { unique: true, partialFilterExpression: { status: "searching" } });
+MatchQueueSchema.index({ updatedAt: 1 }, { expireAfterSeconds: 120 }); // TTL: auto-cleanup stale entries after 2 min
 
 export const MatchQueue =
   mongoose.models.MatchQueue || mongoose.model("MatchQueue", MatchQueueSchema, "match_queue");

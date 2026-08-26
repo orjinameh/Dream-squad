@@ -60,12 +60,22 @@ export async function POST(req: Request): Promise<Response> {
       return Response.json({ ok: true, winner: input.winner, deduped: true });
     }
 
-    // Mark match as completed if matchId provided
+    // Validate match exists and is active before processing
     if (input.matchId) {
       const match = await Match.findById(input.matchId);
-      if (match && match.status === "ACTIVE") {
-        const hasKO = input.rounds.some((r) => false); // bot matches don't track KO in rounds
-        await Match.findByIdAndUpdate(input.matchId, {
+      if (!match) return jsonError(404, "match not found");
+      if (match.status !== "ACTIVE") {
+        // Already settled — idempotent return
+        return Response.json({ ok: true, winner: match.winner, deduped: true });
+      }
+      // Verify the caller is the match participant
+      if (normalizeAddress(match.playerAddress) !== address) {
+        return jsonError(403, "not a participant in this match");
+      }
+      // Mark match as completed atomically
+      const completed = await Match.findOneAndUpdate(
+        { _id: input.matchId, status: "ACTIVE" },
+        {
           $set: {
             playerScore: input.playerScore,
             rivalScore: input.rivalScore,
@@ -75,7 +85,12 @@ export async function POST(req: Request): Promise<Response> {
             rounds: input.rounds,
             statsProcessed: true,
           },
-        });
+        },
+        { new: true },
+      );
+      if (!completed) {
+        // Race condition: another request settled it first
+        return Response.json({ ok: true, winner: input.winner, deduped: true });
       }
     }
 

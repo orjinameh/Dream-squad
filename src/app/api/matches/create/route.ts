@@ -27,6 +27,17 @@ export async function POST(req: Request): Promise<Response> {
   try {
     await connectToDatabase();
     const address = normalizeAddress(input.playerAddress);
+
+    // ENFORCE ONE ACTIVE MATCH PER WALLET
+    const activeMatch = await Match.findOne({
+      $or: [{ playerAddress: address }, { player2Address: address }],
+      status: "ACTIVE",
+    }).lean();
+
+    if (activeMatch) {
+      return jsonError(409, "already in an active match");
+    }
+
     const now = new Date();
     const deadline = new Date(now.getTime() + 3_000); // 3s intro before first round
 

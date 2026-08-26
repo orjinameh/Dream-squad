@@ -57,12 +57,17 @@ export async function POST(req: Request): Promise<Response> {
 
     if (!isPlayer1 && !isPlayer2) return jsonError(403, "not a player in this match");
 
-    // DEADLINE VALIDATION: server clock is authoritative
-    if (now.getTime() > match.roundDeadline.getTime() + 500) {
+    // ROUND-PHASE CHECK: only allow predictions during ACTIVE phase
+    if (match.roundPhase !== "ACTIVE") {
+      return jsonError(409, `round not open for predictions (phase: ${match.roundPhase})`);
+    }
+
+    // DEADLINE VALIDATION: server clock is authoritative, no grace window
+    if (now.getTime() > match.roundDeadline.getTime()) {
       return jsonError(409, "round deadline passed");
     }
 
-    // Store prediction based on which player submitted
+    // ATOMIC PREDICTION WRITE: findOneAndUpdate with condition to prevent race conditions
     const predField = isPlayer1 ? "playerPrediction" : "rivalPrediction";
     const existingPred = isPlayer1 ? match.playerPrediction : match.rivalPrediction;
 
@@ -71,12 +76,23 @@ export async function POST(req: Request): Promise<Response> {
       return Response.json(buildState(match, now));
     }
 
-    // Set this player's prediction
+    // Atomic write: condition ensures no duplicate writes
     const updateField: Record<string, "UP" | "DOWN"> = {};
     updateField[predField] = input.prediction;
-    await Match.findByIdAndUpdate(match._id, { $set: updateField });
+    const atomicUpdate = await Match.findOneAndUpdate(
+      { _id: match._id, [predField]: null, roundPhase: "ACTIVE" },
+      { $set: updateField },
+      { new: true },
+    );
 
-    // Re-read to get both predictions
+    if (!atomicUpdate) {
+      // Either prediction was already set or phase changed — fetch latest
+      const updated = await Match.findById(match._id);
+      if (!updated) return jsonError(500, "match disappeared");
+      return Response.json(buildState(updated, now));
+    }
+
+    // Re-read to get both predictions (after atomic write)
     const updated = await Match.findById(match._id);
     if (!updated) return jsonError(500, "match disappeared");
 

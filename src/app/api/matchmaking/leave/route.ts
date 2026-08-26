@@ -16,7 +16,7 @@ export async function POST(req: Request): Promise<Response> {
   try {
     await connectToDatabase();
     const addr = normalizeAddress(address);
-    await MatchQueue.deleteMany({ address: addr, status: "searching" });
+    await MatchQueue.deleteMany({ address: addr, status: { $in: ["searching", "matched"] } });
     return Response.json({ status: "left" });
   } catch (err) {
     console.error("matchmaking leave failed", err);

@@ -57,7 +57,6 @@ export async function GET(req: Request): Promise<Response> {
       rivalChar: theirChar,
       rivalName: match.rivalName,
       opponentType: match.opponentType ?? "bot",
-      player2Address: match.player2Address,
       player2Char: match.player2Char,
       player1Ready: match.player1Ready ?? true,
       player2Ready: match.player2Ready ?? false,
