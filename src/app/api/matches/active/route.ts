@@ -14,7 +14,10 @@ export async function GET(req: Request): Promise<Response> {
     await connectToDatabase();
     const addr = normalizeAddress(address);
 
-    const match = await Match.findOne({ playerAddress: addr, status: "ACTIVE" })
+    const match = await Match.findOne({
+      status: "ACTIVE",
+      $or: [{ playerAddress: addr }, { player2Address: addr }],
+    })
       .sort({ createdAt: -1 })
       .lean();
 
@@ -28,6 +31,12 @@ export async function GET(req: Request): Promise<Response> {
       currentRound: match.currentRound,
       playerScore: match.playerScore,
       rivalScore: match.rivalScore,
+      opponentType: match.opponentType ?? "bot",
+      player1Address: match.playerAddress,
+      player2Address: match.player2Address,
+      player2Char: match.player2Char,
+      player1Ready: match.player1Ready,
+      player2Ready: match.player2Ready,
     });
   } catch (err) {
     console.error("active match check failed", err);

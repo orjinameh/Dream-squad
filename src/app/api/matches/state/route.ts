@@ -2,13 +2,13 @@ import { connectToDatabase } from "@/db/connect";
 import { Match } from "@/db/models/Match";
 import { normalizeAddress } from "@/lib/addresses";
 import { jsonError } from "@/lib/syndicates";
-import { isAddress } from "viem";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(req: Request): Promise<Response> {
   const url = new URL(req.url);
   const matchId = url.searchParams.get("matchId");
+  const viewerAddress = url.searchParams.get("address");
 
   if (!matchId) return jsonError(400, "matchId required");
 
@@ -18,6 +18,25 @@ export async function GET(req: Request): Promise<Response> {
     if (!match) return jsonError(404, "match not found");
 
     const now = new Date();
+    const isPvP = match.opponentType === "player";
+    const isViewerP2 = isPvP && viewerAddress && match.player2Address && normalizeAddress(viewerAddress) === normalizeAddress(match.player2Address);
+
+    // Swap perspective if viewer is player2
+    const myScore = isViewerP2 ? match.rivalScore : match.playerScore;
+    const theirScore = isViewerP2 ? match.playerScore : match.rivalScore;
+    const myPred = isViewerP2 ? match.rivalPrediction : match.playerPrediction;
+    const theirPred = isViewerP2 ? match.playerPrediction : match.rivalPrediction;
+    const myChar = isViewerP2 ? match.player2Char || match.rivalChar : match.playerChar;
+    const theirChar = isViewerP2 ? match.playerChar : match.player2Char || match.rivalChar;
+    const rounds = (match.rounds ?? []).map((r: any) => ({
+      roundNum: r.roundNum,
+      playerPrediction: isViewerP2 ? r.rivalPrediction : r.playerPrediction,
+      rivalPrediction: isViewerP2 ? r.playerPrediction : r.rivalPrediction,
+      actual: r.actual,
+      playerCorrect: isViewerP2 ? r.rivalCorrect : r.playerCorrect,
+      rivalCorrect: isViewerP2 ? r.playerCorrect : r.rivalCorrect,
+    }));
+
     return Response.json({
       matchId: match._id,
       status: match.status,
@@ -28,14 +47,14 @@ export async function GET(req: Request): Promise<Response> {
       roundStartTime: match.roundStartTime.toISOString(),
       roundDeadline: match.roundDeadline.toISOString(),
       serverTime: now.toISOString(),
-      playerScore: match.playerScore,
-      rivalScore: match.rivalScore,
-      playerPrediction: match.playerPrediction ?? null,
-      rivalPrediction: match.rivalPrediction ?? null,
-      rounds: match.rounds ?? [],
+      playerScore: myScore,
+      rivalScore: theirScore,
+      playerPrediction: myPred ?? null,
+      rivalPrediction: theirPred ?? null,
+      rounds,
       winner: match.winner ?? "player",
-      playerChar: match.playerChar,
-      rivalChar: match.rivalChar,
+      playerChar: myChar,
+      rivalChar: theirChar,
       rivalName: match.rivalName,
       opponentType: match.opponentType ?? "bot",
       player2Address: match.player2Address,

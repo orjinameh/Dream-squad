@@ -13,6 +13,7 @@ export default function GameApp() {
   const g = useGameState();
   const [screenShake, setScreenShake] = useState(false);
   const [showWalletModal, setShowWalletModal] = useState(false);
+  const [activeMatchId, setActiveMatchId] = useState<string | null>(null);
   const { isConnected, address } = useAccount();
   const mm = useMatchmaking(address as `0x${string}` | undefined);
 
@@ -24,12 +25,33 @@ export default function GameApp() {
     }
   }, [g.shakeScreen]);
 
+  // Auto-detect active match on wallet connect
+  useEffect(() => {
+    if (!isConnected || !address || g.phase !== "HOME") return;
+    (async () => {
+      try {
+        const res = await fetch(`/api/matches/active?address=${encodeURIComponent(address)}`);
+        const data = await res.json();
+        if (data.active && data.matchId) {
+          setActiveMatchId(data.matchId);
+        } else {
+          setActiveMatchId(null);
+        }
+      } catch { setActiveMatchId(null); }
+    })();
+  }, [isConnected, address, g.phase]);
+
   // When matchmaking finds a match, transition to MATCH_FOUND
   useEffect(() => {
     if (mm.state.status === "matched" && mm.state.matchId && g.phase === "MATCHMAKING") {
       g.actions.startPvPMatch(mm.state.matchId);
     }
   }, [mm.state.status, mm.state.matchId, g.phase, g.actions]);
+
+  const rejoinMatch = () => {
+    if (!activeMatchId) return;
+    g.actions.startPvPMatch(activeMatchId);
+  };
 
   return (
     <div style={{
@@ -42,7 +64,7 @@ export default function GameApp() {
     }}>
       <style>{globalCSS}</style>
 
-      {g.phase === "HOME" && <HomeScreen onEnter={g.actions.goToModeSelect} onLeaderboard={g.actions.goToLeaderboard} />}
+      {g.phase === "HOME" && <HomeScreen onEnter={g.actions.goToModeSelect} onLeaderboard={g.actions.goToLeaderboard} onRejoin={activeMatchId ? rejoinMatch : undefined} />}
       {g.phase === "MODE_SELECT" && <ModeSelect onSelect={g.actions.selectMode} onBack={g.actions.goToHome} />}
       {g.phase === "CHAR_SELECT" && <CharSelect onSelect={g.actions.selectChar} onBack={g.actions.goToModeSelect} />}
       {g.phase === "DUEL_CONFIRM" && <DuelConfirm mode={g.mode!} char={g.playerChar!} onConfirm={() => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.confirmDuel(); }} onBack={g.actions.goToCharSelect} onQuickMatch={(rounds) => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.joinMatchmaking(rounds); }} walletConnected={isConnected} />}
@@ -132,7 +154,7 @@ function ReconnectOverlay() {
   );
 }
 
-function HomeScreen({ onEnter, onLeaderboard }: { onEnter: () => void; onLeaderboard: () => void }) {
+function HomeScreen({ onEnter, onLeaderboard, onRejoin }: { onEnter: () => void; onLeaderboard: () => void; onRejoin?: () => void }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "100vh", padding: "40px 20px" }}>
       <div style={{ position: "absolute", inset: 0, background: "radial-gradient(ellipse at 50% 30%, rgba(168,85,247,0.08) 0%, transparent 60%)", pointerEvents: "none" }} />
@@ -149,6 +171,11 @@ function HomeScreen({ onEnter, onLeaderboard }: { onEnter: () => void; onLeaderb
         PREDICT. STRIKE. WIN.
       </p>
 
+      {onRejoin && (
+        <button onClick={onRejoin} style={{ ...ctaButtonStyle, background: "linear-gradient(135deg, #b45309, #f59e0b)", marginBottom: 16, fontSize: 16, padding: "14px 40px" }}>
+          REJOIN MATCH
+        </button>
+      )}
       <button onClick={onEnter} style={ctaButtonStyle}>
         {"\u2694\uFE0F"} ENTER THE ARENA
       </button>

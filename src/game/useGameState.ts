@@ -7,6 +7,7 @@ import {
   useMultiplayer,
   type ConnectionStatus,
 } from "./useMultiplayer";
+import { useAccount } from "wagmi";
 
 const LOCK_DURATION = 1200;
 const REVEAL_DURATION = 1500;
@@ -70,6 +71,12 @@ export interface GameHook {
 
 export function useGameState(): GameHook {
   const mp = useMultiplayer();
+  const { address } = useAccount();
+
+  // Sync wallet address into multiplayer for PvP predict submissions
+  useEffect(() => {
+    if (address) mp.actions.setAddress(address);
+  }, [address, mp.actions]);
 
   const [phase, setPhase] = useState<GamePhase>("HOME");
   const [mode, setMode] = useState<GameMode | null>(null);

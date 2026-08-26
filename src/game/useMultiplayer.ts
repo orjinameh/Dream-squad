@@ -80,8 +80,9 @@ export interface MultiplayerActions {
   fetchState: () => Promise<ServerMatchState | null>;
   submitPrediction: (prediction: "UP" | "DOWN") => Promise<PredictionResult | null>;
   reconnectToMatch: (matchId: string) => Promise<ServerMatchState | null>;
-  detectActiveMatch: (address: string) => Promise<{ active: boolean; matchId?: string }>;
+  detectActiveMatch: (address: string) => Promise<{ active: boolean; matchId?: string; opponentType?: string }>;
   reset: () => void;
+  setAddress: (addr: string) => void;
   getServerNow: () => Date;
   getTimeRemaining: () => number;
 }
@@ -104,6 +105,7 @@ export function useMultiplayer(): UseMultiplayerReturn {
   const reconnectRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pingHistoryRef = useRef<number[]>([]);
   const currentMatchIdRef = useRef<string | null>(null);
+  const playerAddressRef = useRef<string | null>(null);
 
   const clearInterval_ = useCallback((ref: React.MutableRefObject<ReturnType<typeof setInterval> | null>) => {
     if (ref.current) {
@@ -151,7 +153,8 @@ export function useMultiplayer(): UseMultiplayerReturn {
   const pollState = useCallback(async (matchId: string) => {
     const sent = Date.now();
     try {
-      const res = await fetch(`/api/matches/state?matchId=${encodeURIComponent(matchId)}`);
+      const addrParam = playerAddressRef.current ? `&address=${encodeURIComponent(playerAddressRef.current)}` : "";
+      const res = await fetch(`/api/matches/state?matchId=${encodeURIComponent(matchId)}${addrParam}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data: ServerMatchState = await res.json();
       measurePing(sent);
@@ -192,7 +195,8 @@ export function useMultiplayer(): UseMultiplayerReturn {
 
     reconnectRef.current = setInterval(async () => {
       try {
-        const res = await fetch(`/api/matches/state?matchId=${encodeURIComponent(matchId)}`);
+        const addrParam = playerAddressRef.current ? `&address=${encodeURIComponent(playerAddressRef.current)}` : "";
+        const res = await fetch(`/api/matches/state?matchId=${encodeURIComponent(matchId)}${addrParam}`);
         if (!res.ok) return;
         const data: ServerMatchState = await res.json();
         setServerState(data);
@@ -265,7 +269,7 @@ export function useMultiplayer(): UseMultiplayerReturn {
 
   const submitPrediction = useCallback(async (prediction: "UP" | "DOWN"): Promise<PredictionResult | null> => {
     const matchId = currentMatchIdRef.current;
-    if (!matchId) return null;
+    if (!matchId || !playerAddressRef.current) return null;
 
     setPredictionStatus("submitting");
     setLastError(null);
@@ -276,6 +280,7 @@ export function useMultiplayer(): UseMultiplayerReturn {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           matchId,
+          playerAddress: playerAddressRef.current,
           prediction,
           clientTimestamp: new Date().toISOString(),
         }),
@@ -320,7 +325,8 @@ export function useMultiplayer(): UseMultiplayerReturn {
   const reconnectToMatch = useCallback(async (matchId: string): Promise<ServerMatchState | null> => {
     setIsLoading(true);
     try {
-      const res = await fetch(`/api/matches/state?matchId=${encodeURIComponent(matchId)}`);
+      const addrParam = playerAddressRef.current ? `&address=${encodeURIComponent(playerAddressRef.current)}` : "";
+      const res = await fetch(`/api/matches/state?matchId=${encodeURIComponent(matchId)}${addrParam}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data: ServerMatchState = await res.json();
       setServerState(data);
@@ -361,6 +367,10 @@ export function useMultiplayer(): UseMultiplayerReturn {
     pingHistoryRef.current = [];
   }, [clearInterval_]);
 
+  const setAddress = useCallback((addr: string) => {
+    playerAddressRef.current = addr;
+  }, []);
+
   return {
     state: {
       serverState,
@@ -379,6 +389,7 @@ export function useMultiplayer(): UseMultiplayerReturn {
       reconnectToMatch,
       detectActiveMatch,
       reset,
+      setAddress,
       getServerNow,
       getTimeRemaining,
     },
