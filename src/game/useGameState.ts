@@ -444,6 +444,9 @@ export function useGameState(): GameHook {
       if (remaining <= 0 && !resolved) {
         resolved = true;
 
+        // STOP the interval immediately — do not let it keep firing
+        if (botTimerRef.current) { clearInterval(botTimerRef.current); botTimerRef.current = null; }
+
         // LOCK: capture whatever the player chose (or null)
         setPhase("ROUND_LOCKED");
         setPlayerCharState("locked");
@@ -462,7 +465,6 @@ export function useGameState(): GameHook {
         setExecutionError(null);
 
         // Fire-and-forget predict call — server handles execution
-        // The round result comes back via polling (serverSync effect)
         mp.actions.submitPrediction(pred).then(() => {
           setExecutionStatus("success");
         }).catch(() => {
@@ -470,8 +472,7 @@ export function useGameState(): GameHook {
           setExecutionStatus("success");
         });
 
-        // Run local visual cascade (server result arrives via polling)
-        // resolveBotRoundImpl handles all post-combat transitions via proceedToReveal
+        // Run local visual cascade
         scheduleTimer(() => {
           resolveBotRoundImpl(rNum, totalRounds);
         }, 300);
@@ -484,7 +485,8 @@ export function useGameState(): GameHook {
     return () => {
       if (botTimerRef.current) { clearInterval(botTimerRef.current); botTimerRef.current = null; }
     };
-  }, [isBotMatch, phase, resolveBotRoundImpl, scheduleTimer, mp.actions]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isBotMatch, phase]);
 
   // Server-synced multiplayer: respond to server state changes
   useEffect(() => {
@@ -678,10 +680,12 @@ export function useGameState(): GameHook {
   useEffect(() => {
     if (isBotMatch || phase !== "ROUND_ACTIVE") return;
     let running = true;
-    const tick = () => { if (!running) return; const remaining = mp.actions.getTimeRemaining(); setTimeLeft(+remaining.toFixed(2)); animFrameRef.current = requestAnimationFrame(tick); };
+    const getTimeRemaining = mp.actions.getTimeRemaining;
+    const tick = () => { if (!running) return; const remaining = getTimeRemaining(); setTimeLeft(+remaining.toFixed(2)); animFrameRef.current = requestAnimationFrame(tick); };
     tick();
     return () => { running = false; cancelAnimationFrame(animFrameRef.current); };
-  }, [phase, isBotMatch, mp.actions.getTimeRemaining]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, isBotMatch]);
 
   // Connection status messages
   useEffect(() => {
