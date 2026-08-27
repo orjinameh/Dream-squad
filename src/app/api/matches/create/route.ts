@@ -1,7 +1,9 @@
 import { connectToDatabase } from "@/db/connect";
+import { randomUUID } from "node:crypto";
 import { Match, ROUND_TIMINGS } from "@/db/models/Match";
 import { normalizeAddress } from "@/lib/addresses";
 import { jsonError } from "@/lib/utils";
+import { generateMatchPriceModel } from "@/lib/prices";
 import { z } from "zod";
 import { isAddress } from "viem";
 
@@ -13,6 +15,7 @@ const createMatchSchema = z.object({
   mode: z.string().min(1),
   totalRounds: z.number().int().positive(),
   botDifficulty: z.enum(["easy", "normal", "hard"]).optional(),
+  predictionAsset: z.string().optional(),
 });
 
 export async function POST(req: Request): Promise<Response> {
@@ -40,9 +43,16 @@ export async function POST(req: Request): Promise<Response> {
     }
 
     const now = new Date();
-    const deadline = new Date(now.getTime() + 3_000); // 3s intro before first round
+    const deadline = new Date(now.getTime() + ROUND_TIMINGS.ROUND_DURATION_MS + ROUND_TIMINGS.LOCK_MS); // lock window before round 1
+
+    const asset = input.predictionAsset ?? "BTC";
+    const matchId = randomUUID();
+    // ONE continuous market for the whole match (seeded by matchId) — carved
+    // into round checkpoints so the chart, combat, and P&L all agree.
+    const priceModel = generateMatchPriceModel(matchId, asset, input.totalRounds);
 
     const match = await Match.create({
+      _id: matchId,
       playerAddress: address,
       playerChar: input.playerChar,
       rivalName: input.rivalName,
@@ -55,6 +65,9 @@ export async function POST(req: Request): Promise<Response> {
       roundDeadline: deadline,
       status: "ACTIVE",
       botDifficulty: input.botDifficulty ?? "normal",
+      predictionAsset: asset,
+      predictionQuestion: `WILL ${asset} GO UP OR DOWN?`,
+      priceModel,
     });
 
     return Response.json({

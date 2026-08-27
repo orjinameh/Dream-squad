@@ -141,6 +141,7 @@ export interface MultiplayerActions {
     rivalChar: string;
     mode: string;
     totalRounds: number;
+    predictionAsset?: string;
   }) => Promise<CreateMatchResult>;
   fetchState: () => Promise<ServerMatchState | null>;
   submitPrediction: (prediction: "UP" | "DOWN") => Promise<PredictionResult | null>;
@@ -282,6 +283,7 @@ export function useMultiplayer(): UseMultiplayerReturn {
     rivalChar: string;
     mode: string;
     totalRounds: number;
+    predictionAsset?: string;
   }): Promise<CreateMatchResult> => {
     setIsLoading(true);
     setLastError(null);
@@ -289,7 +291,7 @@ export function useMultiplayer(): UseMultiplayerReturn {
       const res = await fetch("/api/matches/create", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(input),
+        body: JSON.stringify({ ...input, predictionAsset: input.predictionAsset ?? "BTC" }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: "unknown" }));

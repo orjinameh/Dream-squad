@@ -29,6 +29,7 @@ import { GET as stateRoute } from "@/app/api/matches/state/route";
 import { GET as leaderboardRoute } from "@/app/api/leaderboard/route";
 import { Match } from "@/db/models/Match";
 import { normalizeAddress } from "@/lib/addresses";
+import { generateMatchPriceModel } from "@/lib/prices";
 
 let mongo: MongoMemoryServer;
 const PLAYER = "0x9196d7670eea0CB723af11465d4285541a2eA86a";
@@ -95,9 +96,10 @@ describe("POST /api/matches/create", () => {
 });
 
 describe("POST /api/matches/predict", () => {
-  it("resolves a round and returns match state", async () => {
+  it("resolves a round against the continuous price model and returns state", async () => {
     const matchId = `test-predict-${Date.now()}`;
     const addr = normalizeAddress(PLAYER);
+    const priceModel = generateMatchPriceModel(matchId, "BTC", 3);
     await Match.create({
       _id: matchId,
       playerAddress: addr,
@@ -112,6 +114,8 @@ describe("POST /api/matches/predict", () => {
       roundDeadline: new Date(Date.now() + 60_000),
       status: "ACTIVE",
       opponentType: "bot",
+      predictionAsset: "BTC",
+      priceModel,
     });
 
     const res = await predictRoute(jsonPost("/api/matches/predict", {
@@ -123,6 +127,8 @@ describe("POST /api/matches/predict", () => {
     const body = await res.json();
     expect(body.rounds.length).toBe(1);
     expect(body.rounds[0].actual).toBeTruthy();
+    // The round's outcome must match the precomputed checkpoint for round 1.
+    expect(body.rounds[0].actual).toBe(priceModel.checkpoints[0].actual);
   });
 });
 

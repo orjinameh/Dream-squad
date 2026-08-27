@@ -1,9 +1,8 @@
 import { connectToDatabase } from "@/db/connect";
-import { Match, type RoundPhase, type StatsProcessedStatus } from "@/db/models/Match";
+import { Match, ROUND_TIMINGS, type RoundPhase, type StatsProcessedStatus } from "@/db/models/Match";
 import { PlayerStats } from "@/db/models/PlayerStats";
 import { normalizeAddress } from "@/lib/addresses";
 import { jsonError } from "@/lib/utils";
-import { generateRoundSeries } from "@/lib/prices";
 import { getPvpWinPoints } from "@/lib/rank";
 
 export const dynamic = "force-dynamic";
@@ -31,12 +30,12 @@ export async function GET(req: Request): Promise<Response> {
       // Check if player predicted
       if (!match.playerPrediction) {
         // No prediction submitted — mark as draw/no-contest for this round
-        const series = generateRoundSeries(`${matchId}:${match.currentRound}`, match.predictionAsset ?? "BTC");
+        const cp = match.priceModel?.checkpoints?.[match.currentRound - 1];
         const roundRecord = {
           roundNum: match.currentRound,
           playerPrediction: null,
           rivalPrediction: null,
-          actual: series.actual,
+          actual: cp?.actual ?? "FLAT",
           playerCorrect: false,
           rivalCorrect: false,
           roundWinner: "draw" as const,
@@ -45,17 +44,17 @@ export async function GET(req: Request): Promise<Response> {
           rivalDamage: 0,
           isCritical: false,
           knockout: false,
-          startPrice: series.startPrice,
-          endPrice: series.endPrice,
-          prices: series.prices,
-          asset: series.asset,
+          startPrice: cp?.startPrice,
+          endPrice: cp?.endPrice,
+          prices: cp?.prices ?? [],
+          asset: match.priceModel?.asset ?? match.predictionAsset ?? "BTC",
           playerPnL: 0,
           rivalPnL: 0,
           resolvedAt: now,
         };
 
         const isLastRound = match.currentRound >= match.totalRounds;
-        const nextDeadline = new Date(now.getTime() + 1000);
+        const nextDeadline = new Date(now.getTime() + ROUND_TIMINGS.ROUND_DURATION_MS + ROUND_TIMINGS.LOCK_MS);
 
         await Match.findByIdAndUpdate(matchId, {
           $push: { rounds: roundRecord },
@@ -161,10 +160,11 @@ function buildState(match: any, serverTime: Date, isViewerP2: boolean, viewerAdd
   const myStreak = isViewerP2 ? match.rivalStreak : match.playerStreak;
   const theirStreak = isViewerP2 ? match.playerStreak : match.rivalStreak;
 
-  // Deterministic series for the current active round (chart + resolution agree).
-  const asset = match.predictionAsset ?? "BTC";
-  const series = match.roundPhase === "ACTIVE" && match.status === "ACTIVE"
-    ? generateRoundSeries(`${match._id}:${match.currentRound}`, asset)
+  // Checkpoint for the current active round from the match's single continuous
+  // market (chart + resolution agree, no per-round reseed).
+  const asset = match.priceModel?.asset ?? match.predictionAsset ?? "BTC";
+  const currentCheckpoint = match.roundPhase === "ACTIVE" && match.status === "ACTIVE"
+    ? match.priceModel?.checkpoints?.[match.currentRound - 1]
     : undefined;
 
   // Running balances (STT).
@@ -206,12 +206,12 @@ function buildState(match: any, serverTime: Date, isViewerP2: boolean, viewerAdd
     playerStreak: myStreak,
     rivalStreak: theirStreak,
     // Coherent market series
-    market: series ? {
-      asset: series.asset,
-      startPrice: series.startPrice,
-      endPrice: series.endPrice,
-      prices: series.prices,
-      actual: series.actual,
+    market: currentCheckpoint ? {
+      asset,
+      startPrice: currentCheckpoint.startPrice,
+      endPrice: currentCheckpoint.endPrice,
+      prices: currentCheckpoint.prices,
+      actual: currentCheckpoint.actual,
     } : undefined,
     // Trading balances
     playerBalance: Math.round((startMe + mePnl) * 100) / 100,

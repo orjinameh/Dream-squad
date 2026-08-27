@@ -541,6 +541,7 @@ export function useGameState(): GameHook {
         rivalChar: rival.id,
         mode: mode?.id ?? "battle",
         totalRounds: mode?.rounds ?? 7,
+        predictionAsset: selectedPrediction?.asset,
       });
       if (res?.matchId) {
         // Store matchId — bot matches MUST have real matchIds

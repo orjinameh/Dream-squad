@@ -1039,8 +1039,8 @@ function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
                 color: predStatus === "confirmed" ? "#10b981" : "#f59e0b",
               }}>
                 {predStatus === "confirmed"
-                  ? `\uD83D\uDD12 ${game.playerPrediction === "UP" ? "\u2191" : "\u2193"} ${game.playerPrediction} COMMITTED`
-                  : `${game.playerPrediction === "UP" ? "\u2191" : "\u2193"} ${game.playerPrediction} SELECTED`}
+                  ? `\uD83D\uDD12 ${game.playerPrediction === "UP" ? "\u2191" : "\u2193"} ${game.playerPrediction} POSITION COMMITTED`
+                  : `${game.playerPrediction === "UP" ? "\u2191" : "\u2193"} ${game.playerPrediction} POSITION SELECTED`}
               </div>
             )}
             {predStatus === "submitting" && (

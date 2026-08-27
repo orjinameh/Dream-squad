@@ -1,11 +1,10 @@
 import { connectToDatabase } from "@/db/connect";
-import { Match, type RoundPhase, type RoundRecord, type StatsProcessedStatus } from "@/db/models/Match";
+import { Match, ROUND_TIMINGS, type RoundPhase, type RoundRecord, type StatsProcessedStatus } from "@/db/models/Match";
 import { PlayerStats } from "@/db/models/PlayerStats";
 import { normalizeAddress } from "@/lib/addresses";
 import { jsonError } from "@/lib/utils";
 import { executeGameRound, type RoundExecutionResult } from "@/lib/operator";
 import { getPvpWinPoints } from "@/lib/rank";
-import { generateRoundSeries } from "@/lib/prices";
 import { z } from "zod";
 import { isAddress } from "viem";
 
@@ -101,15 +100,16 @@ async function resolveRound(match: any, now: Date): Promise<{
     rivalResult = await executeGameRound(marketSymbol, match.player2Address, rivalPred, roundNumber, matchId);
   }
 
-  // Determine authoritative market outcome from the deterministic price series.
-  // Both players watch the exact same series (chart + resolution agree).
-  const asset = match.predictionAsset ?? "BTC";
-  const seedKey = `${matchId}:${roundNumber}`;
-  const series = generateRoundSeries(seedKey, asset);
-  const actual = series.actual;
-  const volume = series.prices;
+  // Determine authoritative market outcome from the SINGLE continuous price
+  // model stored on the match. Both players watch the exact same contiguous
+  // path (chart + resolution + P&L all agree) — no per-round reseed.
+  const checkpoint = match.priceModel?.checkpoints?.[roundNumber - 1];
+  const actual = checkpoint?.actual ?? "FLAT";
+  const volume = checkpoint?.prices ?? [];
+  const startPrice = checkpoint?.startPrice;
+  const endPrice = checkpoint?.endPrice;
+  const asset = match.priceModel?.asset ?? match.predictionAsset ?? "BTC";
 
-  // PvP both players see the same series; rerun for rival printer (identical path).
   const isFlat = actual === "FLAT";
 
   // FLAT = no directional winner. No score, no damage, no P&L change.
@@ -174,10 +174,10 @@ async function resolveRound(match: any, now: Date): Promise<{
     isCritical,
     knockout,
     // Coherent market series this round's outcome derives from
-    startPrice: series.startPrice,
-    endPrice: series.endPrice,
+    startPrice,
+    endPrice,
     prices: volume,
-    asset: series.asset,
+    asset,
     // Trading P&L
     playerPnL,
     rivalPnL,
@@ -421,12 +421,12 @@ export async function POST(req: Request): Promise<Response> {
         }
         // PvP expired with no predictions: no-op round (draw, 0 damage)
         if (!claim.playerPrediction && !claim.rivalPrediction) {
-          const series = generateRoundSeries(`${claim._id}:${claim.currentRound}`, claim.predictionAsset ?? "BTC");
+          const cp = claim.priceModel?.checkpoints?.[claim.currentRound - 1];
           const roundRecord: RoundRecord = {
             roundNum: claim.currentRound,
             playerPrediction: null,
             rivalPrediction: null,
-            actual: series.actual,
+            actual: cp?.actual ?? "FLAT",
             playerCorrect: false,
             rivalCorrect: false,
             roundWinner: "draw",
@@ -435,15 +435,15 @@ export async function POST(req: Request): Promise<Response> {
             rivalDamage: 0,
             isCritical: false,
             knockout: false,
-            startPrice: series.startPrice,
-            endPrice: series.endPrice,
-            prices: series.prices,
-            asset: series.asset,
+            startPrice: cp?.startPrice,
+            endPrice: cp?.endPrice,
+            prices: cp?.prices ?? [],
+            asset: claim.priceModel?.asset ?? claim.predictionAsset ?? "BTC",
             playerPnL: 0,
             rivalPnL: 0,
             resolvedAt: now,
           };
-          const nextDeadline = new Date(now.getTime() + 1000);
+          const nextDeadline = new Date(now.getTime() + ROUND_TIMINGS.ROUND_DURATION_MS + ROUND_TIMINGS.LOCK_MS);
           const nextStatus = claim.currentRound >= claim.totalRounds ? "COMPLETED" : "ACTIVE";
           const nextRoundPhase: RoundPhase = claim.currentRound >= claim.totalRounds ? "REVEALED" : "ACTIVE";
 
@@ -475,7 +475,7 @@ export async function POST(req: Request): Promise<Response> {
         const result = await resolveRound(claim, now);
         const { roundRecord, newPlayerScore, newRivalScore, newPlayerHP, newRivalHP, newPlayerStreak, newRivalStreak, matchDecided, winner, playerBalance, rivalBalance } = result;
 
-        const nextDeadline = new Date(now.getTime() + 1000);
+        const nextDeadline = new Date(now.getTime() + ROUND_TIMINGS.ROUND_DURATION_MS + ROUND_TIMINGS.LOCK_MS);
         const nextStatus = matchDecided ? "COMPLETED" : "ACTIVE";
         const nextRoundPhase: RoundPhase = matchDecided ? "REVEALED" : "ACTIVE";
 
@@ -610,11 +610,12 @@ function buildState(match: any, serverTime: Date): MatchStateResponse {
   const rounds = match.rounds ?? [];
   const lastRound = rounds.length > 0 ? rounds[rounds.length - 1] : undefined;
 
-  // For an unresolved ACTIVE round, precompute the deterministic series so the
-  // chart and the eventual resolution are driven by the SAME price path.
-  const asset = match.predictionAsset ?? "BTC";
-  const series = match.roundPhase === "ACTIVE" && match.status === "ACTIVE"
-    ? generateRoundSeries(`${match._id}:${match.currentRound}`, asset)
+  // For an unresolved ACTIVE round, return the precomputed checkpoint from the
+  // match's SINGLE continuous market so the chart and the eventual resolution
+  // are driven by the SAME price path (no per-round reseed).
+  const asset = match.priceModel?.asset ?? match.predictionAsset ?? "BTC";
+  const currentCheckpoint = match.roundPhase === "ACTIVE" && match.status === "ACTIVE"
+    ? match.priceModel?.checkpoints?.[match.currentRound - 1]
     : undefined;
 
   // Running balance on the latest resolved round (or start balance).
@@ -651,12 +652,12 @@ function buildState(match: any, serverTime: Date): MatchStateResponse {
     rivalHP: match.rivalHP ?? MAX_HP,
     playerStreak: match.playerStreak ?? 0,
     rivalStreak: match.rivalStreak ?? 0,
-    market: series ? {
-      asset: series.asset,
-      startPrice: series.startPrice,
-      endPrice: series.endPrice,
-      prices: series.prices,
-      actual: series.actual,
+    market: currentCheckpoint ? {
+      asset,
+      startPrice: currentCheckpoint.startPrice,
+      endPrice: currentCheckpoint.endPrice,
+      prices: currentCheckpoint.prices,
+      actual: currentCheckpoint.actual,
     } : undefined,
     playerBalance: round2(playerStartBalance + lastPlayerPnl),
     rivalBalance: round2(rivalStartBalance + lastRivalPnl),

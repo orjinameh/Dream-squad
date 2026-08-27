@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Schema, model } from "mongoose";
+import type { MatchPriceModel } from "@/lib/prices";
 
 export const MATCH_STATUS = ["ACTIVE", "COMPLETED", "ABANDONED"] as const;
 export type MatchStatus = (typeof MATCH_STATUS)[number];
@@ -107,6 +108,8 @@ export interface MatchDoc {
   rivalStartBalance: number;
   playerFinalBalance?: number;
   rivalFinalBalance?: number;
+  // Single continuous market the whole match trades against
+  priceModel?: MatchPriceModel;
   // Stats idempotency (lifecycle)
   statsProcessed: StatsProcessedStatus;
 }
@@ -216,6 +219,7 @@ const MatchSchema = new Schema<MatchDoc>(
     rivalStartBalance: { type: Number, default: 100 },
     playerFinalBalance: { type: Number },
     rivalFinalBalance: { type: Number },
+    priceModel: { type: Schema.Types.Mixed },
     statsProcessed: { type: String, enum: ["PENDING", "PROCESSING", "COMPLETE", "FAILED"], default: "PENDING" },
   },
   { versionKey: false },
