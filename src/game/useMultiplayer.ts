@@ -35,6 +35,12 @@ export interface ServerMatchState {
     rivalDamage?: number;
     isCritical?: boolean;
     knockout?: boolean;
+    startPrice?: number;
+    endPrice?: number;
+    prices?: number[];
+    asset?: string;
+    playerPnL?: number;
+    rivalPnL?: number;
     playerExecution?: {
       status: string;
       txHash?: string;
@@ -78,8 +84,21 @@ export interface ServerMatchState {
   botDifficulty?: string;
   player1Ready?: boolean;
   player2Ready?: boolean;
-  predictionAsset?: string;
+    predictionAsset?: string;
   predictionQuestion?: string;
+  // Coherent market series for the current round
+  market?: {
+    asset: string;
+    startPrice: number;
+    endPrice: number;
+    prices: number[];
+    actual: "UP" | "DOWN" | "FLAT";
+  };
+  // Trading balances (STT)
+  playerBalance: number;
+  rivalBalance: number;
+  playerStartBalance: number;
+  rivalStartBalance: number;
 }
 
 export interface CreateMatchResult {
@@ -300,6 +319,10 @@ export function useMultiplayer(): UseMultiplayerReturn {
         rivalHP: 100,
         playerStreak: 0,
         rivalStreak: 0,
+        playerBalance: 100,
+        rivalBalance: 100,
+        playerStartBalance: 100,
+        rivalStartBalance: 100,
       });
       startPolling(data.matchId);
       setIsLoading(false);

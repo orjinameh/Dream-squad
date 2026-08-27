@@ -285,11 +285,11 @@ export function FlameBall({ fromLeft, color, size = 1, active }: FlameBallProps)
     <div style={{
       position: "absolute",
       top: "50%",
-      left: fromLeft ? "20%" : "auto",
-      right: fromLeft ? "auto" : "20%",
+      left: fromLeft ? "8%" : "auto",
+      right: fromLeft ? "auto" : "8%",
       transform: "translateY(-50%)",
       zIndex: 20,
-      animation: fromLeft ? "flameBallRight 0.3s ease-out forwards" : "flameBallLeft 0.3s ease-out forwards",
+      animation: fromLeft ? "flameBallRight 0.4s ease-out forwards" : "flameBallLeft 0.4s ease-out forwards",
     }}>
       {/* Outer glow */}
       <div style={{
@@ -308,12 +308,14 @@ export function FlameBall({ fromLeft, color, size = 1, active }: FlameBallProps)
       }} />
       <style>{`
         @keyframes flameBallRight {
-          0% { left: 20%; opacity: 0.3; transform: translateY(-50%) scale(0.5); }
-          100% { left: 50%; opacity: 1; transform: translateY(-50%) scale(1); }
+          0% { left: 8%; opacity: 0.3; transform: translateY(-50%) scale(0.5); }
+          75% { opacity: 1; transform: translateY(-50%) scale(1.1); }
+          100% { left: 88%; opacity: 0; transform: translateY(-50%) scale(1.4); }
         }
         @keyframes flameBallLeft {
-          0% { right: 20%; opacity: 0.3; transform: translateY(-50%) scale(0.5); }
-          100% { right: 50%; opacity: 1; transform: translateY(-50%) scale(1); }
+          0% { right: 8%; opacity: 0.3; transform: translateY(-50%) scale(0.5); }
+          75% { opacity: 1; transform: translateY(-50%) scale(1.1); }
+          100% { right: 88%; opacity: 0; transform: translateY(-50%) scale(1.4); }
         }
         @keyframes flamePulse {
           0% { transform: scale(0.9); }

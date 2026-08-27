@@ -95,6 +95,19 @@ export interface GameHook {
   isFinalRound: boolean;
   koOverlay: string | null;
   selectedMatchId: string | null;
+  // Coherent market series for the current round
+  market?: {
+    asset: string;
+    startPrice: number;
+    endPrice: number;
+    prices: number[];
+    actual: "UP" | "DOWN" | "FLAT";
+  };
+  // Trading balances (STT)
+  playerBalance: number;
+  rivalBalance: number;
+  playerStartBalance: number;
+  rivalStartBalance: number;
   actions: GameActions;
 }
 
@@ -225,6 +238,12 @@ export function useGameState(): GameHook {
       isCritical,
       isDraw,
       knockout,
+      startPrice: lastRound.startPrice,
+      endPrice: lastRound.endPrice,
+      prices: lastRound.prices,
+      asset: lastRound.asset,
+      playerPnL: lastRound.playerPnL,
+      rivalPnL: lastRound.rivalPnL,
       playerExecution: lastRound.playerExecution,
       rivalExecution: lastRound.rivalExecution,
     };
@@ -681,6 +700,11 @@ export function useGameState(): GameHook {
     rivalHP: mp.state.serverState?.rivalHP ?? rivalHP,
     maxHP: MAX_HP,
     combatPhase, lastDamage, isFinalRound, koOverlay,
+    market: mp.state.serverState?.market,
+    playerBalance: mp.state.serverState?.playerBalance ?? 100,
+    rivalBalance: mp.state.serverState?.rivalBalance ?? 100,
+    playerStartBalance: mp.state.serverState?.playerStartBalance ?? 100,
+    rivalStartBalance: mp.state.serverState?.rivalStartBalance ?? 100,
     selectedMatchId,
     actions: {
       goToHome, goToModeSelect, goToCharSelect, goToLeaderboard,

@@ -735,7 +735,7 @@ function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
   useEffect(() => {
     if (game.phase === "ROUND_REVEAL" && game.roundResult) {
       setShowResult(true);
-      setRevealText(game.roundResult.actual === "UP" ? "RESULT: \u2191 UP" : "RESULT: \u2193 DOWN");
+      setRevealText(game.roundResult.actual === "UP" ? "RESULT: \u2191 UP" : game.roundResult.actual === "DOWN" ? "RESULT: \u2193 DOWN" : "RESULT: \u2192 FLAT");
     }
     if (game.phase === "ROUND_IMPACT" && game.roundResult) {
       if (game.roundResult.isDraw) {
@@ -898,9 +898,9 @@ function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
               )}
             </div>
 
-            {/* Flame ball projectile during combat */}
+            {/* Flame ball projectile during combat — flies from the attacker to the opponent */}
             <FlameBall
-              fromLeft={game.combatPhase === "strike"}
+              fromLeft={game.combatPhase === "strike" && game.lastDamage?.target === "rival"}
               color={game.combatPhase === "strike" && game.lastDamage?.target === "rival"
                 ? (game.playerChar?.spell.color ?? "#fbbf24")
                 : (game.rivalChar?.spell.color ?? "#ef4444")}
@@ -928,6 +928,9 @@ function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
               question={game.selectedPrediction?.question ?? "WILL BTC GO UP OR DOWN?"}
               roundActive={game.phase === "ROUND_ACTIVE"}
               roundDeadline={Date.now() + game.timeLeft * 1000}
+              prices={game.market?.prices}
+              startPrice={game.market?.startPrice}
+              endPrice={game.market?.endPrice}
               size="compact"
             />
           </div>
@@ -1031,11 +1034,13 @@ function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
               <div style={{
                 fontSize: 11, letterSpacing: "0.12em", marginBottom: 12, padding: "4px 12px",
                 borderRadius: 4, display: "inline-block",
-                background: "rgba(245,158,11,0.15)",
-                border: "1px solid #f59e0b",
-                color: "#f59e0b",
+                background: predStatus === "confirmed" ? "rgba(16,185,129,0.15)" : "rgba(245,158,11,0.15)",
+                border: `1px solid ${predStatus === "confirmed" ? "#10b981" : "#f59e0b"}`,
+                color: predStatus === "confirmed" ? "#10b981" : "#f59e0b",
               }}>
-                {game.playerPrediction === "UP" ? "\u2191" : "\u2193"} {game.playerPrediction} SELECTED — TAP TO CHANGE
+                {predStatus === "confirmed"
+                  ? `\uD83D\uDD12 ${game.playerPrediction === "UP" ? "\u2191" : "\u2193"} ${game.playerPrediction} COMMITTED`
+                  : `${game.playerPrediction === "UP" ? "\u2191" : "\u2193"} ${game.playerPrediction} SELECTED`}
               </div>
             )}
             {predStatus === "submitting" && (
@@ -1057,28 +1062,34 @@ function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
               </div>
             )}
 
-            {/* UP/DOWN buttons — enabled during ROUND_ACTIVE, highlighted when selected */}
+            {/* UP/DOWN buttons — enabled during ROUND_ACTIVE, locked once committed */}
             <div style={{ display: "flex", gap: 20, justifyContent: "center" }}>
               <button
-                onClick={() => game.actions.makePrediction("UP")}
+                onClick={() => predStatus !== "confirmed" && game.actions.makePrediction("UP")}
+                disabled={predStatus === "confirmed"}
                 style={{
                   ...predictionBtnStyle("#10b981"),
                   filter: game.playerPrediction === "UP" ? "brightness(1.2)" : undefined,
                   transform: game.playerPrediction === "UP" ? "scale(1.05)" : undefined,
                   borderColor: game.playerPrediction === "UP" ? "#10b981" : undefined,
                   boxShadow: game.playerPrediction === "UP" ? "0 0 12px rgba(16,185,129,0.5)" : undefined,
+                  cursor: predStatus === "confirmed" ? "default" : "pointer",
+                  opacity: predStatus === "confirmed" && game.playerPrediction !== "UP" ? 0.4 : undefined,
                 }}
               >
                 {"\u2191"} YES
               </button>
               <button
-                onClick={() => game.actions.makePrediction("DOWN")}
+                onClick={() => predStatus !== "confirmed" && game.actions.makePrediction("DOWN")}
+                disabled={predStatus === "confirmed"}
                 style={{
                   ...predictionBtnStyle("#ef4444"),
                   filter: game.playerPrediction === "DOWN" ? "brightness(1.2)" : undefined,
                   transform: game.playerPrediction === "DOWN" ? "scale(1.05)" : undefined,
                   borderColor: game.playerPrediction === "DOWN" ? "#ef4444" : undefined,
                   boxShadow: game.playerPrediction === "DOWN" ? "0 0 12px rgba(239,68,68,0.5)" : undefined,
+                  cursor: predStatus === "confirmed" ? "default" : "pointer",
+                  opacity: predStatus === "confirmed" && game.playerPrediction !== "DOWN" ? 0.4 : undefined,
                 }}
               >
                 {"\u2193"} NO
@@ -1243,24 +1254,26 @@ function MatchResult({ game, onRematch }: { game: ReturnType<typeof useGameState
       {/* Trading P&L */}
       <div style={{
         background: "rgba(15,23,42,0.9)", border: "2px solid #1e293b", borderRadius: 8,
-        padding: "12px 20px", marginBottom: 24, textAlign: "center", maxWidth: 320, width: "100%",
+        padding: "12px 20px", marginBottom: 24, textAlign: "center", maxWidth: 340, width: "100%",
       }}>
         <div style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.1em", marginBottom: 6 }}>TRADING P&L</div>
         {(() => {
           const correct = game.roundHistory.filter((r) => r.playerCorrect && !r.isDraw).length;
           const wrong = game.roundHistory.filter((r) => !r.playerCorrect && !r.isDraw).length;
+          const flat = game.roundHistory.filter((r) => r.actual === "FLAT").length;
           const pnl = (correct * 0.8) - (wrong * 1.0);
+          const startBalance = game.playerStartBalance ?? 100;
+          const endBalance = game.playerBalance ?? startBalance + pnl;
           return (
             <>
-              <div style={{
-                fontSize: 22, fontWeight: 900,
-                color: pnl >= 0 ? "#10b981" : "#ef4444",
-                letterSpacing: "0.05em",
-              }}>
+              <div style={{ fontSize: 22, fontWeight: 900, color: pnl >= 0 ? "#10b981" : "#ef4444", letterSpacing: "0.05em" }}>
                 {pnl >= 0 ? "+" : ""}{pnl.toFixed(2)} STT
               </div>
               <div style={{ fontSize: 10, color: "#64748b", marginTop: 4 }}>
-                {correct} wins / {wrong} losses / {game.roundHistory.length - correct - wrong} draws
+                {startBalance.toFixed(2)} STT {"\u2192"} {endBalance.toFixed(2)} STT
+              </div>
+              <div style={{ fontSize: 10, color: "#475569", marginTop: 2 }}>
+                {correct} wins / {wrong} losses / {flat} flat / {game.roundHistory.length - correct - wrong - flat} draws
               </div>
             </>
           );
@@ -1697,23 +1710,45 @@ function MatchDetailScreen({ matchId, address, onBack }: { matchId: string | nul
       {match.rounds && match.rounds.length > 0 && (
         <div style={{
           background: "rgba(15,23,42,0.9)", border: "2px solid #334155", borderRadius: 8,
-          padding: "16px 32px", maxWidth: 500, width: "100%", marginBottom: 24,
+          padding: "16px 20px", maxWidth: 520, width: "100%", marginBottom: 24,
         }}>
           <div style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.15em", marginBottom: 12, textAlign: "center" }}>ROUNDS</div>
-          <div style={{ display: "flex", gap: 4, justifyContent: "center", flexWrap: "wrap" }}>
-            {match.rounds.map((r: any) => (
-              <div key={r.roundNum} style={{
-                width: 36, height: 36, borderRadius: 4,
-                display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
-                fontSize: 10, fontWeight: 700, lineHeight: 1.2,
-                background: r.playerCorrect ? "rgba(16,185,129,0.2)" : "rgba(239,68,68,0.2)",
-                border: `1px solid ${r.playerCorrect ? "#10b981" : "#ef4444"}`,
-                color: r.playerCorrect ? "#10b981" : "#ef4444",
-              }}>
-                {r.playerCorrect ? "\u2713" : "\u2717"}
-                <span style={{ fontSize: 8, opacity: 0.7 }}>{r.actual}</span>
-              </div>
-            ))}
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {match.rounds.map((r: any) => {
+              const ok = r.playerCorrect && r.actual !== "FLAT";
+              const isFlat = r.actual === "FLAT";
+              const accent = isFlat ? "#64748b" : ok ? "#10b981" : "#ef4444";
+              const exec = r.playerExecution;
+              return (
+                <div key={r.roundNum} style={{
+                  border: `1px solid ${accent}${"55"}`,
+                  borderRadius: 6, padding: "8px 12px",
+                  display: "flex", flexDirection: "column", gap: 4,
+                }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.1em" }}>R{String(r.roundNum).padStart(2, "0")}</span>
+                    <span style={{ fontSize: 12, fontWeight: 900, color: accent }}>
+                      {isFlat ? "\u2192 FLAT" : ok ? "\u2191/\u2193 " + r.actual + " WIN" : "\u2191/\u2193 " + r.actual + " LOSS"}
+                    </span>
+                  </div>
+                  {r.startPrice != null && r.endPrice != null && (
+                    <div style={{ fontSize: 10, color: "#94a3b8" }}>
+                      {r.asset ?? "BTC"} {"\u00B7"} {r.startPrice?.toFixed ? r.startPrice.toFixed(r.asset === "SOMI" ? 4 : 2) : r.startPrice} {"\u2192"} {r.endPrice?.toFixed ? r.endPrice.toFixed(r.asset === "SOMI" ? 4 : 2) : r.endPrice}
+                    </div>
+                  )}
+                  {r.playerPnL != null && (
+                    <div style={{ fontSize: 11, fontWeight: 700, color: (r.playerPnL ?? 0) >= 0 ? "#10b981" : "#ef4444" }}>
+                      {(r.playerPnL ?? 0) >= 0 ? "+" : ""}{(r.playerPnL ?? 0).toFixed ? (r.playerPnL).toFixed(2) : r.playerPnL} STT
+                    </div>
+                  )}
+                  {exec?.txHash && (
+                    <div style={{ fontSize: 9, color: "#64748b", fontFamily: "monospace", wordBreak: "break-all" }}>
+                      tx: {exec.status === "EXECUTED" ? "\u2713" : "\u2717"} {exec.txHash.slice(0, 18)}...
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
       )}

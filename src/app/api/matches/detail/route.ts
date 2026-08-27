@@ -77,6 +77,11 @@ export async function GET(req: Request): Promise<Response> {
         actual: r.actual,
         playerCorrect: r.playerCorrect,
         rivalCorrect: r.rivalCorrect,
+        startPrice: r.startPrice,
+        endPrice: r.endPrice,
+        asset: r.asset,
+        playerPnL: r.playerPnL,
+        rivalPnL: r.rivalPnL,
         playerExecution: r.playerExecution ? {
           status: r.playerExecution.status,
           txHash: r.playerExecution.txHash,

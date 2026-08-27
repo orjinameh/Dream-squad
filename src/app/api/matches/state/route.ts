@@ -3,7 +3,7 @@ import { Match, type RoundPhase, type StatsProcessedStatus } from "@/db/models/M
 import { PlayerStats } from "@/db/models/PlayerStats";
 import { normalizeAddress } from "@/lib/addresses";
 import { jsonError } from "@/lib/utils";
-import { deriveRoundOutcome } from "@/lib/operator";
+import { generateRoundSeries } from "@/lib/prices";
 import { getPvpWinPoints } from "@/lib/rank";
 
 export const dynamic = "force-dynamic";
@@ -31,11 +31,12 @@ export async function GET(req: Request): Promise<Response> {
       // Check if player predicted
       if (!match.playerPrediction) {
         // No prediction submitted — mark as draw/no-contest for this round
+        const series = generateRoundSeries(`${matchId}:${match.currentRound}`, match.predictionAsset ?? "BTC");
         const roundRecord = {
           roundNum: match.currentRound,
           playerPrediction: null,
           rivalPrediction: null,
-          actual: "UP" as const,
+          actual: series.actual,
           playerCorrect: false,
           rivalCorrect: false,
           roundWinner: "draw" as const,
@@ -44,6 +45,12 @@ export async function GET(req: Request): Promise<Response> {
           rivalDamage: 0,
           isCritical: false,
           knockout: false,
+          startPrice: series.startPrice,
+          endPrice: series.endPrice,
+          prices: series.prices,
+          asset: series.asset,
+          playerPnL: 0,
+          rivalPnL: 0,
           resolvedAt: now,
         };
 
@@ -128,6 +135,14 @@ function buildState(match: any, serverTime: Date, isViewerP2: boolean, viewerAdd
     rivalDamage: isViewerP2 ? r.playerDamage : r.rivalDamage,
     isCritical: r.isCritical,
     knockout: r.knockout,
+    // Coherent market series
+    startPrice: r.startPrice,
+    endPrice: r.endPrice,
+    prices: r.prices,
+    asset: r.asset,
+    // Trading P&L
+    playerPnL: isViewerP2 ? r.rivalPnL : r.playerPnL,
+    rivalPnL: isViewerP2 ? r.playerPnL : r.rivalPnL,
     playerExecution: r.playerExecution,
     rivalExecution: r.rivalExecution,
   }));
@@ -145,6 +160,18 @@ function buildState(match: any, serverTime: Date, isViewerP2: boolean, viewerAdd
   const theirHP = isViewerP2 ? match.playerHP : match.rivalHP;
   const myStreak = isViewerP2 ? match.rivalStreak : match.playerStreak;
   const theirStreak = isViewerP2 ? match.playerStreak : match.rivalStreak;
+
+  // Deterministic series for the current active round (chart + resolution agree).
+  const asset = match.predictionAsset ?? "BTC";
+  const series = match.roundPhase === "ACTIVE" && match.status === "ACTIVE"
+    ? generateRoundSeries(`${match._id}:${match.currentRound}`, asset)
+    : undefined;
+
+  // Running balances (STT).
+  const startMe = isViewerP2 ? (match.rivalStartBalance ?? 100) : (match.playerStartBalance ?? 100);
+  const startThem = isViewerP2 ? (match.playerStartBalance ?? 100) : (match.rivalStartBalance ?? 100);
+  const mePnl = (match.rounds ?? []).reduce((s: number, r: any) => s + (isViewerP2 ? (r.rivalPnL ?? 0) : (r.playerPnL ?? 0)), 0);
+  const themPnl = (match.rounds ?? []).reduce((s: number, r: any) => s + (isViewerP2 ? (r.playerPnL ?? 0) : (r.rivalPnL ?? 0)), 0);
 
   return {
     matchId: match._id,
@@ -178,6 +205,19 @@ function buildState(match: any, serverTime: Date, isViewerP2: boolean, viewerAdd
     rivalHP: theirHP,
     playerStreak: myStreak,
     rivalStreak: theirStreak,
+    // Coherent market series
+    market: series ? {
+      asset: series.asset,
+      startPrice: series.startPrice,
+      endPrice: series.endPrice,
+      prices: series.prices,
+      actual: series.actual,
+    } : undefined,
+    // Trading balances
+    playerBalance: Math.round((startMe + mePnl) * 100) / 100,
+    rivalBalance: Math.round((startThem + themPnl) * 100) / 100,
+    playerStartBalance: startMe,
+    rivalStartBalance: startThem,
     lastRound,
   };
 }

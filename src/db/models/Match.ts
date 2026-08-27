@@ -13,9 +13,20 @@ export interface RoundRecord {
   roundNum: number;
   playerPrediction: "UP" | "DOWN" | null;
   rivalPrediction: "UP" | "DOWN" | null;
-  actual: "UP" | "DOWN";
+  actual: "UP" | "DOWN" | "FLAT";
   playerCorrect: boolean;
   rivalCorrect: boolean;
+  // Coherent market price series this round's outcome derives from
+  startPrice?: number;
+  endPrice?: number;
+  prices?: number[];
+  asset?: string;
+  // Trading P&L (per player), in STT
+  playerPnL?: number;
+  rivalPnL?: number;
+  // Balances after settlement
+  playerBalance?: number;
+  rivalBalance?: number;
   // Server-authoritative combat
   roundWinner: "player" | "rival" | "draw";
   damage: number;
@@ -91,6 +102,11 @@ export interface MatchDoc {
   rivalHP: number;
   playerStreak: number;
   rivalStreak: number;
+  // Trading balance lifecycle (STT)
+  playerStartBalance: number;
+  rivalStartBalance: number;
+  playerFinalBalance?: number;
+  rivalFinalBalance?: number;
   // Stats idempotency (lifecycle)
   statsProcessed: StatsProcessedStatus;
 }
@@ -105,9 +121,19 @@ const RoundSchema = new Schema<RoundRecord>(
     roundNum: { type: Number, required: true },
     playerPrediction: { type: String, enum: ["UP", "DOWN", null], default: null },
     rivalPrediction: { type: String, enum: ["UP", "DOWN", null], default: null },
-    actual: { type: String, enum: ["UP", "DOWN"], required: true },
+    actual: { type: String, enum: ["UP", "DOWN", "FLAT"], required: true },
     playerCorrect: { type: Boolean, required: true },
     rivalCorrect: { type: Boolean, required: true },
+    // Coherent market price series this round's outcome derives from
+    startPrice: { type: Number },
+    endPrice: { type: Number },
+    prices: { type: [Number] },
+    asset: { type: String },
+    // Trading P&L (per player), in STT
+    playerPnL: { type: Number },
+    rivalPnL: { type: Number },
+    playerBalance: { type: Number },
+    rivalBalance: { type: Number },
     // Server-authoritative combat
     roundWinner: { type: String, enum: ["player", "rival", "draw"], required: true },
     damage: { type: Number, default: 0 },
@@ -185,6 +211,11 @@ const MatchSchema = new Schema<MatchDoc>(
     rivalHP: { type: Number, default: 100 },
     playerStreak: { type: Number, default: 0 },
     rivalStreak: { type: Number, default: 0 },
+    // Trading balance lifecycle (STT)
+    playerStartBalance: { type: Number, default: 100 },
+    rivalStartBalance: { type: Number, default: 100 },
+    playerFinalBalance: { type: Number },
+    rivalFinalBalance: { type: Number },
     statsProcessed: { type: String, enum: ["PENDING", "PROCESSING", "COMPLETE", "FAILED"], default: "PENDING" },
   },
   { versionKey: false },

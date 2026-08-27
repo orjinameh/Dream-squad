@@ -1,57 +1,73 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 interface Props {
   asset: string;
   question: string;
   roundActive: boolean;
   roundDeadline: number;
+  // Server-authoritative deterministic series (matches what resolution uses).
+  prices?: number[];
+  startPrice?: number;
+  endPrice?: number;
   size?: "compact" | "full";
 }
 
-export function MarketChart({ asset, question, roundActive, roundDeadline, size = "compact" }: Props) {
-  const [prices, setPrices] = useState<number[]>([]);
-  const [currentPrice, setCurrentPrice] = useState(0);
-  const [startPrice, setStartPrice] = useState(0);
-  const [trend, setTrend] = useState<"up" | "down" | "flat">("flat");
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+export function MarketChart({
+  asset,
+  question,
+  roundActive,
+  roundDeadline,
+  prices,
+  startPrice,
+  endPrice,
+  size = "compact",
+}: Props) {
+  const [tick, setTick] = useState(0);
+  const lastActiveRef = useRef(false);
 
-  useEffect(() => {
-    const base = asset === "BTC" ? 67420 : asset === "ETH" ? 3520 : asset === "SOMI" ? 0.10 : 100;
-    setStartPrice(base);
-    setCurrentPrice(base);
-    setPrices([base]);
-  }, [asset]);
-
+  // Tick ~10x/sec while the round is live so the chart advances smoothly.
   useEffect(() => {
     if (!roundActive) {
-      if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
+      if (lastActiveRef.current) {
+        lastActiveRef.current = false;
+        setTick((t) => t + 1);
+      }
       return;
     }
+    lastActiveRef.current = true;
+    const id = setInterval(() => setTick((t) => t + 1), 100);
+    return () => clearInterval(id);
+  }, [roundActive]);
 
-    intervalRef.current = setInterval(() => {
-      setCurrentPrice((prev) => {
-        const volatility = asset === "BTC" ? 0.002 : asset === "ETH" ? 0.003 : 0.005;
-        const change = (Math.random() - 0.48) * prev * volatility;
-        const next = +(prev + change).toFixed(asset === "SOMI" ? 4 : 2);
-        setPrices((p) => [...p.slice(-29), next]);
-        setTrend(next > startPrice ? "up" : next < startPrice ? "down" : "flat");
-        return next;
-      });
-    }, 800);
+  const series = prices && prices.length >= 2 ? prices : null;
+  const base = startPrice ?? (series ? series[0] : 0);
 
-    return () => { if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; } };
-  }, [roundActive, asset, startPrice]);
+  // Reveal the series left→right proportionally to the 10-second round.
+  const visible = useMemo(() => {
+    if (!roundActive) return series;
+    if (!series) return series;
+    const elapsedFrac = Math.min(
+      1,
+      Math.max(0, ((roundDeadline - 10000 - Date.now()) * -1) / 10000),
+    );
+    const count = Math.max(2, Math.round(elapsedFrac * series.length));
+    return series.slice(0, count);
+  }, [roundActive, series, roundDeadline, tick]);
 
+  const currentPrice = visible && visible.length ? visible[visible.length - 1] : base;
+
+  const priceChange = currentPrice - base;
+  const pctChange = base > 0 ? (priceChange / base) * 100 : 0;
+  const trend = priceChange > 0.0000001 ? "up" : priceChange < -0.0000001 ? "down" : "flat";
   const isCompact = size === "compact";
-  const priceChange = currentPrice - startPrice;
-  const pctChange = startPrice > 0 ? ((priceChange / startPrice) * 100) : 0;
   const arrow = trend === "up" ? "\u2191" : trend === "down" ? "\u2193" : "\u2192";
   const arrowColor = trend === "up" ? "#10b981" : trend === "down" ? "#ef4444" : "#64748b";
 
   const timeLeft = Math.max(0, (roundDeadline - Date.now()) / 1000);
   const urgency = timeLeft <= 2 ? "critical" : timeLeft <= 5 ? "urgent" : "calm";
+  const decimals = asset === "SOMI" ? 4 : 2;
 
   return (
     <div style={{
@@ -64,7 +80,7 @@ export function MarketChart({ asset, question, roundActive, roundDeadline, size 
     }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
         <span style={{ fontSize: isCompact ? 11 : 13, color: "#94a3b8", letterSpacing: "0.08em", fontWeight: 700 }}>
-          {asset}
+          {asset}/USD
         </span>
         <span style={{ fontSize: isCompact ? 18 : 24, fontWeight: 900, color: arrowColor, letterSpacing: "0.05em" }}>
           {arrow}
@@ -73,30 +89,24 @@ export function MarketChart({ asset, question, roundActive, roundDeadline, size 
 
       <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 6 }}>
         <span style={{ fontSize: isCompact ? 16 : 22, fontWeight: 900, color: "#e2e8f0", letterSpacing: "0.03em" }}>
-          {currentPrice.toFixed(asset === "SOMI" ? 4 : 2)}
+          {currentPrice ? currentPrice.toFixed(decimals) : "--"}
         </span>
-        <span style={{
-          fontSize: isCompact ? 10 : 12, fontWeight: 700,
-          color: priceChange >= 0 ? "#10b981" : "#ef4444",
-        }}>
+        <span style={{ fontSize: isCompact ? 10 : 12, fontWeight: 700, color: priceChange >= 0 ? "#10b981" : "#ef4444" }}>
           {priceChange >= 0 ? "+" : ""}{pctChange.toFixed(2)}%
         </span>
       </div>
 
-      <MiniSparkline prices={prices} height={isCompact ? 28 : 40} color={arrowColor} />
+      <MiniSparkline prices={visible ?? []} height={isCompact ? 28 : 40} color={arrowColor} />
 
-      {roundActive && (
-        <div style={{
-          fontSize: isCompact ? 9 : 10,
-          color: urgency === "critical" ? "#ef4444" : urgency === "urgent" ? "#f59e0b" : "#64748b",
-          letterSpacing: "0.08em",
-          marginTop: 4,
-          textAlign: "center",
-          animation: urgency === "critical" ? "criticalPulse 0.4s steps(2) infinite" : undefined,
-        }}>
-          {timeLeft > 0 ? `LIVE \u00B7 ${timeLeft.toFixed(1)}s` : "ROUND ENDED"}
-        </div>
-      )}
+      <div style={{
+        display: "flex", justifyContent: "space-between", marginTop: 4,
+        fontSize: isCompact ? 9 : 10, color: "#64748b", letterSpacing: "0.08em",
+      }}>
+        <span>START: {base ? base.toFixed(decimals) : "--"}</span>
+        <span style={{ color: trend === "up" ? "#10b981" : trend === "down" ? "#ef4444" : "#64748b" }}>
+          {roundActive ? (timeLeft > 0 ? `LIVE \u00B7 ${timeLeft.toFixed(1)}s` : "ROUND ENDED") : endPrice ? `NOW: ${endPrice.toFixed(decimals)}` : ""}
+        </span>
+      </div>
     </div>
   );
 }

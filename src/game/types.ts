@@ -65,7 +65,7 @@ export const PREDICTIONS: PredictionConfig[] = [
 
 export interface RoundResult {
   roundNum: number;
-  actual: "UP" | "DOWN";
+  actual: "UP" | "DOWN" | "FLAT";
   playerPredicted: Prediction;
   rivalPredicted: Prediction;
   playerCorrect: boolean;
@@ -75,6 +75,12 @@ export interface RoundResult {
   isCritical: boolean;
   isDraw: boolean;
   knockout: boolean;
+  startPrice?: number;
+  endPrice?: number;
+  prices?: number[];
+  asset?: string;
+  playerPnL?: number;
+  rivalPnL?: number;
   playerExecution?: {
     status: string;
     txHash?: string;
@@ -118,4 +124,17 @@ export interface GameState {
   lastDamage: { amount: number; target: "player" | "rival"; isCritical: boolean } | null;
   isFinalRound: boolean;
   koOverlay: string | null;
+  // Coherent market series for the current round (chart + resolution agree)
+  market?: {
+    asset: string;
+    startPrice: number;
+    endPrice: number;
+    prices: number[];
+    actual: "UP" | "DOWN" | "FLAT";
+  };
+  // Trading balances (STT)
+  playerBalance: number;
+  rivalBalance: number;
+  playerStartBalance: number;
+  rivalStartBalance: number;
 }

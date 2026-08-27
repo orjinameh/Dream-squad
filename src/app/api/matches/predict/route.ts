@@ -3,11 +3,13 @@ import { Match, type RoundPhase, type RoundRecord, type StatsProcessedStatus } f
 import { PlayerStats } from "@/db/models/PlayerStats";
 import { normalizeAddress } from "@/lib/addresses";
 import { jsonError } from "@/lib/utils";
-import { executeGameRound, deriveRoundOutcome, type RoundExecutionResult } from "@/lib/operator";
-import { MARKETS } from "@/lib/markets";
+import { executeGameRound, type RoundExecutionResult } from "@/lib/operator";
 import { getPvpWinPoints } from "@/lib/rank";
+import { generateRoundSeries } from "@/lib/prices";
 import { z } from "zod";
 import { isAddress } from "viem";
+
+const PAYOUT_MULTIPLIER = 1.8;
 
 const MAX_HP = 100;
 const BASE_DAMAGE = 15;
@@ -59,6 +61,8 @@ async function resolveRound(match: any, now: Date): Promise<{
   newRivalStreak: number;
   matchDecided: boolean;
   winner: "player" | "rival" | "draw";
+  playerBalance: number;
+  rivalBalance: number;
 }> {
   const marketSymbol = match.executionConfig?.marketSymbol ?? "SOMI:USDso";
   const roundNumber = match.currentRound;
@@ -97,22 +101,38 @@ async function resolveRound(match: any, now: Date): Promise<{
     rivalResult = await executeGameRound(marketSymbol, match.player2Address, rivalPred, roundNumber, matchId);
   }
 
-  // Determine authoritative market outcome
-  let actual: "UP" | "DOWN";
-  if (playerResult?.success && playerResult.txHash) {
-    actual = deriveRoundOutcome(playerResult.txHash, roundNumber);
-  } else if (rivalResult?.success && rivalResult.txHash) {
-    actual = deriveRoundOutcome(rivalResult.txHash, roundNumber);
-  } else if (playerResult?.success) {
-    actual = playerResult!.roundOutcome;
-  } else {
-    throw new Error("DREAMDEX_EXECUTION_FAILED");
-  }
+  // Determine authoritative market outcome from the deterministic price series.
+  // Both players watch the exact same series (chart + resolution agree).
+  const asset = match.predictionAsset ?? "BTC";
+  const seedKey = `${matchId}:${roundNumber}`;
+  const series = generateRoundSeries(seedKey, asset);
+  const actual = series.actual;
+  const volume = series.prices;
 
-  const playerCorrect = playerPred === actual;
-  const rivalCorrect = rivalPred === actual;
-  const isDraw = playerCorrect === rivalCorrect;
+  // PvP both players see the same series; rerun for rival printer (identical path).
+  const isFlat = actual === "FLAT";
+
+  // FLAT = no directional winner. No score, no damage, no P&L change.
+  const playerCorrect = !isFlat && playerPred === actual;
+  const rivalCorrect = !isFlat && rivalPred === actual;
+  const isDraw = isFlat || playerCorrect === rivalCorrect;
   const roundWinner = isDraw ? "draw" : playerCorrect ? "player" : "rival";
+
+  // Trading P&L (non-zero-sum). Correct = +bet*(multiplier-1), wrong = -bet.
+  // In a FLAT round neither side is penalized (the trade is void).
+  const bet = match.executionConfig?.amountPerRound ?? 1;
+  const playerPnL = !isFlat && playerPred
+    ? (playerCorrect ? bet * (PAYOUT_MULTIPLIER - 1) : -bet)
+    : 0;
+  const rivalPnL = !isFlat && rivalPred
+    ? (rivalCorrect ? bet * (PAYOUT_MULTIPLIER - 1) : -bet)
+    : 0;
+
+  // Running balance = start balance + cumulative P&L including this round.
+  const playerStartBalance = match.playerStartBalance ?? 100;
+  const rivalStartBalance = match.rivalStartBalance ?? 100;
+  const playerBalance = roundPnl(playerStartBalance + cumulativePnL(match.rounds, "player") + playerPnL);
+  const rivalBalance = roundPnl(rivalStartBalance + cumulativePnL(match.rounds, "rival") + rivalPnL);
 
   // Server-authoritative combat calculation
   let playerDamage = 0;
@@ -153,6 +173,14 @@ async function resolveRound(match: any, now: Date): Promise<{
     rivalDamage,
     isCritical,
     knockout,
+    // Coherent market series this round's outcome derives from
+    startPrice: series.startPrice,
+    endPrice: series.endPrice,
+    prices: volume,
+    asset: series.asset,
+    // Trading P&L
+    playerPnL,
+    rivalPnL,
     playerExecution: playerResult ? {
       status: playerResult.success ? "EXECUTED" : "FAILED",
       txHash: playerResult.txHash ?? undefined,
@@ -174,6 +202,8 @@ async function resolveRound(match: any, now: Date): Promise<{
       error: rivalResult.error,
     } : undefined,
     resolvedAt: now,
+    playerBalance,
+    rivalBalance,
   };
 
   // Determine if match is decided
@@ -186,7 +216,21 @@ async function resolveRound(match: any, now: Date): Promise<{
   const winner = newPlayerScore > newRivalScore ? "player"
     : newRivalScore > newPlayerScore ? "rival" : "draw";
 
-  return { roundRecord, newPlayerScore, newRivalScore, newPlayerHP, newRivalHP, newPlayerStreak, newRivalStreak, matchDecided, winner };
+  return {
+    roundRecord, newPlayerScore, newRivalScore, newPlayerHP, newRivalHP,
+    newPlayerStreak, newRivalStreak, matchDecided, winner,
+    playerBalance, rivalBalance,
+  };
+}
+
+/** Sum this player's P&L across already-resolved rounds. */
+function cumulativePnL(rounds: any[], side: "player" | "rival"): number {
+  const key = side === "player" ? "playerPnL" : "rivalPnL";
+  return (rounds as any[]).reduce((sum, r) => sum + (r[key] ?? 0), 0);
+}
+
+function roundPnl(value: number): number {
+  return Math.round(value * 100) / 100;
 }
 
 /**
@@ -196,7 +240,6 @@ async function resolveRound(match: any, now: Date): Promise<{
 async function updatePlayerStatsAtomic(match: any, allRounds: any[], winner: string, now: Date) {
   const matchId = match._id;
   const BET_PER_ROUND = match.executionConfig?.amountPerRound ?? 1;
-  const PAYOUT_MULTIPLIER = 1.8;
 
   // Player 1 stats — atomic: only process if not already processed
   const p1CorrectCount = allRounds.filter((r: any) => r.playerCorrect).length;
@@ -378,11 +421,12 @@ export async function POST(req: Request): Promise<Response> {
         }
         // PvP expired with no predictions: no-op round (draw, 0 damage)
         if (!claim.playerPrediction && !claim.rivalPrediction) {
+          const series = generateRoundSeries(`${claim._id}:${claim.currentRound}`, claim.predictionAsset ?? "BTC");
           const roundRecord: RoundRecord = {
             roundNum: claim.currentRound,
             playerPrediction: null,
             rivalPrediction: null,
-            actual: "UP" as const,
+            actual: series.actual,
             playerCorrect: false,
             rivalCorrect: false,
             roundWinner: "draw",
@@ -391,12 +435,15 @@ export async function POST(req: Request): Promise<Response> {
             rivalDamage: 0,
             isCritical: false,
             knockout: false,
+            startPrice: series.startPrice,
+            endPrice: series.endPrice,
+            prices: series.prices,
+            asset: series.asset,
+            playerPnL: 0,
+            rivalPnL: 0,
             resolvedAt: now,
           };
-          // Still need a valid actual for the record — use deriveRoundOutcome with a deterministic seed
-          roundRecord.actual = "UP";
           const nextDeadline = new Date(now.getTime() + 1000);
-          const nextPhase: RoundPhase = claim.currentRound >= claim.totalRounds ? "REVEALED" : "TRANSITIONING";
           const nextStatus = claim.currentRound >= claim.totalRounds ? "COMPLETED" : "ACTIVE";
           const nextRoundPhase: RoundPhase = claim.currentRound >= claim.totalRounds ? "REVEALED" : "ACTIVE";
 
@@ -426,7 +473,7 @@ export async function POST(req: Request): Promise<Response> {
       // Execute and resolve
       try {
         const result = await resolveRound(claim, now);
-        const { roundRecord, newPlayerScore, newRivalScore, newPlayerHP, newRivalHP, newPlayerStreak, newRivalStreak, matchDecided, winner } = result;
+        const { roundRecord, newPlayerScore, newRivalScore, newPlayerHP, newRivalHP, newPlayerStreak, newRivalStreak, matchDecided, winner, playerBalance, rivalBalance } = result;
 
         const nextDeadline = new Date(now.getTime() + 1000);
         const nextStatus = matchDecided ? "COMPLETED" : "ACTIVE";
@@ -448,6 +495,10 @@ export async function POST(req: Request): Promise<Response> {
             roundPhase: nextRoundPhase,
             status: nextStatus,
             ...(matchDecided ? {
+              playerStartBalance: claim.playerStartBalance ?? 100,
+              rivalStartBalance: claim.rivalStartBalance ?? 100,
+              playerFinalBalance: playerBalance,
+              rivalFinalBalance: rivalBalance,
               completedAt: now,
               winner,
               statsProcessed: "PENDING" as StatsProcessedStatus,
@@ -475,7 +526,7 @@ export async function POST(req: Request): Promise<Response> {
           roundNum: match.currentRound,
           playerPrediction: claim.playerPrediction,
           rivalPrediction: claim.rivalPrediction,
-          actual: "UP",
+          actual: "FLAT",
           playerCorrect: false,
           rivalCorrect: false,
           roundWinner: "draw",
@@ -484,6 +535,8 @@ export async function POST(req: Request): Promise<Response> {
           rivalDamage: 0,
           isCritical: false,
           knockout: false,
+          playerPnL: 0,
+          rivalPnL: 0,
           resolvedAt: now,
         };
         await Match.findByIdAndUpdate(match._id, {
@@ -538,11 +591,37 @@ export interface MatchStateResponse {
   playerStreak: number;
   rivalStreak: number;
   lastRound?: RoundRecord;
+  // Coherent market series the current round's outcome will derive from
+  market?: {
+    asset: string;
+    startPrice: number;
+    endPrice: number;
+    prices: number[];
+    actual: "UP" | "DOWN" | "FLAT";
+  };
+  // Trading balance (STT)
+  playerBalance: number;
+  rivalBalance: number;
+  playerStartBalance: number;
+  rivalStartBalance: number;
 }
 
 function buildState(match: any, serverTime: Date): MatchStateResponse {
   const rounds = match.rounds ?? [];
   const lastRound = rounds.length > 0 ? rounds[rounds.length - 1] : undefined;
+
+  // For an unresolved ACTIVE round, precompute the deterministic series so the
+  // chart and the eventual resolution are driven by the SAME price path.
+  const asset = match.predictionAsset ?? "BTC";
+  const series = match.roundPhase === "ACTIVE" && match.status === "ACTIVE"
+    ? generateRoundSeries(`${match._id}:${match.currentRound}`, asset)
+    : undefined;
+
+  // Running balance on the latest resolved round (or start balance).
+  const lastPlayerPnl = rounds.reduce((s: number, r: any) => s + (r.playerPnL ?? 0), 0);
+  const lastRivalPnl = rounds.reduce((s: number, r: any) => s + (r.rivalPnL ?? 0), 0);
+  const playerStartBalance = match.playerStartBalance ?? 100;
+  const rivalStartBalance = match.rivalStartBalance ?? 100;
 
   return {
     matchId: match._id,
@@ -572,6 +651,21 @@ function buildState(match: any, serverTime: Date): MatchStateResponse {
     rivalHP: match.rivalHP ?? MAX_HP,
     playerStreak: match.playerStreak ?? 0,
     rivalStreak: match.rivalStreak ?? 0,
+    market: series ? {
+      asset: series.asset,
+      startPrice: series.startPrice,
+      endPrice: series.endPrice,
+      prices: series.prices,
+      actual: series.actual,
+    } : undefined,
+    playerBalance: round2(playerStartBalance + lastPlayerPnl),
+    rivalBalance: round2(rivalStartBalance + lastRivalPnl),
+    playerStartBalance,
+    rivalStartBalance,
     lastRound,
   };
+}
+
+function round2(value: number): number {
+  return Math.round(value * 100) / 100;
 }
