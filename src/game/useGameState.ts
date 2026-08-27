@@ -115,9 +115,11 @@ export function useGameState(): GameHook {
   const mp = useMultiplayer();
   const { address } = useAccount();
 
-  // Sync wallet address into multiplayer for PvP predict submissions
+  // Sync wallet address into multiplayer for predict submissions. Bot matches
+  // must work even when no wallet is connected, so fall back to a placeholder
+  // address — createMatch stores the same fallback on the server side.
   useEffect(() => {
-    if (address) mp.actions.setAddress(address);
+    mp.actions.setAddress(address ?? "0x0000000000000000000000000000000000000000");
   }, [address, mp.actions]);
 
   const [phase, setPhase] = useState<GamePhase>("HOME");
@@ -418,20 +420,31 @@ export function useGameState(): GameHook {
           setPlayerPrediction(auto);
         }
 
-        // Submit to server — server resolves everything
+        // Submit to server — server resolves everything. Use a bounded retry
+        // so a transient network/5xx failure cannot leave the round frozen at
+        // ROUND_LOCKED (retry until the server returns a resolved round).
         const pred = localPredictionRef.current as "UP" | "DOWN";
         setExecutionStatus("executing");
         roundPhaseRef.current = "SUBMITTING";
 
-        mp.actions.submitPrediction(pred).then((d) => {
-          setExecutionStatus("success");
-          roundPhaseRef.current = "WAITING_SERVER";
-          if (d) advanceAfterSubmit(d);
-        }).catch(() => {
-          // Server may still process — poll will pick up result
-          setExecutionStatus("success");
-          roundPhaseRef.current = "WAITING_SERVER";
-        });
+        const attemptSubmit = (): void => {
+          mp.actions.submitPrediction(pred).then((d) => {
+            if (d && d.rounds && d.rounds.length) {
+              setExecutionStatus("success");
+              roundPhaseRef.current = "WAITING_SERVER";
+              advanceAfterSubmit(d);
+            } else if (roundPhaseRef.current === "SUBMITTING") {
+              // No resolved round yet — retry after a short delay
+              scheduleTimer(attemptSubmit, 600);
+            }
+          }).catch(() => {
+            if (roundPhaseRef.current === "SUBMITTING") {
+              // Wait for the server's sticky-close to pass, then retry
+              scheduleTimer(attemptSubmit, 600);
+            }
+          });
+        };
+        attemptSubmit();
       }
     };
 
@@ -600,6 +613,24 @@ export function useGameState(): GameHook {
   }, [playerChar, mode, scheduleTimer, address, mp.actions]);
 
   // --- PREDICTION ---
+  // Retries when the server does not return a resolved round so a transient
+  // submit failure cannot freeze the round.
+  const retrySubmit = useCallback(async (pred: "UP" | "DOWN") => {
+    const result = await mp.actions.submitPrediction(pred);
+    const hasRound = !!(result && result.rounds && result.rounds.length);
+    if (hasRound) {
+      setExecutionStatus("success");
+      roundPhaseRef.current = "WAITING_SERVER";
+      advanceAfterSubmit(result);
+      return;
+    }
+    // No resolved round yet (transient failure) — retry if we're still in the
+    // round and haven't been superseded.
+    if (roundPhaseRef.current === "SUBMITTING") {
+      scheduleTimer(() => { retrySubmit(pred); }, 600);
+    }
+  }, [mp.actions, advanceAfterSubmit, scheduleTimer]);
+
   const makePrediction = useCallback(async (pred: "UP" | "DOWN") => {
     if (phase !== "ROUND_ACTIVE") return;
 
@@ -613,13 +644,8 @@ export function useGameState(): GameHook {
     setExecutionStatus("executing");
     setExecutionError(null);
     roundPhaseRef.current = "SUBMITTING";
-
-    const result = await mp.actions.submitPrediction(pred);
-    setPredictionUIStatus(result ? "confirmed" : "confirmed");
-    setExecutionStatus("success");
-    roundPhaseRef.current = "WAITING_SERVER";
-    if (result) advanceAfterSubmit(result);
-  }, [phase, mp.actions, advanceAfterSubmit]);
+    retrySubmit(pred);
+  }, [phase, retrySubmit]);
 
   const rematch = useCallback(() => {
     clearAllTimers();
