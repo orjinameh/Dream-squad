@@ -115,11 +115,11 @@ export function useGameState(): GameHook {
   const mp = useMultiplayer();
   const { address } = useAccount();
 
-  // Sync wallet address into multiplayer for predict submissions. Bot matches
-  // must work even when no wallet is connected, so fall back to a placeholder
-  // address — createMatch stores the same fallback on the server side.
+  // Sync wallet address into multiplayer for predict submissions. A connected
+  // wallet is required to play (the UI gates entry behind it), so this only
+  // wires through the real address.
   useEffect(() => {
-    mp.actions.setAddress(address ?? "0x0000000000000000000000000000000000000000");
+    if (address) mp.actions.setAddress(address);
   }, [address, mp.actions]);
 
   const [phase, setPhase] = useState<GamePhase>("HOME");
@@ -613,39 +613,19 @@ export function useGameState(): GameHook {
   }, [playerChar, mode, scheduleTimer, address, mp.actions]);
 
   // --- PREDICTION ---
-  // Retries when the server does not return a resolved round so a transient
-  // submit failure cannot freeze the round.
-  const retrySubmit = useCallback(async (pred: "UP" | "DOWN") => {
-    const result = await mp.actions.submitPrediction(pred);
-    const hasRound = !!(result && result.rounds && result.rounds.length);
-    if (hasRound) {
-      setExecutionStatus("success");
-      roundPhaseRef.current = "WAITING_SERVER";
-      advanceAfterSubmit(result);
-      return;
-    }
-    // No resolved round yet (transient failure) — retry if we're still in the
-    // round and haven't been superseded.
-    if (roundPhaseRef.current === "SUBMITTING") {
-      scheduleTimer(() => { retrySubmit(pred); }, 600);
-    }
-  }, [mp.actions, advanceAfterSubmit, scheduleTimer]);
-
-  const makePrediction = useCallback(async (pred: "UP" | "DOWN") => {
+  // Records the player's chosen position locally but does NOT submit/resolve
+  // it. The round stays open so the position can be repositioned (changed)
+  // freely until the round closes — only the bot countdown timer commits and
+  // resolves the round at timeout. This matches binary-trading semantics:
+  // you hold one position per round and can flip it until the market closes.
+  const makePrediction = useCallback((pred: "UP" | "DOWN") => {
     if (phase !== "ROUND_ACTIVE") return;
 
-    // Optimistic UI: always allows changing
     setLocalPrediction(pred);
     setPlayerPrediction(pred);
     setPredictionUIStatus("selected");
-
-    // Submit to server — server resolves everything
-    setPredictionUIStatus("submitting");
-    setExecutionStatus("executing");
-    setExecutionError(null);
-    roundPhaseRef.current = "SUBMITTING";
-    retrySubmit(pred);
-  }, [phase, retrySubmit]);
+    // No server submission here — reposition until the round closes.
+  }, [phase]);
 
   const rematch = useCallback(() => {
     clearAllTimers();

@@ -8,9 +8,8 @@ import { CHARACTERS } from "@/game/characters";
 
 const PLAYER = "0x9196d7670eea0CB723af11465d4285541a2eA86a";
 
-let MOCK_ADDRESS: string | null = PLAYER;
 vi.mock("wagmi", () => ({
-  useAccount: () => ({ address: MOCK_ADDRESS, isConnected: !!MOCK_ADDRESS, isDisconnected: !MOCK_ADDRESS }),
+  useAccount: () => ({ address: PLAYER, isConnected: true, isDisconnected: false }),
 }));
 
 let resolveState: { currentRound: number; roundPhase: string; rounds: any[]; playerScore: number; rivalScore: number } = {
@@ -50,36 +49,38 @@ function buildState() {
   };
 }
 
-function resolveNextRound() {
+function resolveNextRound(pred: "UP" | "DOWN") {
   const n = resolveState.currentRound;
   const last = resolveState.rounds[resolveState.rounds.length - 1] ?? null;
   const playerScore = (last?.playerScore ?? 0);
+  const actual = "UP";
+  const playerCorrect = pred === actual;
   const rnd: any = {
     roundNum: n,
-    playerPrediction: "UP",
+    playerPrediction: pred,
     rivalPrediction: "DOWN",
-    actual: "UP",
-    playerCorrect: true,
+    actual,
+    playerCorrect,
     rivalCorrect: false,
-    roundWinner: "player",
+    roundWinner: playerCorrect ? "player" : "rival",
     damage: 15,
-    playerDamage: 0,
-    rivalDamage: 15,
+    playerDamage: playerCorrect ? 0 : 15,
+    rivalDamage: playerCorrect ? 15 : 0,
     isCritical: false,
     knockout: false,
     startPrice: 67000,
     endPrice: 67600,
     prices: [67000, 67600],
     asset: "BTC",
-    playerPnL: 1,
+    playerPnL: playerCorrect ? 1 : -1,
     rivalPnL: -1,
-    playerExecution: { status: "EXECUTED", txHash: "0x" + n, direction: "BUY", amount: 1 },
+    playerExecution: { status: "EXECUTED", txHash: "0x" + n, direction: pred === "UP" ? "BUY" : "SELL", amount: 1 },
     rivalExecution: { status: "EXECUTED", direction: "SELL", amount: 1 },
-    playerScore: playerScore + 1,
+    playerScore: playerScore + (playerCorrect ? 1 : 0),
     rivalScore: 0,
   };
   resolveState.rounds = [...resolveState.rounds, rnd];
-  resolveState.playerScore = playerScore + 1;
+  resolveState.playerScore = playerScore + (playerCorrect ? 1 : 0);
   resolveState.currentRound = n + 1;
   resolveState.roundPhase = n >= 3 ? "REVEALED" : "ACTIVE";
   return { roundNum: n, rounds: resolveState.rounds, currentRound: n + 1 };
@@ -97,14 +98,19 @@ function mockFetch() {
       return new Response(JSON.stringify(buildState()), { status: 200, headers: { "content-type": "application/json" } });
     }
     if (path.includes("/api/matches/predict")) {
-      const data = resolveNextRound();
+      let pred: "UP" | "DOWN" = "UP";
+      try {
+        const body = init?.body ? JSON.parse(String(init.body)) : {};
+        if (body.prediction === "UP" || body.prediction === "DOWN") pred = body.prediction;
+      } catch { /* ignore */ }
+      const data = resolveNextRound(pred);
       return new Response(JSON.stringify({
         serverTime: new Date().toISOString(),
         roundPhase: resolveState.roundPhase,
         roundDeadline: new Date().toISOString(),
         playerScore: resolveState.playerScore,
         rivalScore: resolveState.rivalScore,
-        playerPrediction: "UP",
+        playerPrediction: pred,
         rivalPrediction: "DOWN",
         rounds: resolveState.rounds,
         winner: "player",
@@ -185,13 +191,9 @@ describe("client bot game full loop", () => {
     r?.unmount();
   }, 120_000);
 
-  it("bot game WITHOUT a connected wallet does not freeze", async () => {
-    MOCK_ADDRESS = null; // no wallet connected
+  it("PREDICTION IS REPOSITIONABLE within a round until it closes (no premature lock)", async () => {
     let r: any;
-    act(() => {
-      r = renderer(<Probe />);
-    });
-
+    act(() => { r = renderer(<Probe />); });
     act(() => { latest!.actions.selectMode({ id: "quick", name: "QUICK", rounds: 3, desc: "" }); });
     await waitFor((h) => h.phase === "CHAR_SELECT", 3000, "CHAR_SELECT");
     act(() => { latest!.actions.selectChar(CHARACTERS[0]); });
@@ -201,9 +203,24 @@ describe("client bot game full loop", () => {
     act(() => { latest!.actions.selectPrediction({ id: "btc", asset: "BTC", question: "", color: "#000" }); });
     await waitFor((h) => h.phase === "ROUND_ACTIVE", 10_000, "first ROUND_ACTIVE");
 
-    // Do nothing — let the bot countdown auto-submit. If submitPrediction returns
-    // null (no wallet), the round will never advance and this waitFor times out.
-    await waitFor((h) => h.roundHistory.length >= 1, 25_000, "round 1 resolved WITHOUT wallet");
+    act(() => { latest!.actions.makePrediction("UP"); });
+    // Picking must NOT lock the round — the position stays "selected" and changeable.
+    expect(latest!.playerPrediction).toBe("UP");
+    expect(/selected/.test(latest!.predictionStatus)).toBe(true);
+    expect(/confirmed/.test(latest!.predictionStatus)).toBe(false);
+
+    // Reposition: flip to DOWN mid-round.
+    act(() => { latest!.actions.makePrediction("DOWN"); });
+    expect(latest!.playerPrediction).toBe("DOWN");
+
+    // The round must NOT resolve instantly on the pick — it stays open (timer still
+    // running), and no round is recorded yet.
+    expect(latest!.roundHistory.length).toBe(0);
+    expect(latest!.phase).toBe("ROUND_ACTIVE");
+
+    // It resolves only when the round closes (timeout), not on the pick.
+    await waitFor((h) => h.roundHistory.length >= 1, 25_000, "round resolves at close (not on pick)");
+    expect(latest!.roundHistory[0]?.playerPredicted).toBe("DOWN");
     r?.unmount();
   }, 60_000);
 
