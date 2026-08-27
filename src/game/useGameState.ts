@@ -360,6 +360,34 @@ export function useGameState(): GameHook {
     }, 200 + REVEAL_DURATION + IMPACT_DURATION);
   }, [scheduleTimer, playerChar, rivalName, isBotMatch]);
 
+  // --- ADVANCE AFTER SUBMIT ---
+  // Advances the match DIRECTLY from the round-resolution response, so bot
+  // matches do NOT depend on the server-poll effect to progress (that async
+  // path was the source of rounds freezing). Plays the authoritative combat
+  // animation; proceedToReveal moves to the next round or the result screen.
+  const advanceAfterSubmit = useCallback((resp: any) => {
+    const rounds = resp?.rounds ?? [];
+    const lastRound = rounds[rounds.length - 1];
+    if (!lastRound) return;
+    if (roundProcessedRef.current.includes(lastRound.roundNum)) return; // already handled
+    roundProcessedRef.current.push(lastRound.roundNum);
+
+    const pExec = lastRound.playerExecution;
+    if (pExec?.txHash) setLastTxHash(pExec.txHash);
+    if (pExec?.status === "EXECUTED") setExecutionStatus("success");
+    else if (pExec?.status === "FAILED") { setExecutionStatus("failed"); setExecutionError(pExec.error ?? "Execution failed"); }
+    else if (pExec?.status) setExecutionStatus("success");
+
+    playCombatAnimation(
+      lastRound,
+      resp.totalRounds,
+      resp.playerHP ?? playerHP,
+      resp.rivalHP ?? rivalHP,
+      resp.playerScore ?? playerScore,
+      resp.rivalScore ?? rivalScore,
+    );
+  }, [playCombatAnimation, playerHP, rivalHP, playerScore, rivalScore]);
+
   // --- BOT COUNTDOWN TIMER ---
   // Visual countdown only. Server resolves the round via predict endpoint.
   useEffect(() => {
@@ -395,9 +423,10 @@ export function useGameState(): GameHook {
         setExecutionStatus("executing");
         roundPhaseRef.current = "SUBMITTING";
 
-        mp.actions.submitPrediction(pred).then(() => {
+        mp.actions.submitPrediction(pred).then((d) => {
           setExecutionStatus("success");
           roundPhaseRef.current = "WAITING_SERVER";
+          if (d) advanceAfterSubmit(d);
         }).catch(() => {
           // Server may still process — poll will pick up result
           setExecutionStatus("success");
@@ -450,21 +479,25 @@ export function useGameState(): GameHook {
     lastServerPhaseKeyRef.current = phaseKey;
 
     const lastRound = ss.rounds?.[ss.rounds.length - 1];
-    const hasNewResolvedRound = !!lastRound && !roundProcessedRef.current.includes(lastRound.roundNum);
+    // PvP only: bot matches advance deterministically via advanceAfterSubmit on
+    // the submission response — the poll effect must NOT also advance them.
+    const isPvpNewRound = !isBotMatch && !!lastRound && !roundProcessedRef.current.includes(lastRound.roundNum);
 
-    // A newly-resolved round has appeared (ANY roundPhase — intermediate rounds
-    // report the next round as ACTIVE). Play the authoritative combat animation
-    // and let proceedToReveal advance the match. Handles every round, not just
-    // the final one.
-    if (hasNewResolvedRound) {
+    // PvP: a newly-resolved round has appeared via polling. Play the
+    // authoritative combat animation and let proceedToReveal advance.
+    if (isPvpNewRound) {
       roundProcessedRef.current.push(lastRound.roundNum);
       playCombatAnimation(lastRound, ss.totalRounds, ss.playerHP, ss.rivalHP, ss.playerScore, ss.rivalScore);
       return;
     }
 
-    // Otherwise, when the server says the (next) round is ACTIVE, open it from a
-    // clean slate (match intro or first round).
-    if (ss.roundPhase === "ACTIVE") {
+    // Open the current ACTIVE round only when we're NOT already mid-round
+    // (i.e. not currently ROUND_START/ACTIVE/LOCKED/EXECUTING/REVEAL/IMPACT).
+    // This covers the fresh first-round open AND mid-match reconnect, while
+    // never clobbering proceedToReveal's own advance between rounds.
+    const midRound = phase === "ROUND_START" || phase === "ROUND_ACTIVE" || phase === "ROUND_LOCKED"
+      || phase === "ROUND_EXECUTING" || phase === "ROUND_REVEAL" || phase === "ROUND_IMPACT";
+    if (ss.roundPhase === "ACTIVE" && !midRound) {
       roundIdentityRef.current = `${isBotMatch ? "bot" : "pvp"}-${ss.currentRound}`;
       activeRoundNumRef.current = ss.currentRound;
       roundPhaseRef.current = "LOCKED";
@@ -585,7 +618,8 @@ export function useGameState(): GameHook {
     setPredictionUIStatus(result ? "confirmed" : "confirmed");
     setExecutionStatus("success");
     roundPhaseRef.current = "WAITING_SERVER";
-  }, [phase, mp.actions]);
+    if (result) advanceAfterSubmit(result);
+  }, [phase, mp.actions, advanceAfterSubmit]);
 
   const rematch = useCallback(() => {
     clearAllTimers();
