@@ -343,6 +343,7 @@ export function useGameState(): GameHook {
         setPlayerCharState("idle"); setRivalCharState("idle");
         setRoundResult(null); setLastDamage(null);
         setLocalPrediction(null); setPlayerPrediction(null);
+        setPredictionUIStatus("idle");
         const nextRound = rNum + 1;
         setDisplayRound(nextRound);
         setIsFinalRound(nextRound >= totalRounds);
@@ -448,13 +449,28 @@ export function useGameState(): GameHook {
     if (phaseKey === lastServerPhaseKeyRef.current) return;
     lastServerPhaseKeyRef.current = phaseKey;
 
-    // Server says round is ACTIVE — open new round
+    const lastRound = ss.rounds?.[ss.rounds.length - 1];
+    const hasNewResolvedRound = !!lastRound && !roundProcessedRef.current.includes(lastRound.roundNum);
+
+    // A newly-resolved round has appeared (ANY roundPhase — intermediate rounds
+    // report the next round as ACTIVE). Play the authoritative combat animation
+    // and let proceedToReveal advance the match. Handles every round, not just
+    // the final one.
+    if (hasNewResolvedRound) {
+      roundProcessedRef.current.push(lastRound.roundNum);
+      playCombatAnimation(lastRound, ss.totalRounds, ss.playerHP, ss.rivalHP, ss.playerScore, ss.rivalScore);
+      return;
+    }
+
+    // Otherwise, when the server says the (next) round is ACTIVE, open it from a
+    // clean slate (match intro or first round).
     if (ss.roundPhase === "ACTIVE") {
       roundIdentityRef.current = `${isBotMatch ? "bot" : "pvp"}-${ss.currentRound}`;
       activeRoundNumRef.current = ss.currentRound;
       roundPhaseRef.current = "LOCKED";
       setLocalPrediction(null);
       setPlayerPrediction(null);
+      setPredictionUIStatus("idle");
       setRoundResult(null);
       setLastDamage(null);
       setPlayerCharState("thinking");
@@ -467,17 +483,6 @@ export function useGameState(): GameHook {
       const wasIntro = enteredFromIntroRef.current;
       enteredFromIntroRef.current = false;
       scheduleTimer(() => setPhase("ROUND_ACTIVE"), wasIntro ? MATCH_INTRO_DURATION : ROUND_TRANSITION_DELAY);
-    }
-
-    // Server says REVEALED — play combat animation from authoritative result
-    if (ss.roundPhase === "REVEALED" && ss.rounds.length > 0) {
-      const lastRound = ss.rounds[ss.rounds.length - 1];
-      if (lastRound && !roundProcessedRef.current.includes(lastRound.roundNum)) {
-        roundProcessedRef.current.push(lastRound.roundNum);
-
-        // Use server-authoritative combat data — NO local calculation
-        playCombatAnimation(lastRound, ss.totalRounds, ss.playerHP, ss.rivalHP, ss.playerScore, ss.rivalScore);
-      }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mp.state.serverState, phase, isBotMatch, scheduleTimer, playCombatAnimation]);

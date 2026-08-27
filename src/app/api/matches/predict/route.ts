@@ -520,7 +520,8 @@ export async function POST(req: Request): Promise<Response> {
         const updated = await Match.findById(match._id);
         return Response.json(buildState(updated!, now));
       } catch (err) {
-        // DreamDEX execution failed — persist failure, no fake outcome
+        // DreamDEX execution failed — record a no-op draw round and ADVANCE,
+        // so a testnet execution failure never hard-freezes the match.
         console.error("[predict] round resolution failed", err);
         const failRound: RoundRecord = {
           roundNum: match.currentRound,
@@ -539,16 +540,35 @@ export async function POST(req: Request): Promise<Response> {
           rivalPnL: 0,
           resolvedAt: now,
         };
+
+        const lastRoundNum = match.currentRound;
+        const decided = lastRoundNum >= match.totalRounds || (claim.playerHP === 0 && claim.rivalHP === 0);
+        const nextDeadline = new Date(now.getTime() + ROUND_TIMINGS.ROUND_DURATION_MS + ROUND_TIMINGS.LOCK_MS);
+        const nextRoundPhase: RoundPhase = decided ? "REVEALED" : "ACTIVE";
+        const nextStatus = decided ? "COMPLETED" : "ACTIVE";
+
         await Match.findByIdAndUpdate(match._id, {
           $push: { rounds: failRound },
           $set: {
-            roundPhase: "REVEALED",
+            roundPhase: nextRoundPhase,
+            status: nextStatus,
             playerPrediction: claim.playerPrediction,
             rivalPrediction: claim.rivalPrediction,
+            ...(decided ? {
+              playerFinalBalance: match.playerStartBalance ?? 100,
+              rivalFinalBalance: match.rivalStartBalance ?? 100,
+              completedAt: now,
+              winner: "draw",
+              statsProcessed: "PENDING" as StatsProcessedStatus,
+            } : {
+              currentRound: lastRoundNum + 1,
+              roundStartTime: now,
+              roundDeadline: nextDeadline,
+            }),
           },
         });
         const updated = await Match.findById(match._id);
-        return Response.json({ ...buildState(updated!, now), executionFailed: true, error: "DreamDEX execution failed" });
+        return Response.json({ ...buildState(updated!, now), executionFailed: true, error: "DreamDEX execution failed, round recorded as no-op" });
       }
     }
 
