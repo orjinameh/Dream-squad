@@ -5,6 +5,7 @@ import React from "react";
 import { create as renderer, act } from "react-test-renderer";
 import { useGameState, type GameHook } from "@/game/useGameState";
 import { CHARACTERS } from "@/game/characters";
+import { DEFAULT_TRADE_MARKET } from "@/game/types";
 
 const PLAYER = "0x9196d7670eea0CB723af11465d4285541a2eA86a";
 
@@ -25,7 +26,7 @@ function buildState() {
     matchId: "m-bot-1",
     status: "ACTIVE",
     mode: "quick",
-    totalRounds: 3,
+    totalRounds: 7,
     currentRound: resolveState.currentRound,
     roundPhase: resolveState.roundPhase,
     roundStartTime: new Date().toISOString(),
@@ -82,7 +83,7 @@ function resolveNextRound(pred: "UP" | "DOWN") {
   resolveState.rounds = [...resolveState.rounds, rnd];
   resolveState.playerScore = playerScore + (playerCorrect ? 1 : 0);
   resolveState.currentRound = n + 1;
-  resolveState.roundPhase = n >= 3 ? "REVEALED" : "ACTIVE";
+  resolveState.roundPhase = n >= 7 ? "REVEALED" : "ACTIVE";
   return { roundNum: n, rounds: resolveState.rounds, currentRound: n + 1 };
 }
 
@@ -114,7 +115,7 @@ function mockFetch() {
         rivalPrediction: "DOWN",
         rounds: resolveState.rounds,
         winner: "player",
-        totalRounds: 3,
+        totalRounds: 7,
         currentRound: resolveState.currentRound,
         playerHP: 100,
         rivalHP: 85,
@@ -156,14 +157,14 @@ describe("client bot game full loop", () => {
     vi.unstubAllGlobals();
   });
 
-  it("advances through all 3 rounds and reaches MATCH_RESULT", async () => {
+  it("advances through all 7 rounds and reaches MATCH_RESULT", async () => {
     let r: any;
     act(() => {
       r = renderer(<Probe />);
     });
 
     // Full bot flow
-    act(() => { latest!.actions.selectMode({ id: "quick", name: "QUICK", rounds: 3, desc: "" }); });
+    act(() => { latest!.actions.selectMarket(DEFAULT_TRADE_MARKET); });
     await waitFor((h) => h.phase === "CHAR_SELECT", 3000, "CHAR_SELECT");
     act(() => { latest!.actions.selectChar(CHARACTERS[0]); });
     await waitFor((h) => h.phase === "DUEL_CONFIRM", 3000, "DUEL_CONFIRM");
@@ -177,9 +178,9 @@ describe("client bot game full loop", () => {
     act(() => { latest!.actions.makePrediction("UP"); });
     await waitFor((h) => h.roundHistory.length >= 1, 30_000, "round 1 resolved");
 
-    // Should advance automatically through rounds 2 and 3 without further taps
-    await waitFor((h) => h.currentRound === 3 && h.phase === "ROUND_ACTIVE", 40_000, "round 3 ACTIVE");
-    await waitFor((h) => h.roundHistory.length >= 3, 40_000, "round 3 resolved");
+    // Should advance automatically through the remaining rounds without further taps
+    await waitFor((h) => h.currentRound === 7 && h.phase === "ROUND_ACTIVE", 40_000, "round 7 ACTIVE");
+    await waitFor((h) => h.roundHistory.length >= 7, 40_000, "round 7 resolved");
 
     await waitFor((h) => h.phase === "MATCH_RESULT", 40_000, "MATCH_RESULT");
 
@@ -191,10 +192,10 @@ describe("client bot game full loop", () => {
     r?.unmount();
   }, 120_000);
 
-  it("PREDICTION IS REPOSITIONABLE within a round until it closes (no premature lock)", async () => {
+  it("PREDICTION IS LOCKED once a round goes live (cannot change mid-round)", async () => {
     let r: any;
     act(() => { r = renderer(<Probe />); });
-    act(() => { latest!.actions.selectMode({ id: "quick", name: "QUICK", rounds: 3, desc: "" }); });
+    act(() => { latest!.actions.selectMarket(DEFAULT_TRADE_MARKET); });
     await waitFor((h) => h.phase === "CHAR_SELECT", 3000, "CHAR_SELECT");
     act(() => { latest!.actions.selectChar(CHARACTERS[0]); });
     await waitFor((h) => h.phase === "DUEL_CONFIRM", 3000, "DUEL_CONFIRM");
@@ -203,24 +204,21 @@ describe("client bot game full loop", () => {
     act(() => { latest!.actions.selectPrediction({ id: "btc", asset: "BTC", question: "", color: "#000" }); });
     await waitFor((h) => h.phase === "ROUND_ACTIVE", 10_000, "first ROUND_ACTIVE");
 
+    // Pick UP — the position commits for the live round.
     act(() => { latest!.actions.makePrediction("UP"); });
-    // Picking must NOT lock the round — the position stays "selected" and changeable.
     expect(latest!.playerPrediction).toBe("UP");
-    expect(/selected/.test(latest!.predictionStatus)).toBe(true);
-    expect(/confirmed/.test(latest!.predictionStatus)).toBe(false);
 
-    // Reposition: flip to DOWN mid-round.
-    act(() => { latest!.actions.makePrediction("DOWN"); });
-    expect(latest!.playerPrediction).toBe("DOWN");
-
-    // The round must NOT resolve instantly on the pick — it stays open (timer still
-    // running), and no round is recorded yet.
+    // The round must NOT resolve instantly on the pick — it stays open (timer running).
     expect(latest!.roundHistory.length).toBe(0);
     expect(latest!.phase).toBe("ROUND_ACTIVE");
 
-    // It resolves only when the round closes (timeout), not on the pick.
+    // Attempting to change to DOWN is ignored — the live-round choice is locked.
+    act(() => { latest!.actions.makePrediction("DOWN"); });
+    expect(latest!.playerPrediction).toBe("UP");
+
+    // Resolves when the round closes (timeout), with the locked pick.
     await waitFor((h) => h.roundHistory.length >= 1, 25_000, "round resolves at close (not on pick)");
-    expect(latest!.roundHistory[0]?.playerPredicted).toBe("DOWN");
+    expect(latest!.roundHistory[0]?.playerPredicted).toBe("UP");
     r?.unmount();
   }, 60_000);
 
@@ -241,7 +239,7 @@ describe("client bot game full loop", () => {
 
     let r: any;
     act(() => { r = renderer(<Probe />); });
-    act(() => { latest!.actions.selectMode({ id: "quick", name: "QUICK", rounds: 3, desc: "" }); });
+    act(() => { latest!.actions.selectMarket(DEFAULT_TRADE_MARKET); });
     await waitFor((h) => h.phase === "CHAR_SELECT", 3000, "CHAR_SELECT");
     act(() => { latest!.actions.selectChar(CHARACTERS[0]); });
     await waitFor((h) => h.phase === "DUEL_CONFIRM", 3000, "DUEL_CONFIRM");

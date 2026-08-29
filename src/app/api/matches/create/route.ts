@@ -4,6 +4,7 @@ import { Match, ROUND_TIMINGS } from "@/db/models/Match";
 import { normalizeAddress } from "@/lib/addresses";
 import { jsonError } from "@/lib/utils";
 import { generateMatchPriceModel } from "@/lib/prices";
+import { getMarket } from "@/lib/markets";
 import { z } from "zod";
 import { isAddress } from "viem";
 
@@ -17,6 +18,7 @@ const createMatchSchema = z.object({
   botDifficulty: z.enum(["easy", "normal", "hard"]).optional(),
   predictionAsset: z.string().optional(),
   amountPerRound: z.number().positive().optional(),
+  marketSymbol: z.string().min(1).optional(),
 });
 
 // The rival gets its own independent stake, generated so the two players can
@@ -56,6 +58,12 @@ export async function POST(req: Request): Promise<Response> {
 
     const asset = input.predictionAsset ?? "BTC";
     const matchId = randomUUID();
+    // Resolve the on-chain market the player chose. Defaults to SOMI:USDso (the
+    // only live pool today). A picked market that isn't in the registry falls
+    // back to the default so we never persist a non-executable pool.
+    const marketSymbol = input.marketSymbol && getMarket(input.marketSymbol)
+      ? input.marketSymbol
+      : "SOMI:USDso";
     // ONE continuous market for the whole match (seeded by matchId) — carved
     // into round checkpoints so the chart, combat, and P&L all agree.
     const priceModel = generateMatchPriceModel(matchId, asset, input.totalRounds);
@@ -77,6 +85,11 @@ export async function POST(req: Request): Promise<Response> {
       predictionAsset: asset,
       predictionQuestion: `WILL ${asset} GO UP OR DOWN?`,
       priceModel,
+      marketId: marketSymbol,
+      executionConfig: {
+        marketSymbol,
+        amountPerRound: input.amountPerRound ?? 1,
+      },
       // Per-player independent trade amount. The creating player's chosen
       // stake drives their on-chain order + P&L. The rival gets its own stake
       // (generated for the bot; a real PvP opponent's stake is set when they

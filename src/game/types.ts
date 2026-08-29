@@ -1,4 +1,6 @@
 import { type CharacterDef } from "./characters";
+import { MARKETS } from "@/lib/markets";
+import { APPROX_PRICES } from "@/lib/config";
 
 export type FighterState =
   | "idle"
@@ -17,7 +19,7 @@ export type CombatPhase = "idle" | "windup" | "strike" | "impact" | "recovery" |
 
 export type GamePhase =
   | "HOME"
-  | "MODE_SELECT"
+  | "MARKET_SELECT"
   | "CHAR_SELECT"
   | "DUEL_CONFIRM"
   | "PREDICTION_SELECT"
@@ -38,12 +40,60 @@ export type GamePhase =
 
 export type GameMode = { id: string; name: string; icon: string; rounds: number; desc: string };
 
-export const GAME_MODES: GameMode[] = [
-  { id: "quick", name: "QUICK", icon: "\u26A1", rounds: 7, desc: "~70s of active play" },
-  { id: "clash", name: "CLASH", icon: "\uD83D\uDD25", rounds: 7, desc: "~70s of active play" },
-  { id: "battle", name: "BATTLE", icon: "\u2694\uFE0F", rounds: 7, desc: "~70s of active play" },
-  { id: "war", name: "DREAM WAR", icon: "\uD83D\uDC51", rounds: 7, desc: "~70s of active play" },
-];
+/** Single fixed duel length. The round-count picker was removed: every duel is
+ *  now exactly this many rounds, so the header, the create request, and the
+ *  round loop all agree and can never diverge (the old bug where a 3-round
+ *  game ran to round 7 came from these disagreeing). */
+export const DEFAULT_MODE: GameMode = {
+  id: "duel",
+  name: "DUEL",
+  icon: "\u2694\uFE0F",
+  rounds: 7,
+  desc: "7 rounds of live trading",
+};
+
+/** A market the player can choose to trade on the DestinySOM pool. Backed by
+ *  the on-chain MARKETS registry so the picker reflects what can actually
+ *  execute. */
+export interface TradeMarket {
+  /** Canonical pair symbol (SOMI:USDso / WETH:USDso / WBTC:USDso). */
+  symbol: string;
+  /** Friendly base token label (SOMI / WETH / WBTC). */
+  asset: string;
+  /** Question shown on the chart. */
+  question: string;
+  /** Accent color for the card/chart. */
+  color: string;
+  /** Approximate USD reference price. */
+  price: number;
+  /** Pool minimum order size in base units. */
+  minAmount: number;
+  /** Lot size in base units. */
+  lotSize: number;
+  /** true when the pool is deployed on testnet and can execute on-chain today. */
+  live: boolean;
+}
+
+export const TRADE_MARKETS: TradeMarket[] = (
+  ["SOMI:USDso", "WETH:USDso", "WBTC:USDso"] as const
+).map((symbol) => {
+  const m = MARKETS[symbol];
+  const asset = symbol.replace(":USDso", "");
+  const live = symbol === "SOMI:USDso";
+  const color = symbol === "SOMI:USDso" ? "#10b981" : symbol === "WETH:USDso" ? "#627eea" : "#f59e0b";
+  return {
+    symbol,
+    asset,
+    question: `WILL ${asset} GO UP OR DOWN?`,
+    color,
+    price: APPROX_PRICES[symbol] ?? 1,
+    minAmount: m.minAmount,
+    lotSize: m.lotSize,
+    live,
+  };
+});
+
+export const DEFAULT_TRADE_MARKET: TradeMarket = TRADE_MARKETS[0];
 
 export type Prediction = "UP" | "DOWN" | null;
 

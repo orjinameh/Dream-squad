@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import { useGameState } from "./useGameState";
 import { RetroCharacter, FlameBall } from "./RetroCharacter";
 import { CHARACTERS } from "./characters";
-import { GAME_MODES, PREDICTIONS, type GameMode, type PredictionConfig, type BotDifficulty, type FighterState } from "./types";
+import { TRADE_MARKETS, PREDICTIONS, type GameMode, type PredictionConfig, type TradeMarket, type BotDifficulty, type FighterState } from "./types";
 import { WalletModal } from "@/components/WalletModal";
 import { MarketChart } from "./MarketChart";
 import { useMatchmaking } from "./useMatchmaking";
@@ -18,7 +18,7 @@ export default function GameApp() {
   const [activeMatchId, setActiveMatchId] = useState<string | null>(null);
   const { isConnected, address } = useAccount();
   const mm = useMatchmaking(address as `0x${string}` | undefined);
-  const dreamDex = useDreamDEX(g.selectedPrediction?.id === "somi" ? "SOMI:USDso" : "SOMI:USDso");
+  const dreamDex = useDreamDEX(g.marketSymbol);
 
   useEffect(() => {
     if (g.shakeScreen) {
@@ -67,9 +67,9 @@ export default function GameApp() {
     }}>
       <style>{globalCSS}</style>
 
-      {g.phase === "HOME" && <HomeScreen onEnter={g.actions.goToModeSelect} onLeaderboard={g.actions.goToLeaderboard} onProfile={g.actions.goToProfile} onHistory={g.actions.goToMatchHistory} onRejoin={activeMatchId ? rejoinMatch : undefined} />}
-      {g.phase === "MODE_SELECT" && <ModeSelect onSelect={g.actions.selectMode} onBack={g.actions.goToHome} />}
-      {g.phase === "CHAR_SELECT" && <CharSelect onSelect={g.actions.selectChar} onBack={g.actions.goToModeSelect} />}
+      {g.phase === "HOME" && <HomeScreen onEnter={g.actions.goToMarketSelect} onLeaderboard={g.actions.goToLeaderboard} onProfile={g.actions.goToProfile} onHistory={g.actions.goToMatchHistory} onRejoin={activeMatchId ? rejoinMatch : undefined} />}
+      {g.phase === "MARKET_SELECT" && <TradeSelect onSelect={g.actions.selectMarket} onBack={g.actions.goToHome} />}
+      {g.phase === "CHAR_SELECT" && <CharSelect onSelect={g.actions.selectChar} onBack={g.actions.goToMarketSelect} />}
       {g.phase === "DUEL_CONFIRM" && <DuelConfirm mode={g.mode!} char={g.playerChar!} difficulty={g.botDifficulty} amount={g.selectedAmount} onSelectAmount={g.actions.selectAmount} onConfirm={() => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.confirmDuel(); }} onBack={g.actions.goToCharSelect} onQuickMatch={(rounds) => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.joinMatchmaking(rounds); }} onSelectDifficulty={g.actions.selectDifficulty} />}
       {g.phase === "PREDICTION_SELECT" && <PredictionSelect onSelect={(pred) => { g.actions.selectPrediction(pred); }} onBack={g.actions.goToCharSelect} onSelectDifficulty={g.actions.selectDifficulty} difficulty={g.botDifficulty} char={g.playerChar!} mode={g.mode!} dreamDexReady={dreamDex.isReady} onSetupDreamDEX={async () => { try { await dreamDex.ensureReady(); } catch {} }} />}
       {g.phase === "MATCHMAKING" && <MatchmakingScreen matchmaking={mm} onFightBot={g.actions.fightBotInstead} onHome={g.actions.cancelMatchmaking} />}
@@ -199,7 +199,7 @@ function HomeScreen({ onEnter, onLeaderboard, onProfile, onHistory, onRejoin }: 
       </div>
 
       <div style={{ display: "flex", gap: 8, marginTop: 48, flexWrap: "wrap", justifyContent: "center" }}>
-        {["Enter a duel", "Choose rounds", "Predict in 10s", "Strike your rival", "Win the match"].map((s, i) => (
+        {["Enter a duel", "Pick a market", "Predict in 10s", "Strike your rival", "Win the match"].map((s, i) => (
           <span key={i} style={{
             fontSize: 11, padding: "6px 14px", borderRadius: 4,
             background: "rgba(30,41,59,0.6)", border: "1px solid #334155",
@@ -213,37 +213,68 @@ function HomeScreen({ onEnter, onLeaderboard, onProfile, onHistory, onRejoin }: 
   );
 }
 
-function ModeSelect({ onSelect, onBack }: { onSelect: (m: GameMode) => void; onBack: () => void }) {
+function TradeSelect({ onSelect, onBack }: { onSelect: (m: TradeMarket) => void; onBack: () => void }) {
   const [selected, setSelected] = useState<string | null>(null);
 
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", padding: "60px 20px" }}>
       <h2 style={{ fontSize: 32, fontWeight: 900, letterSpacing: "0.1em", color: "#fbbf24", textShadow: "2px 2px 0 #92400e", marginBottom: 8, textAlign: "center" }}>
-        CHOOSE YOUR DUEL
+        PICK YOUR MARKET
       </h2>
-      <p style={{ fontSize: 12, color: "#64748b", letterSpacing: "0.15em", marginBottom: 40 }}>SELECT A MODE</p>
+      <p style={{ fontSize: 12, color: "#64748b", letterSpacing: "0.15em", marginBottom: 8 }}>TRADE ON DREAMDEX</p>
+      <p style={{ fontSize: 11, color: "#475569", marginBottom: 32 }}>7 rounds | 10s per round | choice locks when the round goes live</p>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 16, maxWidth: 900, width: "100%", marginBottom: 40 }}>
-        {GAME_MODES.map((m) => (
-          <button
-            key={m.id}
-            onClick={() => { setSelected(m.id); onSelect(m); }}
-            onMouseEnter={() => setSelected(m.id)}
-            onMouseLeave={() => setSelected(null)}
-            style={{
-              ...modeCardStyle,
-              borderColor: selected === m.id ? "#fbbf24" : "#334155",
-              background: selected === m.id ? "rgba(251,191,36,0.08)" : "rgba(15,23,42,0.8)",
-              transform: selected === m.id ? "scale(1.03)" : "scale(1)",
-            }}
-          >
-            <div style={{ fontSize: 36, marginBottom: 8 }}>{m.icon}</div>
-            <div style={{ fontSize: 20, fontWeight: 900, color: "#fbbf24", letterSpacing: "0.1em", marginBottom: 4 }}>{m.name}</div>
-            <div style={{ fontSize: 28, fontWeight: 900, color: "#e2e8f0", marginBottom: 4 }}>{m.rounds} ROUNDS</div>
-            <div style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.05em" }}>{m.desc}</div>
-            {selected === m.id && <div style={{ position: "absolute", inset: -2, border: "2px solid #fbbf24", borderRadius: 12, pointerEvents: "none", animation: "cursorBlink 0.8s steps(2) infinite" }} />}
-          </button>
-        ))}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 16, maxWidth: 860, width: "100%", marginBottom: 40 }}>
+        {TRADE_MARKETS.map((m) => {
+          const isSel = selected === m.symbol;
+          const disabled = !m.live;
+          return (
+            <button
+              key={m.symbol}
+              disabled={disabled}
+              onClick={() => { if (m.live) { setSelected(m.symbol); onSelect(m); } }}
+              onMouseEnter={() => { if (m.live) setSelected(m.symbol); }}
+              onMouseLeave={() => setSelected(null)}
+              style={{
+                ...modeCardStyle,
+                position: "relative",
+                opacity: disabled ? 0.45 : 1,
+                cursor: disabled ? "not-allowed" : "pointer",
+                borderColor: isSel ? m.color : "#334155",
+                background: isSel ? `${m.color}14` : "rgba(15,23,42,0.8)",
+                transform: isSel ? "scale(1.03)" : "scale(1)",
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                <span style={{ fontSize: 26, fontWeight: 900, color: m.color, letterSpacing: "0.08em" }}>{m.asset}</span>
+                <span style={{
+                  fontSize: 9, fontWeight: 900, letterSpacing: "0.1em", padding: "3px 8px", borderRadius: 4,
+                  background: m.live ? "rgba(16,185,129,0.15)" : "rgba(100,116,139,0.2)",
+                  border: `1px solid ${m.live ? "#10b981" : "#64748b"}`,
+                  color: m.live ? "#10b981" : "#94a3b8",
+                }}>
+                  {m.live ? "LIVE" : "POOL PENDING"}
+                </span>
+              </div>
+              <div style={{ fontSize: 13, color: "#e2e8f0", marginBottom: 10, fontFamily: "'Courier New', monospace" }}>
+                {m.symbol}
+              </div>
+              <div style={{ fontSize: 20, fontWeight: 900, color: "#e2e8f0", marginBottom: 14, fontFamily: "'Courier New', monospace" }}>
+                ${m.price.toLocaleString("en-US", { minimumFractionDigits: m.price < 1 ? 4 : 0 })}
+              </div>
+              <div style={{ display: "flex", gap: 14, fontSize: 10, color: "#64748b", letterSpacing: "0.05em" }}>
+                <span>MIN {m.minAmount} {m.asset}</span>
+                <span>LOT {m.lotSize}</span>
+              </div>
+              {disabled && (
+                <div style={{ marginTop: 10, fontSize: 10, color: "#94a3b8", letterSpacing: "0.08em" }}>
+                  POOL NOT YET DEPLOYED ON TESTNET
+                </div>
+              )}
+              {isSel && !disabled && <div style={{ position: "absolute", inset: -2, border: `2px solid ${m.color}`, borderRadius: 12, pointerEvents: "none", animation: "cursorBlink 0.8s steps(2) infinite" }} />}
+            </button>
+          );
+        })}
       </div>
 
       <button onClick={onBack} style={{ ...ctaButtonStyle, background: "transparent", border: "2px solid #475569", color: "#94a3b8", fontSize: 14, padding: "10px 28px" }}>

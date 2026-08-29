@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useRef, useEffect } from "react";
 import { type CharacterDef, CHARACTERS, RIVAL_NAMES } from "./characters";
-import { type GamePhase, type GameMode, type Prediction, type RoundResult, type PredictionConfig, type BotDifficulty, type FighterState, type CombatPhase, GAME_MODES, PREDICTIONS } from "./types";
+import { type GamePhase, type GameMode, type Prediction, type RoundResult, type PredictionConfig, type BotDifficulty, type FighterState, type CombatPhase, type TradeMarket, DEFAULT_MODE, DEFAULT_TRADE_MARKET, PREDICTIONS } from "./types";
 import {
   useMultiplayer,
   type ConnectionStatus,
@@ -15,7 +15,7 @@ const REVEAL_DURATION = 1500;
 const IMPACT_DURATION = 1400;
 const MATCH_INTRO_DURATION = 2000;
 const ROUND_TRANSITION_DELAY = 800;
-const ROUND_TIME = 10;
+const ROUND_TIME = (globalThis as any).__ROUND_TIME__ ?? 10;
 
 const MAX_HP = 100;
 
@@ -34,13 +34,13 @@ function visualCoinFlip(): "LEFT" | "RIGHT" {
 
 export interface GameActions {
   goToHome: () => void;
-  goToModeSelect: () => void;
+  goToMarketSelect: () => void;
   goToCharSelect: () => void;
   goToLeaderboard: () => void;
   goToProfile: () => void;
   goToMatchHistory: () => void;
   goToMatchDetail: (matchId: string) => void;
-  selectMode: (mode: GameMode) => void;
+  selectMarket: (market: TradeMarket) => void;
   selectChar: (char: CharacterDef) => void;
   confirmDuel: () => void;
   selectPrediction: (pred: PredictionConfig) => void;
@@ -58,6 +58,7 @@ export interface GameActions {
 export interface GameHook {
   phase: GamePhase;
   mode: GameMode | null;
+  marketSymbol: string;
   playerChar: CharacterDef | null;
   rivalChar: CharacterDef | null;
   rivalName: string;
@@ -129,7 +130,8 @@ export function useGameState(): GameHook {
   }, [address, mp.actions]);
 
   const [phase, setPhase] = useState<GamePhase>("HOME");
-  const [mode, setMode] = useState<GameMode | null>(null);
+  const [mode, setMode] = useState<GameMode>(DEFAULT_MODE);
+  const [marketSymbol, setMarketSymbol] = useState<string>(DEFAULT_TRADE_MARKET.symbol);
   const [playerChar, setPlayerChar] = useState<CharacterDef | null>(null);
   const [rivalChar, setRivalChar] = useState<CharacterDef | null>(null);
   const [rivalName, setRivalName] = useState("");
@@ -362,6 +364,7 @@ export function useGameState(): GameHook {
         setPlayerCharState("idle"); setRivalCharState("idle");
         setRoundResult(null); setLastDamage(null);
         setLocalPrediction(null); setPlayerPrediction(null);
+        setLockedPrediction(null);
         setPredictionUIStatus("idle");
         const nextRound = rNum + 1;
         setDisplayRound(nextRound);
@@ -582,6 +585,7 @@ export function useGameState(): GameHook {
       roundPhaseRef.current = "LOCKED";
       setLocalPrediction(null);
       setPlayerPrediction(null);
+      setLockedPrediction(null);
       setPredictionUIStatus("idle");
       setRoundResult(null);
       setLastDamage(null);
@@ -635,7 +639,7 @@ export function useGameState(): GameHook {
     setPlayerScore(0); setRivalScore(0);
     setPlayerStreak(0); setRivalStreak(0);
     setRoundHistory([]); setRoundResult(null);
-    setPlayerPrediction(null); setLocalPrediction(null);
+    setPlayerPrediction(null); setLocalPrediction(null); setLockedPrediction(null);
     setHitEffect("none"); setShakeScreen(false);
     setShowStreak(null);
     setPlayerCharState("idle"); setRivalCharState("idle");
@@ -656,8 +660,9 @@ export function useGameState(): GameHook {
         playerChar: playerChar?.id ?? "dreamer",
         rivalName: rn,
         rivalChar: rival.id,
-        mode: mode?.id ?? "battle",
+        mode: mode?.id ?? "duel",
         totalRounds: mode?.rounds ?? 7,
+        marketSymbol,
         predictionAsset: selectedPrediction?.asset,
         amountPerRound: selectedAmount,
       });
@@ -677,7 +682,7 @@ export function useGameState(): GameHook {
         setRivalCharState("thinking");
       }, ROUND_TRANSITION_DELAY);
     }, MATCH_INTRO_DURATION);
-  }, [playerChar, mode, scheduleTimer, address, mp.actions]);
+  }, [playerChar, mode, marketSymbol, scheduleTimer, address, mp.actions]);
 
   // --- PREDICTION ---
   // Records the player's chosen position locally but does NOT submit/resolve
@@ -685,14 +690,21 @@ export function useGameState(): GameHook {
   // freely until the round closes — only the bot countdown timer commits and
   // resolves the round at timeout. This matches binary-trading semantics:
   // you hold one position per round and can flip it until the market closes.
+  const [lockedPrediction, setLockedPrediction] = useState<"UP" | "DOWN" | null>(null);
+
+  // You pick your position ONCE as the round goes live. From then on the the
+  // choice is LOCKED for the fight — only the live chart updates (no mid-round
+  // repositioning). The locked choice is cleared when the round resolves.
   const makePrediction = useCallback((pred: "UP" | "DOWN") => {
     if (phase !== "ROUND_ACTIVE") return;
+    // Lock: ignore further changes once a position is committed this round.
+    if (lockedPrediction) return;
 
     setLocalPrediction(pred);
     setPlayerPrediction(pred);
+    setLockedPrediction(pred);
     setPredictionUIStatus("selected");
-    // No server submission here — reposition until the round closes.
-  }, [phase]);
+  }, [phase, lockedPrediction]);
 
   const rematch = useCallback(() => {
     clearAllTimers();
@@ -703,7 +715,7 @@ export function useGameState(): GameHook {
     activeRoundNumRef.current = 0;
     lastServerPhaseKeyRef.current = null;
     setPhase("CHAR_SELECT");
-    setPlayerPrediction(null); setLocalPrediction(null);
+    setPlayerPrediction(null); setLocalPrediction(null); setLockedPrediction(null);
     setRoundResult(null); setRoundHistory([]);
     setPlayerScore(0); setRivalScore(0);
     setPlayerStreak(0); setRivalStreak(0);
@@ -719,13 +731,13 @@ export function useGameState(): GameHook {
   }, [clearAllTimers, mp.actions]);
 
   const goToHome = useCallback(() => { clearAllTimers(); mp.actions.reset(); setPhase("HOME"); roundProcessedRef.current = []; lastServerPhaseKeyRef.current = null; }, [clearAllTimers, mp.actions]);
-  const goToModeSelect = useCallback(() => { setPhase("MODE_SELECT"); }, []);
+  const goToMarketSelect = useCallback(() => { setPhase("MARKET_SELECT"); }, []);
   const goToCharSelect = useCallback(() => { clearAllTimers(); mp.actions.reset(); setPhase("CHAR_SELECT"); roundProcessedRef.current = []; lastServerPhaseKeyRef.current = null; }, [clearAllTimers, mp.actions]);
   const goToLeaderboard = useCallback(() => { window.location.href = "/leaderboard"; }, []);
   const goToProfile = useCallback(() => { setPhase("PROFILE"); }, []);
   const goToMatchHistory = useCallback(() => { setPhase("MATCH_HISTORY"); }, []);
   const goToMatchDetail = useCallback((matchId: string) => { setSelectedMatchId(matchId); setPhase("MATCH_DETAIL"); }, []);
-  const selectMode = useCallback((m: GameMode) => { setMode(m); setPhase("CHAR_SELECT"); }, []);
+  const selectMarket = useCallback((m: TradeMarket) => { setMarketSymbol(m.symbol); setMode(DEFAULT_MODE); setPhase("CHAR_SELECT"); }, []);
   const selectChar = useCallback((c: CharacterDef) => { setPlayerChar(c); setPhase("DUEL_CONFIRM"); }, []);
   const confirmDuel = useCallback(() => { setPhase("PREDICTION_SELECT"); }, []);
   const selectPrediction = useCallback((pred: PredictionConfig) => { setSelectedPrediction(pred); startMatch(); }, [startMatch]);
@@ -737,7 +749,7 @@ export function useGameState(): GameHook {
     roundProcessedRef.current = [];
     lastServerPhaseKeyRef.current = null;
     setIsBotMatch(false);
-    setMode(GAME_MODES.find((m) => m.rounds === selectedRounds) ?? GAME_MODES[2]);
+    setMode(DEFAULT_MODE);
     setPhase("MATCHMAKING");
   }, [clearAllTimers]);
 
@@ -786,9 +798,9 @@ export function useGameState(): GameHook {
   const connectionDisplay: ConnectionStatus = isBotMatch ? "local" : mp.state.connectionStatus;
 
   return {
-    phase, mode, playerChar, rivalChar, rivalName,
+    phase, mode, marketSymbol, playerChar, rivalChar, rivalName,
     currentRound: displayRound,
-    totalRounds: isBotMatch ? (mode?.rounds ?? 7) : (mp.state.serverState?.totalRounds ?? mode?.rounds ?? 7),
+    totalRounds: isBotMatch ? (mode.rounds ?? 7) : (mp.state.serverState?.totalRounds ?? mode.rounds ?? 7),
     playerScore: mp.state.serverState?.playerScore ?? playerScore,
     rivalScore: mp.state.serverState?.rivalScore ?? rivalScore,
     playerStreak: mp.state.serverState?.playerStreak ?? playerStreak,
@@ -824,9 +836,9 @@ export function useGameState(): GameHook {
     rivalAmountPerRound: mp.state.serverState?.rivalAmountPerRound ?? 1,
     selectedMatchId,
     actions: {
-      goToHome, goToModeSelect, goToCharSelect, goToLeaderboard,
+      goToHome, goToMarketSelect, goToCharSelect, goToLeaderboard,
       goToProfile, goToMatchHistory, goToMatchDetail,
-      selectMode, selectChar, confirmDuel, selectPrediction, selectDifficulty, selectAmount, makePrediction, rematch,
+      selectMarket, selectChar, confirmDuel, selectPrediction, selectDifficulty, selectAmount, makePrediction, rematch,
       joinMatchmaking, startPvPMatch, setReady, cancelMatchmaking, fightBotInstead,
     },
   };
