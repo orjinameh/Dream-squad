@@ -41,40 +41,37 @@ export async function POST(req: Request): Promise<Response> {
       });
     }
 
-    // Upsert queue entry — idempotent
+    // Ensure the player has a fresh "searching" queue entry (create if missing,
+    // refresh if stale/timed-out, keep if valid). There may be at most one
+    // "searching" entry per address (partial unique index).
+    let queueId: string;
     const existing = await MatchQueue.findOne({ address: addr, status: "searching" }).lean() as { _id: string; rounds: number; charId: string; createdAt: Date } | null;
 
     if (existing) {
-      // Update rounds/char if changed
-      if (existing.rounds !== rounds || existing.charId !== charId) {
-        await MatchQueue.updateOne(
-          { _id: existing._id },
-          { $set: { rounds, charId, updatedAt: new Date() } }
-        );
-      }
-      // Check if timeout
       const age = Date.now() - new Date(existing.createdAt).getTime();
       if (age > QUEUE_TIMEOUT_MS) {
-        await MatchQueue.updateOne({ _id: existing._id }, { $set: { status: "matched" } });
-        return Response.json({ status: "timeout", message: "Queue entry expired" });
+        // Expired — replace it so a stale entry can never block re-queueing.
+        await MatchQueue.findOneAndUpdate(
+          { _id: existing._id, status: "searching" },
+          { $set: { status: "matched", updatedAt: new Date() } },
+        );
+        queueId = randomUUID();
+        await MatchQueue.create({ _id: queueId, address: addr, rounds: rounds!, charId: charId || "dreamer", status: "searching" });
+      } else {
+        queueId = existing._id;
+        if (existing.rounds !== rounds || existing.charId !== charId) {
+          await MatchQueue.updateOne({ _id: existing._id }, { $set: { rounds, charId, updatedAt: new Date() } });
+        }
       }
-      return Response.json({ status: "searching", queueId: existing._id, age });
+    } else {
+      // Clean up any fully stale entries for this player, then create fresh.
+      await MatchQueue.deleteMany({ address: addr, status: { $in: ["searching", "matched"] } });
+      queueId = randomUUID();
+      await MatchQueue.create({ _id: queueId, address: addr, rounds: rounds!, charId: charId || "dreamer", status: "searching" });
     }
 
-    // Clean up any stale queue entries for this player
-    await MatchQueue.deleteMany({ address: addr, status: { $in: ["searching", "matched"] } });
-
-    // Create new queue entry
-    const queueId = randomUUID();
-    await MatchQueue.create({
-      _id: queueId,
-      address: addr,
-      rounds: rounds!,
-      charId: charId || "dreamer",
-      status: "searching",
-    });
-
-    // Try to find a compatible opponent (same rounds, not same player, oldest first)
+    // ALWAYS attempt to pair after ensuring the queue entry, so re-joining or a
+    // leftover entry never strands a player in "searching" without a rival.
     const opponent = await MatchQueue.findOne({
       _id: { $ne: queueId },
       rounds: rounds,
@@ -82,6 +79,8 @@ export async function POST(req: Request): Promise<Response> {
       address: { $ne: addr },
       createdAt: { $gte: new Date(Date.now() - QUEUE_TIMEOUT_MS) },
     }).sort({ createdAt: 1 }).lean() as { _id: string; address: string; charId: string } | null;
+
+    let ageNow = Date.now() - new Date(existing?.createdAt ?? Date.now()).getTime();
 
     if (opponent) {
       // Atomically mark both as matched
@@ -92,8 +91,9 @@ export async function POST(req: Request): Promise<Response> {
       );
 
       if (oppUpdate.modifiedCount === 0) {
-        // Opponent was claimed by another race — just searching
-        return Response.json({ status: "searching", queueId });
+        // Opponent was claimed by another race — just searching.
+        ageNow = existing ? Date.now() - new Date(existing.createdAt).getTime() : 0;
+        return Response.json({ status: "searching", queueId, age: ageNow });
       }
 
       // Create the match
@@ -106,7 +106,6 @@ export async function POST(req: Request): Promise<Response> {
 
       // Player 1 is the one who joined second (current player), Player 2 is the opponent
       // But we want "playerAddress" = current player from the client's perspective
-      const p1Name = RIVAL_NAMES[Math.floor(Math.random() * RIVAL_NAMES.length)];
       const p2Name = RIVAL_NAMES[Math.floor(Math.random() * RIVAL_NAMES.length)];
 
       await Match.create({
@@ -150,7 +149,7 @@ export async function POST(req: Request): Promise<Response> {
     }
 
     // No opponent found — still searching
-    return Response.json({ status: "searching", queueId });
+    return Response.json({ status: "searching", queueId, age: ageNow });
   } catch (err) {
     console.error("matchmaking join failed", err);
     return jsonError(500, "matchmaking failed");
