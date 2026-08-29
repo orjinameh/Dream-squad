@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useGameState } from "./useGameState";
 import { RetroCharacter, FlameBall } from "./RetroCharacter";
 import { CHARACTERS } from "./characters";
@@ -19,6 +19,7 @@ export default function GameApp() {
   const { isConnected, address } = useAccount();
   const mm = useMatchmaking(address as `0x${string}` | undefined);
   const dreamDex = useDreamDEX(g.marketSymbol);
+  const startedMatchRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (g.shakeScreen) {
@@ -44,12 +45,17 @@ export default function GameApp() {
     })();
   }, [isConnected, address, g.phase]);
 
-  // When matchmaking finds a match, transition to MATCH_FOUND
+  // When matchmaking finds a match, transition to MATCH_FOUND. Guarded by a
+  // startedMatchRef so it fires exactly once per matchId regardless of phase
+  // timing; dropping the strict `phase === "MATCHMAKING"` check avoids a race
+  // where the match is found but the transition is skipped (leaving the search
+  // screen showing a bare matched state) and never retried.
   useEffect(() => {
-    if (mm.state.status === "matched" && mm.state.matchId && g.phase === "MATCHMAKING") {
+    if (mm.state.status === "matched" && mm.state.matchId && startedMatchRef.current !== mm.state.matchId) {
+      startedMatchRef.current = mm.state.matchId;
       g.actions.startPvPMatch(mm.state.matchId);
     }
-  }, [mm.state.status, mm.state.matchId, g.phase, g.actions]);
+  }, [mm.state.status, mm.state.matchId, g.actions]);
 
   // NOTE: no auto-join effect here. The QUICK MATCH button calls joinQueue
   // directly, so an auto-join is redundant AND harmful: it would re-fire on any
@@ -598,8 +604,16 @@ function MatchmakingScreen({ matchmaking, onFightBot, onHome }: { matchmaking: R
         textShadow: "2px 2px 0 #92400e",
         marginBottom: 16, textAlign: "center",
       }}>
-        {status === "timeout" ? "NO RIVAL FOUND" : "SEARCHING FOR RIVAL..."}
+        {status === "timeout" ? "NO RIVAL FOUND" : status === "matched" ? "RIVAL FOUND" : "SEARCHING FOR RIVAL..."}
       </div>
+
+      {status === "matched" && (
+        <div style={{ textAlign: "center", marginBottom: 32 }}>
+          <div style={{ fontSize: 14, color: "#4ade80", letterSpacing: "0.08em" }}>
+            ENTERING MATCH...
+          </div>
+        </div>
+      )}
 
       {status === "searching" && (
         <div style={{ textAlign: "center", marginBottom: 32 }}>
