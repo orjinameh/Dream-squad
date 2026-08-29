@@ -35,6 +35,7 @@ export function useMatchmaking(walletAddress?: `0x${string}`): {
 
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const statusRef = useRef<MatchmakingStatus>("idle");
+  const rejoiningRef = useRef(false);
 
   const stopPolling = useCallback(() => {
     if (pollingRef.current) { clearInterval(pollingRef.current); pollingRef.current = null; }
@@ -45,10 +46,9 @@ export function useMatchmaking(walletAddress?: `0x${string}`): {
   // Keep statusRef in sync
   useEffect(() => { statusRef.current = status; }, [status]);
 
-  const joinQueue = useCallback(async (roundsSelected: number, charId: string) => {
+  const performJoin = useCallback(async (roundsSelected: number, charId: string): Promise<void> => {
     if (!walletAddress) return;
     setError(null);
-    setStatus("searching");
     setRounds(roundsSelected);
 
     try {
@@ -62,6 +62,7 @@ export function useMatchmaking(walletAddress?: `0x${string}`): {
       if (!res.ok) {
         setStatus("error");
         setError(data.error || "Failed to join queue");
+        stopPolling();
         return;
       }
 
@@ -78,35 +79,57 @@ export function useMatchmaking(walletAddress?: `0x${string}`): {
         return;
       }
 
-      // Searching — start polling
+      // Searching — set up (or keep) the poll loop.
       setQueueId(data.queueId);
       setStatus("searching");
 
-      stopPolling();
-      pollingRef.current = setInterval(async () => {
-        try {
-          const pollRes = await fetch(`/api/matchmaking/status?address=${walletAddress}`);
-          const pollData = await pollRes.json();
+      if (!pollingRef.current) {
+        pollingRef.current = setInterval(async () => {
+          try {
+            const pollRes = await fetch(`/api/matchmaking/status?address=${walletAddress}`);
+            const pollData = await pollRes.json();
 
-          if (pollData.status === "matched") {
-            setStatus("matched");
-            setMatchId(pollData.matchId);
-            stopPolling();
-          } else if (pollData.status === "idle" || pollData.status === "timeout") {
-            setStatus(pollData.status === "timeout" ? "timeout" : "idle");
-            stopPolling();
-          } else {
-            setAge(pollData.age || 0);
+            if (pollData.status === "matched") {
+              setStatus("matched");
+              setMatchId(pollData.matchId);
+              stopPolling();
+            } else if (pollData.status === "timeout") {
+              setStatus("timeout");
+              stopPolling();
+            } else if (pollData.status === "idle") {
+              // Our queue entry was consumed (pairing raced / match this player
+              // created didn't complete) and we have no active match. Self-heal:
+              // re-join exactly once to re-establish the search rather than
+              // freezing on a dead bare screen.
+              if (!rejoiningRef.current) {
+                rejoiningRef.current = true;
+                try {
+                  await performJoin(roundsSelected, charId);
+                } finally {
+                  rejoiningRef.current = false;
+                }
+              }
+            } else {
+              setAge(pollData.age || 0);
+            }
+          } catch {
+            // Network error — keep polling
           }
-        } catch {
-          // Network error — keep polling
-        }
-      }, POLL_INTERVAL);
+        }, POLL_INTERVAL);
+      }
     } catch {
       setStatus("error");
       setError("Network error");
+      stopPolling();
     }
   }, [walletAddress, stopPolling]);
+
+  const joinQueue = useCallback(async (roundsSelected: number, charId: string) => {
+    if (!walletAddress) return;
+    stopPolling();
+    setStatus("searching");
+    await performJoin(roundsSelected, charId);
+  }, [walletAddress, stopPolling, performJoin]);
 
   const leaveQueue = useCallback(async () => {
     if (!walletAddress) return;
