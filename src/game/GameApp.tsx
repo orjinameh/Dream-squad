@@ -931,7 +931,7 @@ function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
                 ? (game.playerChar?.spell.color ?? "#fbbf24")
                 : (game.rivalChar?.spell.color ?? "#ef4444")}
               active={game.combatPhase === "strike"}
-              size={1.2}
+              size={2.4}
             />
 
             <div style={{
