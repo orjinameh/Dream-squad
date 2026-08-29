@@ -19,7 +19,7 @@ export interface MatchmakingActions {
   reset: () => void;
 }
 
-const POLL_INTERVAL = 3000;
+const POLL_INTERVAL = 1500;
 const TIMEOUT_MS = 120000;
 
 export function useMatchmaking(walletAddress?: `0x${string}`): {
