@@ -10,6 +10,11 @@ export const dynamic = "force-dynamic";
 const READY_TIMEOUT_MS = 30_000;
 const QUEUE_TIMEOUT_MS = 120_000;
 
+// A PvP match whose readiness window lapses with no opponent is abandoned. We
+// expire it so a stale ACTIVE/WAITING record can never hijack the active-match
+// guard and prevent two real players from being paired on a later attempt.
+const READY_EXPIRE_MS = READY_TIMEOUT_MS + 15_000;
+
 export async function POST(req: Request): Promise<Response> {
   const body = await req.json().catch(() => ({}));
   const address = body.address as string | undefined;
@@ -27,7 +32,19 @@ export async function POST(req: Request): Promise<Response> {
     await connectToDatabase();
     const addr = normalizeAddress(address);
 
-    // Check for existing active match — do not allow queueing if already in a match
+    // Check for existing active match — do not allow queueing if already in a
+    // match, UNLESS it's an abandoned PvP match still stuck in WAITING past its
+    // readiness window, in which case expire it so it can't block a real pair.
+    await Match.updateMany(
+      {
+        $or: [{ playerAddress: addr }, { player2Address: addr }],
+        status: "ACTIVE",
+        roundPhase: "WAITING",
+        roundDeadline: { $lt: new Date(Date.now() - READY_EXPIRE_MS) },
+      },
+      { $set: { status: "COMPLETED", completedAt: new Date(), winner: "draw" } },
+    );
+
     const activeMatch = await Match.findOne({
       $or: [{ playerAddress: addr }, { player2Address: addr }],
       status: "ACTIVE",

@@ -51,13 +51,14 @@ export default function GameApp() {
     }
   }, [mm.state.status, mm.state.matchId, g.phase, g.actions]);
 
-  // Auto-join the queue the moment the matchmaking screen appears. The screen
-  // only offers a "join" button in the timeout/error state, so without this the
-  // player would sit on "SEARCHING..." without ever actually entering the
-  // MatchQueue — two devices could never be paired.
+  // Safety net: if we ever land on the matchmaking screen without an active
+  // join (status idle), kick off the queue join. The QUICK MATCH button already
+  // calls joinQueue directly, so this only covers an idle entry. Deliberately
+  // gated on "idle" only — never auto-retry from error/timeout (those have their
+  // own manual buttons), which avoids an infinite join-failure loop.
   useEffect(() => {
     if (g.phase !== "MATCHMAKING") return;
-    if (mm.state.status === "searching" || mm.state.status === "matched") return;
+    if (mm.state.status !== "idle") return;
     mm.actions.joinQueue(mm.state.rounds, g.playerChar?.id ?? "dreamer");
   }, [g.phase, mm.state.status, mm.state.rounds, mm.actions, g.playerChar]);
 
@@ -80,7 +81,7 @@ export default function GameApp() {
       {g.phase === "HOME" && <HomeScreen onEnter={g.actions.goToMarketSelect} onLeaderboard={g.actions.goToLeaderboard} onProfile={g.actions.goToProfile} onHistory={g.actions.goToMatchHistory} onRejoin={activeMatchId ? rejoinMatch : undefined} />}
       {g.phase === "MARKET_SELECT" && <TradeSelect onSelect={g.actions.selectMarket} onBack={g.actions.goToHome} />}
       {g.phase === "CHAR_SELECT" && <CharSelect onSelect={g.actions.selectChar} onBack={g.actions.goToMarketSelect} />}
-      {g.phase === "DUEL_CONFIRM" && <DuelConfirm mode={g.mode!} char={g.playerChar!} difficulty={g.botDifficulty} amount={g.selectedAmount} onSelectAmount={g.actions.selectAmount} onConfirm={() => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.confirmDuel(); }} onBack={g.actions.goToCharSelect} onQuickMatch={(rounds) => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.joinMatchmaking(rounds); }} onSelectDifficulty={g.actions.selectDifficulty} />}
+      {g.phase === "DUEL_CONFIRM" && <DuelConfirm mode={g.mode!} char={g.playerChar!} difficulty={g.botDifficulty} amount={g.selectedAmount} onSelectAmount={g.actions.selectAmount} onConfirm={() => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.confirmDuel(); }} onBack={g.actions.goToCharSelect} onQuickMatch={(rounds) => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.joinMatchmaking(rounds); mm.actions.joinQueue(rounds, g.playerChar?.id ?? "dreamer"); }} onSelectDifficulty={g.actions.selectDifficulty} />}
       {g.phase === "PREDICTION_SELECT" && <PredictionSelect onSelect={(pred) => { g.actions.selectPrediction(pred); }} onBack={g.actions.goToCharSelect} onSelectDifficulty={g.actions.selectDifficulty} difficulty={g.botDifficulty} char={g.playerChar!} mode={g.mode!} dreamDexReady={dreamDex.isReady} onSetupDreamDEX={async () => { try { await dreamDex.ensureReady(); } catch {} }} />}
       {g.phase === "MATCHMAKING" && <MatchmakingScreen matchmaking={mm} onFightBot={g.actions.fightBotInstead} onHome={g.actions.cancelMatchmaking} />}
       {g.phase === "MATCH_FOUND" && <MatchFoundScreen game={g} />}

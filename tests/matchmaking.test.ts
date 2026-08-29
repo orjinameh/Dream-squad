@@ -96,4 +96,46 @@ describe("PvP matchmaking (two devices)", () => {
     expect(sA.matchId).toBeTruthy();
     expect(rB2.status).toMatch(/matched|searching/);
   });
+
+  it("expires an abandoned WAITING match so it never hijacks a real pairing", async () => {
+    // Simulate a previous abandoned PvP match still stuck in WAITING for B —
+    // the exact state that previously made the active-match guard return
+    // "matched" to a dead match and prevented a real pairing.
+    await Match.create({
+      _id: "stale-waiting",
+      playerAddress: B,
+      player2Address: "0x3333333333333333333333333333333333333333",
+      playerChar: "dreamer",
+      rivalChar: "dreamer",
+      rivalName: "STALE",
+      mode: "battle",
+      opponentType: "player",
+      status: "ACTIVE",
+      roundPhase: "WAITING",
+      roundDeadline: new Date(Date.now() - 60_000),
+      player1Ready: false,
+      player2Ready: false,
+      totalRounds: 7,
+      currentRound: 1,
+      playerScore: 0,
+      rivalScore: 0,
+      winner: "player",
+      rounds: [],
+      playerPrediction: null,
+      rivalPrediction: null,
+    });
+
+    // B joins — the stale WAITING match must be expired, so B can queue.
+    const rB = await join(B);
+    expect(rB.status).toBe("searching");
+
+    // A joins and must pair with B (not be routed to a stale match).
+    const rA = await join(A);
+    expect(rA.status).toBe("matched");
+    expect(rA.matchId).toBeTruthy();
+
+    // The stale match is no longer ACTIVE.
+    const stale = await Match.findById("stale-waiting").lean();
+    expect(stale!.status).toBe("COMPLETED");
+  });
 });
