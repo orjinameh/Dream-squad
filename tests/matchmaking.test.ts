@@ -4,6 +4,7 @@ import mongoose from "mongoose";
 
 import { POST as joinRoute } from "@/app/api/matchmaking/join/route";
 import { POST as leaveRoute } from "@/app/api/matchmaking/leave/route";
+import { POST as clearRoute } from "@/app/api/matchmaking/clear/route";
 import { GET as statusRoute } from "@/app/api/matchmaking/status/route";
 import { Match } from "@/db/models/Match";
 import { MatchQueue } from "@/db/models/MatchQueue";
@@ -206,5 +207,43 @@ describe("PvP matchmaking (two devices)", () => {
     const rA = await join(A);
     expect(rA.status).toBe("matched");
     expect(rA.matchId).not.toBe("left-match");
+  });
+
+  it("clear wipes stale queue entries and abandoned WAITING PvP matches", async () => {
+    // Simulate a leftover phantom: a searching queue entry whose owner is gone,
+    // plus an abandoned ACTIVE/WAITING PvP match.
+    await MatchQueue.create({ _id: "phantom-q", address: A, rounds: 7, charId: "dreamer", status: "searching" });
+    await Match.create({
+      _id: "phantom-match",
+      playerAddress: A,
+      player2Address: B,
+      playerChar: "dreamer",
+      rivalChar: "dreamer",
+      rivalName: "PHANTOM",
+      mode: "battle",
+      opponentType: "player",
+      status: "ACTIVE",
+      roundPhase: "WAITING",
+      roundDeadline: new Date(Date.now() + 60_000),
+      player1Ready: false,
+      player2Ready: false,
+      totalRounds: 7,
+      currentRound: 1,
+      playerScore: 0,
+      rivalScore: 0,
+      winner: "player",
+      rounds: [],
+      playerPrediction: null,
+      rivalPrediction: null,
+    });
+
+    const res = await clearRoute();
+    const data = await res.json();
+    expect(data.cleared).toBe(true);
+
+    // Queue is empty, so a fresh join has no phantom to match against.
+    expect(await MatchQueue.countDocuments({})).toBe(0);
+    const phantom = await Match.findById("phantom-match").lean();
+    expect(phantom!.status).toBe("COMPLETED");
   });
 });
