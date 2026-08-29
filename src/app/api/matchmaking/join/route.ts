@@ -169,6 +169,7 @@ export async function POST(req: Request): Promise<Response> {
     return Response.json({ status: "searching", queueId, age: ageNow });
   } catch (err) {
     console.error("matchmaking join failed", err);
-    return jsonError(500, "matchmaking failed");
+    const detail = err instanceof Error ? err.message : "unknown error";
+    return jsonError(500, `matchmaking failed: ${detail}`);
   }
 }
