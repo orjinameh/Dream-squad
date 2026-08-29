@@ -51,6 +51,16 @@ export default function GameApp() {
     }
   }, [mm.state.status, mm.state.matchId, g.phase, g.actions]);
 
+  // Auto-join the queue the moment the matchmaking screen appears. The screen
+  // only offers a "join" button in the timeout/error state, so without this the
+  // player would sit on "SEARCHING..." without ever actually entering the
+  // MatchQueue — two devices could never be paired.
+  useEffect(() => {
+    if (g.phase !== "MATCHMAKING") return;
+    if (mm.state.status === "searching" || mm.state.status === "matched") return;
+    mm.actions.joinQueue(mm.state.rounds, g.playerChar?.id ?? "dreamer");
+  }, [g.phase, mm.state.status, mm.state.rounds, mm.actions, g.playerChar]);
+
   const rejoinMatch = () => {
     if (!activeMatchId) return;
     g.actions.startPvPMatch(activeMatchId);

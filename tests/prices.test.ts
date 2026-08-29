@@ -5,6 +5,7 @@ import {
   PRICE_POINTS_PER_ROUND,
   DEFAULT_ASSET,
 } from "@/lib/prices";
+import { fetchLivePriceUsd } from "@/lib/prices-api";
 
 describe("generateMatchPriceModel (single continuous market)", () => {
   it("is deterministic for the same matchId", () => {
@@ -68,5 +69,16 @@ describe("generateMatchPriceModel (single continuous market)", () => {
         }
       }
     }
+  });
+});
+
+describe("fetchLivePriceUsd (authoritative resolution), no network dependency", () => {
+  it("returns null for the default SOMI market (no public ticker) — the timeout fallback", async () => {
+    expect(await fetchLivePriceUsd("SOMI:USDso")).toBeNull();
+  });
+
+  it("returns null for unknown markets and never throws", async () => {
+    await expect(fetchLivePriceUsd("NOPE:USDso")).resolves.toBeNull();
+    await expect(fetchLivePriceUsd("")).resolves.toBeNull();
   });
 });

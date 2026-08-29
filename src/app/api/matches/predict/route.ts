@@ -7,8 +7,14 @@ import { executeGameRound, type RoundExecutionResult } from "@/lib/operator";
 import { getPvpWinPoints } from "@/lib/rank";
 import { z } from "zod";
 import { isAddress } from "viem";
+import { fetchLivePriceUsd } from "@/lib/prices-api";
 
 const PAYOUT_MULTIPLIER = 1.8;
+
+// Live one-tick resolution keeps the market noisy even when the live feed only
+// moves a few bps, so round outcomes aren't trivially predictable. Anything
+// within this band is judged FLAT.
+const LIVE_RESOLUTION_FLAT_BAND_PCT = 0.0005;
 
 const MAX_HP = 100;
 const BASE_DAMAGE = 15;
@@ -110,11 +116,31 @@ async function resolveRound(match: any, now: Date): Promise<{
   // model stored on the match. Both players watch the exact same contiguous
   // path (chart + resolution + P&L all agree) — no per-round reseed.
   const checkpoint = match.priceModel?.checkpoints?.[roundNumber - 1];
-  const actual = checkpoint?.actual ?? "FLAT";
-  const volume = checkpoint?.prices ?? [];
-  const startPrice = checkpoint?.startPrice;
-  const endPrice = checkpoint?.endPrice;
+  const fallbackActual = checkpoint?.actual ?? "FLAT";
+  const fallbackPrices = checkpoint?.prices ?? [];
+  const anchorOpen = checkpoint?.startPrice;
   const asset = match.priceModel?.asset ?? match.predictionAsset ?? "BTC";
+
+  // LIVE PRICE RESOLUTION (with fallback). Where the market has a real public
+  // ticker, override the outcome with the actual open→close move: the round's
+  // open price is anchored from the stored series and the close is fetched live
+  // at resolution. If the asset has no public feed, the fetch fails, or it
+  // times out (2.5s cap inside the helper), keep the precomputed model so the
+  // round never freezes on a network call.
+  let actual = fallbackActual;
+  let volume = fallbackPrices;
+  let startPrice = anchorOpen;
+  let endPrice = checkpoint?.endPrice;
+
+  const liveClose = await fetchLivePriceUsd(marketSymbol);
+  if (liveClose != null && anchorOpen != null && anchorOpen > 0) {
+    const band = anchorOpen * LIVE_RESOLUTION_FLAT_BAND_PCT;
+    const diff = liveClose - anchorOpen;
+    actual = diff > band ? "UP" : diff < -band ? "DOWN" : "FLAT";
+    startPrice = anchorOpen;
+    endPrice = liveClose;
+    volume = [anchorOpen, liveClose];
+  }
 
   const isFlat = actual === "FLAT";
 
