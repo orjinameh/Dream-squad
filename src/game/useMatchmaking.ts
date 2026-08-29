@@ -51,6 +51,17 @@ export function useMatchmaking(walletAddress?: `0x${string}`): {
     setError(null);
     setRounds(roundsSelected);
 
+    const checkActiveMatch = async (): Promise<string | null> => {
+      try {
+        const res = await fetch(`/api/matches/active?address=${walletAddress}`);
+        if (!res.ok) return null;
+        const data = await res.json();
+        return data?.active && data?.matchId ? data.matchId : null;
+      } catch {
+        return null;
+      }
+    };
+
     try {
       const res = await fetch("/api/matchmaking/join", {
         method: "POST",
@@ -96,17 +107,32 @@ export function useMatchmaking(walletAddress?: `0x${string}`): {
             } else if (pollData.status === "timeout") {
               setStatus("timeout");
               stopPolling();
-            } else if (pollData.status === "idle") {
-              // Our queue entry was consumed (pairing raced / match this player
-              // created didn't complete) and we have no active match. Self-heal:
-              // re-join exactly once to re-establish the search rather than
-              // freezing on a dead bare screen.
-              if (!rejoiningRef.current) {
-                rejoiningRef.current = true;
-                try {
-                  await performJoin(roundsSelected, charId);
-                } finally {
-                  rejoiningRef.current = false;
+            } else if (pollData.status === "idle" || pollData.status === "searching") {
+              // Fallback: the queue/status view can lag behind an actual match
+              // (e.g. a re-joined queue entry vs. the server-authoritative match
+              // record). Before self-healing on idle or spinning forever on
+              // searching, check whether we are genuinely in an active match and
+              // transition straight in if so.
+              const activeMatchId = await checkActiveMatch();
+              if (activeMatchId) {
+                setStatus("matched");
+                setMatchId(activeMatchId);
+                stopPolling();
+                return;
+              }
+
+              if (pollData.status === "idle") {
+                // Our queue entry was consumed (pairing raced / match this player
+                // created didn't complete) and we have no active match. Self-heal:
+                // re-join exactly once to re-establish the search rather than
+                // freezing on a dead bare screen.
+                if (!rejoiningRef.current) {
+                  rejoiningRef.current = true;
+                  try {
+                    await performJoin(roundsSelected, charId);
+                  } finally {
+                    rejoiningRef.current = false;
+                  }
                 }
               }
             } else {

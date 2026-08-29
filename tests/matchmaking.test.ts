@@ -13,6 +13,13 @@ let mongo: MongoMemoryServer;
 const A = "0x1111111111111111111111111111111111111111";
 const B = "0x2222222222222222222222222222222222222222";
 
+// Real-world EIP-55 mixed-case (checksummed) wallet addresses — distinct from
+// the all-lowercase A/B above. Regression guard for the queue `lowercase: true`
+// vs `normalizeAddress` checksum inconsistency that made /status and /join
+// miss searching queue entries for normal (mixed-case) wallets.
+const CA = "0x52908400098527886E0F7030069857D2E4169EE7";
+const CB = "0x8617E340B3D01FA5F11F306F4090FD50E238070D";
+
 beforeAll(async () => {
   mongo = await MongoMemoryServer.create();
   process.env.MONGODB_URI = mongo.getUri();
@@ -137,6 +144,25 @@ describe("PvP matchmaking (two devices)", () => {
     // The stale match is no longer ACTIVE.
     const stale = await Match.findById("stale-waiting").lean();
     expect(stale!.status).toBe("COMPLETED");
+  });
+
+  it("treats mixed-case (checksummed) wallets the same as lowercase ones", async () => {
+    // First device (checksummed) joins and stays searching.
+    const rA = await join(CA);
+    expect(rA.status).toBe("searching");
+
+    // Second device (checksummed) joins and should match against CA.
+    const rB = await join(CB);
+    expect(rB.status).toBe("matched");
+
+    // Both devices must see the same match via /status (this is where the
+    // lowercase/checksum mismatch used to break the queue lookup).
+    const sA = await status(CA);
+    const sB = await status(CB);
+    expect(sA.status).toBe("matched");
+    expect(sA.matchId).toBe(rB.matchId);
+    expect(sB.status).toBe("matched");
+    expect(sB.matchId).toBe(rB.matchId);
   });
 
   it("abandons a WAITING match on leave so re-joining can't phantom re-pair", async () => {

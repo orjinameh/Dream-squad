@@ -16,7 +16,7 @@ export interface MatchQueueDoc {
 const MatchQueueSchema = new Schema(
   {
     _id: { type: String, required: true },
-    address: { type: String, required: true, lowercase: true },
+    address: { type: String, required: true },
     rounds: { type: Number, required: true, enum: [3, 5, 7, 11] },
     charId: { type: String, required: true, default: "dreamer" },
     status: { type: String, required: true, default: "searching", enum: ["searching", "matched"] },
