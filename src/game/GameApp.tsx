@@ -51,16 +51,10 @@ export default function GameApp() {
     }
   }, [mm.state.status, mm.state.matchId, g.phase, g.actions]);
 
-  // Safety net: if we ever land on the matchmaking screen without an active
-  // join (status idle), kick off the queue join. The QUICK MATCH button already
-  // calls joinQueue directly, so this only covers an idle entry. Deliberately
-  // gated on "idle" only — never auto-retry from error/timeout (those have their
-  // own manual buttons), which avoids an infinite join-failure loop.
-  useEffect(() => {
-    if (g.phase !== "MATCHMAKING") return;
-    if (mm.state.status !== "idle") return;
-    mm.actions.joinQueue(mm.state.rounds, g.playerChar?.id ?? "dreamer");
-  }, [g.phase, mm.state.status, mm.state.rounds, mm.actions, g.playerChar]);
+  // NOTE: no auto-join effect here. The QUICK MATCH button calls joinQueue
+  // directly, so an auto-join is redundant AND harmful: it would re-fire on any
+  // transient "idle" status and create a fresh queue entry, racing the real
+  // match that was just created and stranding one player in "searching".
 
   const rejoinMatch = () => {
     if (!activeMatchId) return;
