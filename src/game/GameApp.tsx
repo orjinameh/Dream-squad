@@ -70,7 +70,7 @@ export default function GameApp() {
       {g.phase === "HOME" && <HomeScreen onEnter={g.actions.goToModeSelect} onLeaderboard={g.actions.goToLeaderboard} onProfile={g.actions.goToProfile} onHistory={g.actions.goToMatchHistory} onRejoin={activeMatchId ? rejoinMatch : undefined} />}
       {g.phase === "MODE_SELECT" && <ModeSelect onSelect={g.actions.selectMode} onBack={g.actions.goToHome} />}
       {g.phase === "CHAR_SELECT" && <CharSelect onSelect={g.actions.selectChar} onBack={g.actions.goToModeSelect} />}
-      {g.phase === "DUEL_CONFIRM" && <DuelConfirm mode={g.mode!} char={g.playerChar!} difficulty={g.botDifficulty} onConfirm={() => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.confirmDuel(); }} onBack={g.actions.goToCharSelect} onQuickMatch={(rounds) => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.joinMatchmaking(rounds); }} onSelectDifficulty={g.actions.selectDifficulty} />}
+      {g.phase === "DUEL_CONFIRM" && <DuelConfirm mode={g.mode!} char={g.playerChar!} difficulty={g.botDifficulty} amount={g.selectedAmount} onSelectAmount={g.actions.selectAmount} onConfirm={() => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.confirmDuel(); }} onBack={g.actions.goToCharSelect} onQuickMatch={(rounds) => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.joinMatchmaking(rounds); }} onSelectDifficulty={g.actions.selectDifficulty} />}
       {g.phase === "PREDICTION_SELECT" && <PredictionSelect onSelect={(pred) => { g.actions.selectPrediction(pred); }} onBack={g.actions.goToCharSelect} onSelectDifficulty={g.actions.selectDifficulty} difficulty={g.botDifficulty} char={g.playerChar!} mode={g.mode!} dreamDexReady={dreamDex.isReady} onSetupDreamDEX={async () => { try { await dreamDex.ensureReady(); } catch {} }} />}
       {g.phase === "MATCHMAKING" && <MatchmakingScreen matchmaking={mm} onFightBot={g.actions.fightBotInstead} onHome={g.actions.cancelMatchmaking} />}
       {g.phase === "MATCH_FOUND" && <MatchFoundScreen game={g} />}
@@ -293,12 +293,13 @@ function CharSelect({ onSelect, onBack }: { onSelect: (c: typeof CHARACTERS[0]) 
   );
 }
 
-function DuelConfirm({ mode, char, difficulty, onConfirm, onBack, onQuickMatch, onSelectDifficulty }: { mode: GameMode; char: typeof CHARACTERS[0]; difficulty: BotDifficulty; onConfirm: () => void; onBack: () => void; onQuickMatch: (rounds: number) => void; onSelectDifficulty: (d: BotDifficulty) => void }) {
+function DuelConfirm({ mode, char, difficulty, amount, onSelectAmount, onConfirm, onBack, onQuickMatch, onSelectDifficulty }: { mode: GameMode; char: typeof CHARACTERS[0]; difficulty: BotDifficulty; amount: number; onSelectAmount: (a: number) => void; onConfirm: () => void; onBack: () => void; onQuickMatch: (rounds: number) => void; onSelectDifficulty: (d: BotDifficulty) => void }) {
   const difficulties: { id: BotDifficulty; label: string; color: string; desc: string }[] = [
     { id: "easy", label: "EASY", color: "#10b981", desc: "Bot struggles" },
     { id: "normal", label: "NORMAL", color: "#f59e0b", desc: "Fair match" },
     { id: "hard", label: "HARD", color: "#ef4444", desc: "Bot is sharp" },
   ];
+  const tradeAmounts = [1, 2, 5, 10];
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "40px 20px" }}>
       <div style={{ position: "absolute", inset: 0, background: `radial-gradient(ellipse at 50% 40%, ${char.colors.accent}12 0%, transparent 50%)`, pointerEvents: "none" }} />
@@ -341,6 +342,31 @@ function DuelConfirm({ mode, char, difficulty, onConfirm, onBack, onQuickMatch, 
               }}
             >
               {d.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Trade amount selector — each player picks their own stake; it drives
+          their real DreamDEX order + P&L, independent of the opponent's. */}
+      <div style={{ marginBottom: 24, textAlign: "center" }}>
+        <div style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.1em", marginBottom: 8 }}>TRADE AMOUNT (STT)</div>
+        <div style={{ display: "flex", gap: 8 }}>
+          {tradeAmounts.map((a) => (
+            <button
+              key={a}
+              onClick={() => onSelectAmount(a)}
+              style={{
+                padding: "8px 16px", borderRadius: 6, fontSize: 12, fontWeight: 700,
+                letterSpacing: "0.08em", cursor: "pointer", transition: "all 0.15s",
+                fontFamily: "'Courier New', monospace",
+                background: amount === a ? "#10b98125" : "transparent",
+                border: `2px solid ${amount === a ? "#10b981" : "#334155"}`,
+                color: amount === a ? "#10b981" : "#64748b",
+                transform: amount === a ? "scale(1.05)" : undefined,
+              }}
+            >
+              {a}
             </button>
           ))}
         </div>
@@ -1029,18 +1055,17 @@ function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
               {game.timeLeft.toFixed(2)}
             </div>
 
-            {/* Selection status */}
+            {/* Selection status — always "selected" (repositionable). Never
+                "committed"/locked: there is no lock state until round close. */}
             {game.playerPrediction && (
               <div style={{
                 fontSize: 11, letterSpacing: "0.12em", marginBottom: 12, padding: "4px 12px",
                 borderRadius: 4, display: "inline-block",
-                background: predStatus === "confirmed" ? "rgba(16,185,129,0.15)" : "rgba(245,158,11,0.15)",
-                border: `1px solid ${predStatus === "confirmed" ? "#10b981" : "#f59e0b"}`,
-                color: predStatus === "confirmed" ? "#10b981" : "#f59e0b",
+                background: "rgba(245,158,11,0.15)",
+                border: "1px solid #f59e0b",
+                color: "#f59e0b",
               }}>
-                {predStatus === "confirmed"
-                  ? `\uD83D\uDD12 ${game.playerPrediction === "UP" ? "\u2191" : "\u2193"} ${game.playerPrediction} POSITION COMMITTED`
-                  : `${game.playerPrediction === "UP" ? "\u2191" : "\u2193"} ${game.playerPrediction} POSITION SELECTED`}
+                {`${game.playerPrediction === "UP" ? "\u2191" : "\u2193"} ${game.playerPrediction} POSITION SELECTED`}
               </div>
             )}
             {predStatus === "submitting" && (
@@ -1094,14 +1119,6 @@ function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
               >
                 {"\u2193"} NO
               </button>
-            </div>
-          </div>
-        )}
-
-        {game.phase === "ROUND_LOCKED" && (
-          <div style={{ textAlign: "center" }}>
-            <div style={{ fontSize: 24, fontWeight: 900, color: "#fbbf24", letterSpacing: "0.15em" }}>
-              {"\uD83D\uDD12"} PREDICTIONS LOCKED
             </div>
           </div>
         )}
@@ -1256,12 +1273,15 @@ function MatchResult({ game, onRematch }: { game: ReturnType<typeof useGameState
         background: "rgba(15,23,42,0.9)", border: "2px solid #1e293b", borderRadius: 8,
         padding: "12px 20px", marginBottom: 24, textAlign: "center", maxWidth: 340, width: "100%",
       }}>
-        <div style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.1em", marginBottom: 6 }}>TRADING P&L</div>
+        <div style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.1em", marginBottom: 6 }}>
+          TRADING P&L {"\u00B7"} {game.playerAmountPerRound ?? 1} STT / round
+        </div>
         {(() => {
           const correct = game.roundHistory.filter((r) => r.playerCorrect && !r.isDraw).length;
           const wrong = game.roundHistory.filter((r) => !r.playerCorrect && !r.isDraw).length;
           const flat = game.roundHistory.filter((r) => r.actual === "FLAT").length;
-          const pnl = (correct * 0.8) - (wrong * 1.0);
+          // Authoritative P&L from the resolved rounds (per-player stake).
+          const pnl = game.roundHistory.reduce((s, r) => s + (r.playerPnL ?? 0), 0);
           const startBalance = game.playerStartBalance ?? 100;
           const endBalance = game.playerBalance ?? startBalance + pnl;
           return (

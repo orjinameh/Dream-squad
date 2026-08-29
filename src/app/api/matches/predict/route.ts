@@ -88,16 +88,22 @@ async function resolveRound(match: any, now: Date): Promise<{
   let playerResult: RoundExecutionResult | null = null;
   let rivalResult: RoundExecutionResult | null = null;
 
+  // Per-player independent stakes. Each player trades their OWN amount; it
+  // drives their on-chain order size and their P&L only, independent of the
+  // opponent's stake.
+  const playerBet = match.playerAmountPerRound ?? match.executionConfig?.amountPerRound ?? 1;
+  const rivalBet = match.rivalAmountPerRound ?? match.executionConfig?.amountPerRound ?? 1;
+
   // Execute player's DreamDEX order (always for the human player)
   if (playerPred) {
-    playerResult = await executeGameRound(marketSymbol, match.playerAddress, playerPred, roundNumber, matchId);
+    playerResult = await executeGameRound(marketSymbol, match.playerAddress, playerPred, roundNumber, matchId, playerBet);
   }
 
   // Bot matches: bot's DreamDEX order is NOT executed on-chain (no real funds)
   // Bot just predicts and outcome is derived from player's execution
 
   if (isPvP && rivalPred && match.player2Address) {
-    rivalResult = await executeGameRound(marketSymbol, match.player2Address, rivalPred, roundNumber, matchId);
+    rivalResult = await executeGameRound(marketSymbol, match.player2Address, rivalPred, roundNumber, matchId, rivalBet);
   }
 
   // Determine authoritative market outcome from the SINGLE continuous price
@@ -118,14 +124,14 @@ async function resolveRound(match: any, now: Date): Promise<{
   const isDraw = isFlat || playerCorrect === rivalCorrect;
   const roundWinner = isDraw ? "draw" : playerCorrect ? "player" : "rival";
 
-  // Trading P&L (non-zero-sum). Correct = +bet*(multiplier-1), wrong = -bet.
+  // Trading P&L (non-zero-sum). Each player trades their OWN stake:
+  // Correct = +bet*(multiplier-1), wrong = -bet. Independent per player.
   // In a FLAT round neither side is penalized (the trade is void).
-  const bet = match.executionConfig?.amountPerRound ?? 1;
   const playerPnL = !isFlat && playerPred
-    ? (playerCorrect ? bet * (PAYOUT_MULTIPLIER - 1) : -bet)
+    ? (playerCorrect ? playerBet * (PAYOUT_MULTIPLIER - 1) : -playerBet)
     : 0;
   const rivalPnL = !isFlat && rivalPred
-    ? (rivalCorrect ? bet * (PAYOUT_MULTIPLIER - 1) : -bet)
+    ? (rivalCorrect ? rivalBet * (PAYOUT_MULTIPLIER - 1) : -rivalBet)
     : 0;
 
   // Running balance = start balance + cumulative P&L including this round.
@@ -239,7 +245,8 @@ function roundPnl(value: number): number {
  */
 async function updatePlayerStatsAtomic(match: any, allRounds: any[], winner: string, now: Date) {
   const matchId = match._id;
-  const BET_PER_ROUND = match.executionConfig?.amountPerRound ?? 1;
+  const P1_BET = match.playerAmountPerRound ?? match.executionConfig?.amountPerRound ?? 1;
+  const P2_BET = match.rivalAmountPerRound ?? match.executionConfig?.amountPerRound ?? 1;
 
   // Player 1 stats — atomic: only process if not already processed
   const p1CorrectCount = allRounds.filter((r: any) => r.playerCorrect).length;
@@ -251,8 +258,8 @@ async function updatePlayerStatsAtomic(match: any, allRounds: any[], winner: str
   const p1RankDelta = getPvpWinPoints(p1Win, p1Draw);
   const hasKO = allRounds.some((r: any) => r.knockout);
 
-  // P&L: correct prediction = +bet*(multiplier-1), wrong = -bet
-  const p1PnL = (p1CorrectCount * BET_PER_ROUND * (PAYOUT_MULTIPLIER - 1)) - (p1WrongCount * BET_PER_ROUND);
+  // P&L: correct prediction = +bet*(multiplier-1), wrong = -bet (own stake)
+  const p1PnL = (p1CorrectCount * P1_BET * (PAYOUT_MULTIPLIER - 1)) - (p1WrongCount * P1_BET);
 
   await PlayerStats.findOneAndUpdate(
     { _id: normalizeAddress(match.playerAddress), processedMatches: { $ne: matchId } },
@@ -304,7 +311,7 @@ async function updatePlayerStatsAtomic(match: any, allRounds: any[], winner: str
     const p2Draw = winner === "draw";
     const p2RankDelta = getPvpWinPoints(p2Win, p2Draw);
     const p2Addr = normalizeAddress(match.player2Address);
-    const p2PnL = (p2CorrectCount * BET_PER_ROUND * (PAYOUT_MULTIPLIER - 1)) - (p2WrongCount * BET_PER_ROUND);
+    const p2PnL = (p2CorrectCount * P2_BET * (PAYOUT_MULTIPLIER - 1)) - (p2WrongCount * P2_BET);
 
     await PlayerStats.findOneAndUpdate(
       { _id: p2Addr, processedMatches: { $ne: matchId } },

@@ -173,6 +173,10 @@ function buildState(match: any, serverTime: Date, isViewerP2: boolean, viewerAdd
   const mePnl = (match.rounds ?? []).reduce((s: number, r: any) => s + (isViewerP2 ? (r.rivalPnL ?? 0) : (r.playerPnL ?? 0)), 0);
   const themPnl = (match.rounds ?? []).reduce((s: number, r: any) => s + (isViewerP2 ? (r.playerPnL ?? 0) : (r.rivalPnL ?? 0)), 0);
 
+  // Per-player independent trade amounts (STT).
+  const myAmount = isViewerP2 ? (match.rivalAmountPerRound ?? 1) : (match.playerAmountPerRound ?? 1);
+  const theirAmount = isViewerP2 ? (match.playerAmountPerRound ?? 1) : (match.rivalAmountPerRound ?? 1);
+
   return {
     matchId: match._id,
     status: match.status,
@@ -218,6 +222,9 @@ function buildState(match: any, serverTime: Date, isViewerP2: boolean, viewerAdd
     rivalBalance: Math.round((startThem + themPnl) * 100) / 100,
     playerStartBalance: startMe,
     rivalStartBalance: startThem,
+    // Per-player independent trade amounts (viewer-relative)
+    playerAmountPerRound: myAmount,
+    rivalAmountPerRound: theirAmount,
     lastRound,
   };
 }

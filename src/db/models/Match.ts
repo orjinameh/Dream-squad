@@ -106,6 +106,9 @@ export interface MatchDoc {
   // Trading balance lifecycle (STT)
   playerStartBalance: number;
   rivalStartBalance: number;
+  // Per-player independent trade amounts (STT)
+  playerAmountPerRound: number;
+  rivalAmountPerRound: number;
   playerFinalBalance?: number;
   rivalFinalBalance?: number;
   // Single continuous market the whole match trades against
@@ -214,6 +217,11 @@ const MatchSchema = new Schema<MatchDoc>(
     rivalHP: { type: Number, default: 100 },
     playerStreak: { type: Number, default: 0 },
     rivalStreak: { type: Number, default: 0 },
+    // Per-player independent trade amount (STT). Each player picks their own
+    // stake; it drives real on-chain DreamDEX order size and this player's P&L
+    // only — it is independent of what the opponent chose.
+    playerAmountPerRound: { type: Number, default: 1 },
+    rivalAmountPerRound: { type: Number, default: 1 },
     // Trading balance lifecycle (STT)
     playerStartBalance: { type: Number, default: 100 },
     rivalStartBalance: { type: Number, default: 100 },

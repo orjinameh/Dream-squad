@@ -137,4 +137,7 @@ export interface GameState {
   rivalBalance: number;
   playerStartBalance: number;
   rivalStartBalance: number;
+  // Per-player independent trade amount (STT) — each player's own stake.
+  playerAmountPerRound?: number;
+  rivalAmountPerRound?: number;
 }

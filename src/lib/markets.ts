@@ -67,3 +67,14 @@ export function amountMeetsMinimum(market: MarketConfig, amount: number): boolea
   const lots = Math.round(amount / market.lotSize);
   return Math.abs(lots * market.lotSize - amount) < Number.EPSILON;
 }
+
+/**
+ * Snap a desired stake onto the market's lot grid and floor it at the pool
+ * minimum so the resulting on-chain order is never under-sized. Non-finite or
+ * zero/negative inputs fall back to the market minimum.
+ */
+export function snapAmount(raw: number, minAmount: number, lotSize: number): number {
+  if (!Number.isFinite(raw) || raw <= 0) return minAmount;
+  const lots = Math.max(1, Math.round(raw / lotSize));
+  return Math.max(minAmount, lots * lotSize);
+}

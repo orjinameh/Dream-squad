@@ -16,7 +16,16 @@ const createMatchSchema = z.object({
   totalRounds: z.number().int().positive(),
   botDifficulty: z.enum(["easy", "normal", "hard"]).optional(),
   predictionAsset: z.string().optional(),
+  amountPerRound: z.number().positive().optional(),
 });
+
+// The rival gets its own independent stake, generated so the two players can
+// trade different amounts. For a real PvP opponent their stake is overridden
+// when they join.
+function generateRivalStake(): number {
+  const options = [1, 2, 5, 10];
+  return options[Math.floor(Math.random() * options.length)];
+}
 
 export async function POST(req: Request): Promise<Response> {
   let body: unknown;
@@ -68,6 +77,12 @@ export async function POST(req: Request): Promise<Response> {
       predictionAsset: asset,
       predictionQuestion: `WILL ${asset} GO UP OR DOWN?`,
       priceModel,
+      // Per-player independent trade amount. The creating player's chosen
+      // stake drives their on-chain order + P&L. The rival gets its own stake
+      // (generated for the bot; a real PvP opponent's stake is set when they
+      // join). Neither affects the other's P&L.
+      playerAmountPerRound: input.amountPerRound ?? 1,
+      rivalAmountPerRound: generateRivalStake(),
     });
 
     return Response.json({

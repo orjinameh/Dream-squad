@@ -1,7 +1,7 @@
 import { createWalletClient, createPublicClient, http, parseUnits, formatUnits, keccak256, toHex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { SOMNIA_CHAIN, SPOT_POOL_ABI, ORDER_TYPE, crossingPrice, ZERO_ADDRESS, OPERATOR_ADDRESS } from "./config";
-import { MARKETS, GAS_LIMIT_PER_ORDER } from "./markets";
+import { MARKETS, GAS_LIMIT_PER_ORDER, snapAmount } from "./markets";
 
 const RPC_URL = process.env.SOMNIA_RPC_URL ?? "https://dream-rpc.somnia.network";
 
@@ -203,6 +203,10 @@ export async function ensurePlayerVault(
 /**
  * Execute a real IOC order for a game round via the operator.
  * Returns full execution details including a deterministic round outcome.
+ *
+ * `amount` is the PLAYER'S OWN chosen stake for this round — it is passed per
+ * player and is independent of the opponent's stake. It drives the real
+ * on-chain order size from the player's vault.
  */
 export async function executeGameRound(
   marketSymbol: string,
@@ -210,6 +214,7 @@ export async function executeGameRound(
   prediction: "UP" | "DOWN",
   roundNumber: number,
   matchId: string,
+  amount: number,
 ): Promise<RoundExecutionResult> {
   // IDEMPOTENCY GUARD: prevent double on-chain submission for same match+round+player
   const cacheKey = _execCacheKey(matchId, roundNumber, playerAddress);
@@ -223,17 +228,19 @@ export async function executeGameRound(
   if (!market) {
     return {
       success: false, txHash: null, blockNumber: null, blockHash: null, gasUsed: null,
-      direction: prediction === "UP" ? "BUY" : "SELL", amount: 1,
+      direction: prediction === "UP" ? "BUY" : "SELL", amount: amount || 1,
       marketSymbol, error: `Unknown market: ${marketSymbol}`,
       roundOutcome: "DOWN",
     };
   }
 
   const direction: "BUY" | "SELL" = prediction === "UP" ? "BUY" : "SELL";
-  const amount = market.minAmount;
+  // Use the player's own chosen stake, snapped onto the market's lot grid and
+  // floored at the pool minimum so the order is not rejected by the pool.
+  const finalAmount = snapAmount(Number(amount), market.minAmount, market.lotSize);
 
   try {
-    const quantity = parseUnits(amount.toString(), market.baseDecimals);
+    const quantity = parseUnits(finalAmount.toString(), market.baseDecimals);
     const price = crossingPrice(direction, market.quoteDecimals);
     const isBid = direction === "BUY";
     const nowSec = Math.floor(Date.now() / 1000);
@@ -270,7 +277,7 @@ export async function executeGameRound(
     if (receipt.status !== "success") {
       const revertResult: RoundExecutionResult = {
         success: false, txHash, blockNumber: receipt.blockNumber, blockHash: receipt.blockHash,
-        gasUsed: receipt.gasUsed, direction, amount, marketSymbol,
+        gasUsed: receipt.gasUsed, direction, amount: finalAmount, marketSymbol,
         error: "tx reverted on-chain",
         roundOutcome: deriveRoundOutcome(txHash, roundNumber),
       };
@@ -284,7 +291,7 @@ export async function executeGameRound(
 
     const result: RoundExecutionResult = {
       success: true, txHash, blockNumber: receipt.blockNumber, blockHash: receipt.blockHash,
-      gasUsed: receipt.gasUsed, direction, amount, marketSymbol,
+      gasUsed: receipt.gasUsed, direction, amount: finalAmount, marketSymbol,
       roundOutcome,
     };
 
@@ -305,7 +312,7 @@ export async function executeGameRound(
 
     const failResult: RoundExecutionResult = {
       success: false, txHash: null, blockNumber: null, blockHash: null, gasUsed: null,
-      direction, amount, marketSymbol, error: normalized,
+      direction, amount: finalAmount, marketSymbol, error: normalized,
       roundOutcome: "DOWN",
     };
 

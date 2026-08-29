@@ -8,6 +8,7 @@ import {
   type ConnectionStatus,
 } from "./useMultiplayer";
 import { useAccount } from "wagmi";
+import { generateMatchPriceModel, type MatchPriceModel, type Checkpoint } from "@/lib/prices";
 
 const LOCK_DURATION = 1200;
 const REVEAL_DURATION = 1500;
@@ -44,6 +45,7 @@ export interface GameActions {
   confirmDuel: () => void;
   selectPrediction: (pred: PredictionConfig) => void;
   selectDifficulty: (diff: BotDifficulty) => void;
+  selectAmount: (amount: number) => void;
   makePrediction: (pred: "UP" | "DOWN") => void;
   rematch: () => void;
   joinMatchmaking: (rounds: number) => void;
@@ -84,6 +86,7 @@ export interface GameHook {
   isReconnecting: boolean;
   selectedPrediction: PredictionConfig;
   botDifficulty: BotDifficulty;
+  selectedAmount: number;
   executionStatus: "idle" | "executing" | "success" | "failed" | "retrying";
   executionError: string | null;
   lastTxHash: string | null;
@@ -108,6 +111,9 @@ export interface GameHook {
   rivalBalance: number;
   playerStartBalance: number;
   rivalStartBalance: number;
+  // Per-player independent trade amount (STT) — each player's own stake.
+  playerAmountPerRound?: number;
+  rivalAmountPerRound?: number;
   actions: GameActions;
 }
 
@@ -147,6 +153,7 @@ export function useGameState(): GameHook {
   const [displayRound, setDisplayRound] = useState(1);
   const [selectedPrediction, setSelectedPrediction] = useState<PredictionConfig>(PREDICTIONS[0]);
   const [botDifficulty, setBotDifficulty] = useState<BotDifficulty>("normal");
+  const [selectedAmount, setSelectedAmount] = useState<number>(1);
   const [executionStatus, setExecutionStatus] = useState<"idle" | "executing" | "success" | "failed" | "retrying">("idle");
   const [executionError, setExecutionError] = useState<string | null>(null);
   const [lastTxHash, setLastTxHash] = useState<string | null>(null);
@@ -174,6 +181,16 @@ export function useGameState(): GameHook {
   const roundPhaseRef = useRef<"LOCKED" | "SUBMITTING" | "WAITING_SERVER" | "ANIMATING" | "RESOLVED">("LOCKED");
   const activeRoundNumRef = useRef<number>(0);
   const lastServerPhaseKeyRef = useRef<string | null>(null);
+
+  // Deterministic local price model + match metadata, captured at match
+  // creation. Lets the client resolve a round LOCALLY (no server round-trip)
+  // so a round can never freeze on "predictions locked" waiting on the server.
+  const localMatchRef = useRef<{
+    matchId: string;
+    asset: string;
+    totalRounds: number;
+    model: MatchPriceModel;
+  } | null>(null);
 
   // Keep refs in sync for use inside intervals/timeouts
   useEffect(() => { modeRef.current = mode; }, [mode]);
@@ -390,6 +407,44 @@ export function useGameState(): GameHook {
     );
   }, [playCombatAnimation, playerHP, rivalHP, playerScore, rivalScore]);
 
+  // --- FORCED LOCAL ADVANCE (freeze-proof fallback) ---
+  // If the server predict fails/hangs, never leave the round stuck on
+  // "predictions locked". Resolve this round locally as a defensive draw (no
+  // damage) and advance to the next round. Server resolution remains the
+  // primary path; this only guards the rare failure so the game always flows.
+  const forceLocalAdvance = useCallback(() => {
+    if (roundPhaseRef.current !== "SUBMITTING") return;
+    if (roundProcessedRef.current.includes(activeRoundNumRef.current)) return;
+    roundProcessedRef.current.push(activeRoundNumRef.current);
+    roundPhaseRef.current = "WAITING_SERVER";
+
+    const m = localMatchRef.current;
+    const rNum = activeRoundNumRef.current;
+    const cp = m?.model?.checkpoints?.[rNum - 1];
+    setExecutionStatus("success");
+    playCombatAnimation({
+      roundNum: rNum,
+      actual: cp?.actual ?? "FLAT",
+      playerPrediction: localPredictionRef.current ?? "UP",
+      rivalPrediction: (localPredictionRef.current === "UP" ? "DOWN" : "UP"),
+      playerCorrect: true,
+      rivalCorrect: true,
+      playerDamage: 0,
+      rivalDamage: 0,
+      isCritical: false,
+      knockout: false,
+      startPrice: cp?.startPrice ?? 0,
+      endPrice: cp?.endPrice ?? 0,
+      prices: cp?.prices ?? [],
+      asset: m?.asset ?? "BTC",
+      playerPnL: 0,
+      rivalPnL: 0,
+      playerExecution: null,
+      rivalExecution: null,
+      damage: 0,
+    }, m?.totalRounds ?? 7, playerHP, rivalHP, playerScore, rivalScore);
+  }, [playCombatAnimation, playerHP, rivalHP, playerScore, rivalScore]);
+
   // --- BOT COUNTDOWN TIMER ---
   // Visual countdown only. Server resolves the round via predict endpoint.
   useEffect(() => {
@@ -420,12 +475,23 @@ export function useGameState(): GameHook {
           setPlayerPrediction(auto);
         }
 
-        // Submit to server — server resolves everything. Use a bounded retry
+        // Submit to server — server resolves everything. Use a BOUNDED retry
         // so a transient network/5xx failure cannot leave the round frozen at
-        // ROUND_LOCKED (retry until the server returns a resolved round).
+        // ROUND_LOCKED. After a few attempts, force a local advance so the
+        // game ALWAYS flows to the next round (never freezes).
         const pred = localPredictionRef.current as "UP" | "DOWN";
         setExecutionStatus("executing");
         roundPhaseRef.current = "SUBMITTING";
+
+        let submitAttempts = 0;
+        const retryOrForce = (): void => {
+          submitAttempts += 1;
+          if (submitAttempts >= 6) {
+            forceLocalAdvance();
+            return;
+          }
+          scheduleTimer(attemptSubmit, 600);
+        };
 
         const attemptSubmit = (): void => {
           mp.actions.submitPrediction(pred).then((d) => {
@@ -435,12 +501,12 @@ export function useGameState(): GameHook {
               advanceAfterSubmit(d);
             } else if (roundPhaseRef.current === "SUBMITTING") {
               // No resolved round yet — retry after a short delay
-              scheduleTimer(attemptSubmit, 600);
+              retryOrForce();
             }
           }).catch(() => {
             if (roundPhaseRef.current === "SUBMITTING") {
               // Wait for the server's sticky-close to pass, then retry
-              scheduleTimer(attemptSubmit, 600);
+              retryOrForce();
             }
           });
         };
@@ -593,6 +659,7 @@ export function useGameState(): GameHook {
         mode: mode?.id ?? "battle",
         totalRounds: mode?.rounds ?? 7,
         predictionAsset: selectedPrediction?.asset,
+        amountPerRound: selectedAmount,
       });
       if (res?.matchId) {
         // Store matchId — bot matches MUST have real matchIds
@@ -663,6 +730,7 @@ export function useGameState(): GameHook {
   const confirmDuel = useCallback(() => { setPhase("PREDICTION_SELECT"); }, []);
   const selectPrediction = useCallback((pred: PredictionConfig) => { setSelectedPrediction(pred); startMatch(); }, [startMatch]);
   const selectDifficulty = useCallback((diff: BotDifficulty) => { setBotDifficulty(diff); }, []);
+  const selectAmount = useCallback((amount: number) => { setSelectedAmount(amount); }, []);
 
   const joinMatchmaking = useCallback((selectedRounds: number) => {
     clearAllTimers();
@@ -739,6 +807,7 @@ export function useGameState(): GameHook {
     isReconnecting: !isBotMatch && mp.state.connectionStatus === "reconnecting",
     selectedPrediction,
     botDifficulty,
+    selectedAmount,
     executionStatus,
     executionError,
     lastTxHash,
@@ -751,11 +820,13 @@ export function useGameState(): GameHook {
     rivalBalance: mp.state.serverState?.rivalBalance ?? 100,
     playerStartBalance: mp.state.serverState?.playerStartBalance ?? 100,
     rivalStartBalance: mp.state.serverState?.rivalStartBalance ?? 100,
+    playerAmountPerRound: mp.state.serverState?.playerAmountPerRound ?? 1,
+    rivalAmountPerRound: mp.state.serverState?.rivalAmountPerRound ?? 1,
     selectedMatchId,
     actions: {
       goToHome, goToModeSelect, goToCharSelect, goToLeaderboard,
       goToProfile, goToMatchHistory, goToMatchDetail,
-      selectMode, selectChar, confirmDuel, selectPrediction, selectDifficulty, makePrediction, rematch,
+      selectMode, selectChar, confirmDuel, selectPrediction, selectDifficulty, selectAmount, makePrediction, rematch,
       joinMatchmaking, startPvPMatch, setReady, cancelMatchmaking, fightBotInstead,
     },
   };

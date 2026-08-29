@@ -99,6 +99,9 @@ export interface ServerMatchState {
   rivalBalance: number;
   playerStartBalance: number;
   rivalStartBalance: number;
+  // Per-player independent trade amount (STT) — each player's own stake.
+  playerAmountPerRound?: number;
+  rivalAmountPerRound?: number;
 }
 
 export interface CreateMatchResult {
@@ -142,6 +145,7 @@ export interface MultiplayerActions {
     mode: string;
     totalRounds: number;
     predictionAsset?: string;
+    amountPerRound?: number;
   }) => Promise<CreateMatchResult>;
   fetchState: () => Promise<ServerMatchState | null>;
   submitPrediction: (prediction: "UP" | "DOWN") => Promise<PredictionResult | null>;
@@ -284,6 +288,7 @@ export function useMultiplayer(): UseMultiplayerReturn {
     mode: string;
     totalRounds: number;
     predictionAsset?: string;
+    amountPerRound?: number;
   }): Promise<CreateMatchResult> => {
     setIsLoading(true);
     setLastError(null);
@@ -325,6 +330,8 @@ export function useMultiplayer(): UseMultiplayerReturn {
         rivalBalance: 100,
         playerStartBalance: 100,
         rivalStartBalance: 100,
+        playerAmountPerRound: input.amountPerRound ?? 1,
+        rivalAmountPerRound: 1,
       });
       startPolling(data.matchId);
       setIsLoading(false);
@@ -386,6 +393,8 @@ export function useMultiplayer(): UseMultiplayerReturn {
           winner: data.winner,
           totalRounds: data.totalRounds,
           currentRound: data.currentRound,
+          playerAmountPerRound: (data as any).playerAmountPerRound ?? prev.playerAmountPerRound,
+          rivalAmountPerRound: (data as any).rivalAmountPerRound ?? prev.rivalAmountPerRound,
         };
       });
 
