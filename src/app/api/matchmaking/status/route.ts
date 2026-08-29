@@ -40,6 +40,7 @@ export async function GET(req: Request): Promise<Response> {
     }).lean();
 
     if (activeMatch) {
+      console.log(`[status] addr=${addr.slice(0,6)} matched match=${activeMatch._id} phase=${activeMatch.roundPhase}`);
       return Response.json({
         status: "matched",
         matchId: activeMatch._id,
@@ -51,10 +52,13 @@ export async function GET(req: Request): Promise<Response> {
     const queueEntry = await MatchQueue.findOne({ address: addr, status: "searching" }).lean() as { _id: string; rounds: number; createdAt: Date } | null;
 
     if (!queueEntry) {
+      const anyEntry = await MatchQueue.findOne({ address: addr }).exec();
+      console.log(`[status] addr=${addr.slice(0,6)} idle (no active, no searching; otherQ=${anyEntry ? anyEntry.status : "none"})`);
       return Response.json({ status: "idle" });
     }
 
     const age = Date.now() - new Date(queueEntry.createdAt).getTime();
+    console.log(`[status] addr=${addr.slice(0,6)} searching age=${age}`);
     return Response.json({
       status: "searching",
       queueId: queueEntry._id,

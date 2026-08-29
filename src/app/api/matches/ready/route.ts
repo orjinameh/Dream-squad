@@ -50,6 +50,7 @@ export async function POST(req: Request): Promise<Response> {
     }
 
     await match.save();
+    console.log(`[ready] match=${matchId} addr=${addr.slice(0,6)} isP1=${!!isPlayer1} p1Ready=${match.player1Ready} p2Ready=${match.player2Ready} bothReady=${match.player1Ready && match.player2Ready} roundPhase=${match.roundPhase}`);
 
     // Perspective-safe response
     const myReady = isPlayer1 ? match.player1Ready : match.player2Ready;

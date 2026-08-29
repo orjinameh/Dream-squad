@@ -154,6 +154,7 @@ export async function POST(req: Request): Promise<Response> {
       // Update both queue entries with matchId
       await MatchQueue.updateOne({ _id: queueId }, { $set: { status: "matched", matchId } });
       await MatchQueue.updateOne({ _id: opponent._id }, { $set: { status: "matched", matchId } });
+      console.log(`[join] created match=${matchId} cur=${addr.slice(0,6)} opp=${opponent.address.slice(0,6)}`);
 
       return Response.json({
         status: "matched",
@@ -166,6 +167,7 @@ export async function POST(req: Request): Promise<Response> {
     }
 
     // No opponent found — still searching
+    console.log(`[join] addr=${addr.slice(0,6)} searching queue=${queueId}`);
     return Response.json({ status: "searching", queueId, age: ageNow });
   } catch (err) {
     console.error("matchmaking join failed", err);

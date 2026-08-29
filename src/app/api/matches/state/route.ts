@@ -24,6 +24,7 @@ export async function GET(req: Request): Promise<Response> {
     const now = new Date();
     const isPvP = match.opponentType === "player";
     const isViewerP2 = !!(isPvP && viewerAddress && match.player2Address && normalizeAddress(viewerAddress) === normalizeAddress(match.player2Address));
+    console.log(`[state] match=${matchId} viewer=${viewerAddress ? viewerAddress.slice(0,6) : "none"} st=${match.status} phase=${match.roundPhase} round=${match.currentRound} p1R=${match.player1Ready} p2R=${match.player2Ready} opponentType=${match.opponentType}`);
 
     // Auto-resolve expired bot rounds (server-authoritative)
     if (match.status === "ACTIVE" && match.opponentType === "bot" && match.roundPhase === "ACTIVE" && now.getTime() > match.roundDeadline.getTime()) {
