@@ -138,4 +138,47 @@ describe("PvP matchmaking (two devices)", () => {
     const stale = await Match.findById("stale-waiting").lean();
     expect(stale!.status).toBe("COMPLETED");
   });
+
+  it("abandons a WAITING match on leave so re-joining can't phantom re-pair", async () => {
+    // Reproduce the "both went home, then re-paired with each other" bug:
+    // a player leaves but their ACTIVE/WAITING match survives, so a later join
+    // gets routed back into the old match instead of a fresh pairing.
+    await Match.create({
+      _id: "left-match",
+      playerAddress: A,
+      player2Address: B,
+      playerChar: "dreamer",
+      rivalChar: "dreamer",
+      rivalName: "STALE",
+      mode: "battle",
+      opponentType: "player",
+      status: "ACTIVE",
+      roundPhase: "WAITING",
+      roundDeadline: new Date(Date.now() + 20_000),
+      player1Ready: true,
+      player2Ready: false,
+      totalRounds: 7,
+      currentRound: 1,
+      playerScore: 0,
+      rivalScore: 0,
+      winner: "player",
+      rounds: [],
+      playerPrediction: null,
+      rivalPrediction: null,
+    });
+
+    // Both players leave (go home).
+    await leaveRoute(jsonPost("/api/matchmaking/leave", { address: A }));
+    await leaveRoute(jsonPost("/api/matchmaking/leave", { address: B }));
+
+    const abandoned = await Match.findById("left-match").lean();
+    expect(abandoned!.status).toBe("COMPLETED");
+
+    // Re-join — must start fresh in the queue, not be routed to the old match.
+    const rB = await join(B);
+    expect(rB.status).toBe("searching");
+    const rA = await join(A);
+    expect(rA.status).toBe("matched");
+    expect(rA.matchId).not.toBe("left-match");
+  });
 });
