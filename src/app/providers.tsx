@@ -12,8 +12,8 @@ import { SOMNIA_CHAIN } from "@/lib/config";
 import "@rainbow-me/rainbowkit/styles.css";
 
 const config = getDefaultConfig({
-  appName: "DreamSquad",
-  projectId: process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID || "dreamsquad",
+  appName: "DreamDuel",
+  projectId: process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID || "dreamduel",
   chains: [SOMNIA_CHAIN],
   ssr: true,
 });

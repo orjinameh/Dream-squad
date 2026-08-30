@@ -3,7 +3,7 @@ import { Providers } from "./providers";
 import { WalletButton } from "@/components/WalletButton";
 
 export const metadata: Metadata = {
-  title: "DreamSquad",
+  title: "DreamDuel",
   description: "Retro 1v1 prediction battles on Somnia",
 };
 
@@ -35,7 +35,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               fontSize: 18, fontWeight: 900, letterSpacing: "0.15em",
               color: "#fbbf24", textShadow: "1px 1px 0 #92400e",
               textDecoration: "none",
-            }}>DREAMSQUAD</a>
+            }}>DREAMDUEL</a>
             <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
               <a href="/" style={{ fontSize: 12, color: "#94a3b8", letterSpacing: "0.1em", textDecoration: "none" }}>ARENA</a>
               <a href="/leaderboard" style={{ fontSize: 12, color: "#94a3b8", letterSpacing: "0.1em", textDecoration: "none" }}>RANKS</a>

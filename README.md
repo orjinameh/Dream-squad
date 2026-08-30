@@ -1,6 +1,6 @@
-# DreamSquad
+# DreamDuel
 
-Social co-op prediction market platform. Users pool capital into synchronized "Syndicates" via invite links, and a backend worker executes queued spot-market trades on DreamDEX using operator delegation.
+Retro 1v1 prediction-battle game on Somnia. Two (or one vs a bot) fighters pick UP/DOWN on a live market each round; correct calls land combat damage, streaks and knockouts decide the match, and each round's trade executes on DreamDEX. Supports wallet-to-wallet PvP via matchmaking and a best-of-7 DUEL mode.
 
 ## Architecture
 

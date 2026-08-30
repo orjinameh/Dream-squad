@@ -183,7 +183,7 @@ function HomeScreen({ onEnter, onLeaderboard, onProfile, onHistory, onRejoin }: 
       </div>
 
       <h1 style={{ fontSize: 52, fontWeight: 900, letterSpacing: "0.15em", color: "#fbbf24", textShadow: "3px 3px 0 #92400e, 0 0 30px rgba(251,191,36,0.3)", marginBottom: 8, textAlign: "center" }}>
-        DREAMSQUAD
+        DREAMDUEL
       </h1>
       <p style={{ fontSize: 18, letterSpacing: "0.3em", color: "#a855f7", marginBottom: 40, textShadow: "0 0 15px rgba(168,85,247,0.4)" }}>
         PREDICT. STRIKE. WIN.
