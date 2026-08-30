@@ -40,7 +40,7 @@ export const MARKETS: Record<string, MarketConfig> = {
   },
   "WETH:USDso": {
     symbol: "WETH:USDso",
-    pool: "0x0000000000000000000000000000000000000000", // resolved from kit config in Phase 3
+    pool: "0xD180195da5459C7a0DEA188ed61216ec43682b50",
     baseDecimals: 18,
     quoteDecimals: 18,
     minAmount: 0.001,
@@ -48,7 +48,7 @@ export const MARKETS: Record<string, MarketConfig> = {
   },
   "WBTC:USDso": {
     symbol: "WBTC:USDso",
-    pool: "0x0000000000000000000000000000000000000000",
+    pool: "0x3605f28aA7C50e7441211e77Cb0762d49539326C",
     baseDecimals: 8,
     quoteDecimals: 18,
     minAmount: 0.0001,

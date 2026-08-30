@@ -75,21 +75,20 @@ async function fetchCandles(base: string, limit = 90): Promise<Candle[]> {
         ] }
         order_by: { bucketStart: desc }
         limit: $limit
-      ) { bucketStart open high low close decimals }
+      ) { bucketStart open high low close }
     }`,
     { base, quote: FEED_QUOTE, limit },
   );
   const rows = data?.Candle ?? [];
-  const decimals = rows[0]?.decimals ?? 18;
   return rows
     .slice()
     .reverse()
     .map((c: any) => ({
       time: Number(c.bucketStart) * 1000,
-      open: Number(c.open) / 10 ** decimals,
-      high: Number(c.high) / 10 ** decimals,
-      low: Number(c.low) / 10 ** decimals,
-      close: Number(c.close) / 10 ** decimals,
+      open: Number(c.open) / SCALE,
+      high: Number(c.high) / SCALE,
+      low: Number(c.low) / SCALE,
+      close: Number(c.close) / SCALE,
     }));
 }
 

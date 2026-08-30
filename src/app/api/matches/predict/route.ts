@@ -264,21 +264,15 @@ function roundPnl(value: number): number {
  */
 async function updatePlayerStatsAtomic(match: any, allRounds: any[], winner: string, now: Date) {
   const matchId = match._id;
-  const P1_BET = match.playerAmountPerRound ?? match.executionConfig?.amountPerRound ?? 1;
-  const P2_BET = match.rivalAmountPerRound ?? match.executionConfig?.amountPerRound ?? 1;
 
   // Player 1 stats — atomic: only process if not already processed
   const p1CorrectCount = allRounds.filter((r: any) => r.playerCorrect).length;
-  const p1WrongCount = allRounds.filter((r: any) => !r.playerCorrect && r.playerPrediction).length;
   const p1TotalPreds = allRounds.length;
   const p1LongestStreak = computeLongestStreak(allRounds);
   const p1Win = winner === "player";
   const p1Draw = winner === "draw";
   const p1RankDelta = getPvpWinPoints(p1Win, p1Draw);
   const hasKO = allRounds.some((r: any) => r.knockout);
-
-  // P&L: correct prediction = +bet*(multiplier-1), wrong = -bet (own stake)
-  const p1PnL = (p1CorrectCount * P1_BET * (PAYOUT_MULTIPLIER - 1)) - (p1WrongCount * P1_BET);
 
   await PlayerStats.findOneAndUpdate(
     { _id: normalizeAddress(match.playerAddress), processedMatches: { $ne: matchId } },
@@ -310,8 +304,6 @@ async function updatePlayerStatsAtomic(match: any, allRounds: any[], winner: str
         knockouts: hasKO && p1Win ? 1 : 0,
         timesKnockedOut: hasKO && !p1Win ? 1 : 0,
         rankPoints: p1RankDelta,
-        balance: p1PnL,
-        totalPnL: p1PnL,
       },
       $max: { longestStreak: p1LongestStreak },
       $addToSet: { processedMatches: matchId },
@@ -323,14 +315,12 @@ async function updatePlayerStatsAtomic(match: any, allRounds: any[], winner: str
   // Player 2 stats (PvP only) — same atomic pattern
   if (match.opponentType === "player" && match.player2Address) {
     const p2CorrectCount = allRounds.filter((r: any) => r.rivalCorrect).length;
-    const p2WrongCount = allRounds.filter((r: any) => !r.rivalCorrect && r.rivalPrediction).length;
     const p2Rounds = allRounds.map((r: any) => ({ playerCorrect: r.rivalCorrect }));
     const p2LongestStreak = computeLongestStreak(p2Rounds);
     const p2Win = winner === "rival";
     const p2Draw = winner === "draw";
     const p2RankDelta = getPvpWinPoints(p2Win, p2Draw);
     const p2Addr = normalizeAddress(match.player2Address);
-    const p2PnL = (p2CorrectCount * P2_BET * (PAYOUT_MULTIPLIER - 1)) - (p2WrongCount * P2_BET);
 
     await PlayerStats.findOneAndUpdate(
       { _id: p2Addr, processedMatches: { $ne: matchId } },
@@ -353,8 +343,6 @@ async function updatePlayerStatsAtomic(match: any, allRounds: any[], winner: str
           knockouts: hasKO && p2Win ? 1 : 0,
           timesKnockedOut: hasKO && !p2Win ? 1 : 0,
           rankPoints: p2RankDelta,
-          balance: p2PnL,
-          totalPnL: p2PnL,
         },
         $max: { longestStreak: p2LongestStreak },
         $addToSet: { processedMatches: matchId },
@@ -363,6 +351,21 @@ async function updatePlayerStatsAtomic(match: any, allRounds: any[], winner: str
       { upsert: true },
     );
   }
+}
+
+async function creditRoundPnL(matchId: string, roundNum: number, addr: string, pnl: number, now: Date): Promise<void> {
+  const _addr = normalizeAddress(addr);
+  const key = `${matchId}:${roundNum}`;
+  await PlayerStats.findOneAndUpdate(
+    { _id: _addr, processedRounds: { $ne: key } },
+    {
+      $setOnInsert: { address: _addr },
+      $inc: { balance: pnl, totalPnL: pnl },
+      $addToSet: { processedRounds: key },
+      $set: { lastPlayedAt: now },
+    },
+    { upsert: true },
+  );
 }
 
 export async function POST(req: Request): Promise<Response> {
@@ -546,6 +549,13 @@ export async function POST(req: Request): Promise<Response> {
             }),
           },
         });
+
+        if (roundRecord.playerPnL) {
+          await creditRoundPnL(match._id, roundRecord.roundNum, match.playerAddress, roundRecord.playerPnL, now);
+        }
+        if (match.opponentType === "player" && roundRecord.rivalPnL && match.player2Address) {
+          await creditRoundPnL(match._id, roundRecord.roundNum, match.player2Address, roundRecord.rivalPnL, now);
+        }
 
         // Idempotent stats update for completed matches
         if (matchDecided) {

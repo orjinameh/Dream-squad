@@ -45,6 +45,8 @@ export interface PlayerStatsDoc {
   totalPnL: number;
   // Idempotency: processed match IDs (capped at 200 most recent)
   processedMatches: string[];
+  // Idempotency: processed round P&L credits (key = matchId:roundNum)
+  processedRounds: string[];
 }
 
 const PlayerStatsSchema = new Schema<PlayerStatsDoc>(
@@ -93,6 +95,7 @@ const PlayerStatsSchema = new Schema<PlayerStatsDoc>(
     totalPnL: { type: Number, default: 0 },
     // Idempotency
     processedMatches: { type: [String], default: [] },
+    processedRounds: { type: [String], default: [] },
   },
   { versionKey: false },
 );

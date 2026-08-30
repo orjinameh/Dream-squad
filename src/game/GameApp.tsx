@@ -855,6 +855,20 @@ function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
           }}>
             SOMNIA TESTNET
           </div>
+          {(() => {
+            const pnl = game.roundHistory.reduce((s, r) => s + (r.playerPnL ?? 0), 0);
+            const run = (game.playerStartBalance ?? 100) + pnl;
+            const bal = game.playerBalance ?? run;
+            return (
+              <div style={{
+                fontSize: 10, color: "#38bdf8", letterSpacing: "0.08em",
+                padding: "2px 6px", borderRadius: 3, border: "1px solid #0ea5e9",
+                background: "rgba(14,165,233,0.08)", fontFamily: "'Courier New', monospace",
+              }}>
+                {bal.toFixed(2)} USDso
+              </div>
+            );
+          })()}
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
