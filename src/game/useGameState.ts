@@ -568,10 +568,13 @@ export function useGameState(): GameHook {
       rivalHPRef.current = ss.rivalHP;
     }
 
-    // Track server phase transitions
+    // Track server phase transitions. If we're still waiting in READY_UP (e.g.
+    // a rejoin into a match that already went ACTIVE, or the READY_UP timer
+    // clobbered an earlier ROUND_ACTIVE open), do NOT let the phaseKey guard
+    // swallow the open — we must keep re-triggering until we leave READY_UP.
     const phaseKey = `${ss.currentRound}-${ss.roundPhase}`;
-    if (phaseKey === lastServerPhaseKeyRef.current) return;
-    lastServerPhaseKeyRef.current = phaseKey;
+    if (phaseKey === lastServerPhaseKeyRef.current && phase !== "READY_UP") return;
+    if (phaseKey !== lastServerPhaseKeyRef.current) lastServerPhaseKeyRef.current = phaseKey;
 
     const lastRound = ss.rounds?.[ss.rounds.length - 1];
     // PvP only: bot matches advance deterministically via advanceAfterSubmit on
