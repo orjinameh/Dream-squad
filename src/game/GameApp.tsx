@@ -10,6 +10,9 @@ import { LiveChart } from "./LiveChart";
 import { useMatchmaking } from "./useMatchmaking";
 import { useAccount } from "wagmi";
 import { useDreamDEX } from "./useDreamDEX";
+import { useDreamEscrow } from "./useDreamEscrow";
+import { parseUnits, formatUnits } from "viem";
+import { EC_COLLATERAL_DECIMALS } from "@/lib/ec/config";
 
 export default function GameApp() {
   const g = useGameState();
@@ -19,6 +22,7 @@ export default function GameApp() {
   const { isConnected, address } = useAccount();
   const mm = useMatchmaking(address as `0x${string}` | undefined);
   const dreamDex = useDreamDEX(g.marketSymbol);
+  const escrow = useDreamEscrow(g.isBotMatch ? undefined : (g.matchId ?? undefined));
   const startedMatchRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -85,9 +89,9 @@ export default function GameApp() {
       {g.phase === "PREDICTION_SELECT" && <PredictionSelect asset={(TRADE_MARKETS.find((m) => m.symbol === g.marketSymbol)?.asset) ?? "BTC"} onBack={g.actions.goToCharSelect} onPredict={g.actions.setMatchPrediction} difficulty={g.botDifficulty} onSelectDifficulty={g.actions.selectDifficulty} amount={g.selectedAmount} onSelectAmount={g.actions.selectAmount} char={g.playerChar!} mode={g.mode!} onFightBot={() => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.fightBotInstead(); }} onQuickMatch={() => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.joinMatchmaking(g.mode?.rounds ?? 7); mm.actions.joinQueue(g.mode?.rounds ?? 7, g.playerChar?.id ?? "dreamer"); }} />}
       {g.phase === "MATCHMAKING" && <MatchmakingScreen matchmaking={mm} onFightBot={g.actions.fightBotInstead} onHome={g.actions.cancelMatchmaking} />}
       {g.phase === "MATCH_FOUND" && <MatchFoundScreen game={g} />}
-      {g.phase === "READY_UP" && <ReadyUpScreen game={g} onReady={g.actions.setReady} />}
+      {g.phase === "READY_UP" && <ReadyUpScreen game={g} escrow={escrow} onReady={g.actions.setReady} />}
       {(g.phase === "MATCH_INTRO" || g.phase === "ROUND_START" || g.phase === "ROUND_ACTIVE" || g.phase === "ROUND_LOCKED" || g.phase === "ROUND_EXECUTING" || g.phase === "ROUND_REVEAL" || g.phase === "ROUND_IMPACT") && (
-        <ArenaScreen game={g} />
+        <ArenaScreen game={g} escrow={escrow} />
       )}
       {g.phase === "MATCH_RESULT" && <MatchResult game={g} onRematch={() => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.rematch(); }} />}
       {g.phase === "PROFILE" && <ProfileScreen address={address} onBack={g.actions.goToHome} onHistory={g.actions.goToMatchHistory} />}
@@ -736,10 +740,19 @@ function MatchFoundScreen({ game }: { game: ReturnType<typeof useGameState> }) {
   );
 }
 
-function ReadyUpScreen({ game, onReady }: { game: ReturnType<typeof useGameState>; onReady: () => void }) {
+function ReadyUpScreen({ game, escrow, onReady }: {
+  game: ReturnType<typeof useGameState>;
+  escrow: ReturnType<typeof useDreamEscrow>;
+  onReady: () => void;
+}) {
   const [ready, setReady] = useState(false);
   const [opponentReady, setOpponentReady] = useState(false);
   const [waiting, setWaiting] = useState(false);
+  const [pvpStake, setPvpStake] = useState(game.selectedAmount && game.selectedAmount <= 50 ? game.selectedAmount : 10);
+  const [stakeBusy, setStakeBusy] = useState(false);
+  const [stakeError, setStakeError] = useState<string | null>(null);
+  const [faucetBusy, setFaucetBusy] = useState(false);
+  const stakePresets = [1, 5, 10, 25, 50];
 
   // Poll for ready state
   useEffect(() => {
@@ -760,6 +773,35 @@ function ReadyUpScreen({ game, onReady }: { game: ReturnType<typeof useGameState
   const handleReady = () => {
     setReady(true);
     onReady();
+  };
+
+  const handleStake = async () => {
+    if (!escrow.address) return;
+    setStakeBusy(true);
+    setStakeError(null);
+    try {
+      const amountRaw = parseUnits(String(pvpStake), EC_COLLATERAL_DECIMALS);
+      await escrow.approveAndStake(amountRaw);
+      escrow.refetch();
+    } catch (e) {
+      setStakeError(e instanceof Error ? e.message : "Stake failed");
+    } finally {
+      setStakeBusy(false);
+    }
+  };
+
+  const handleFaucet = async () => {
+    if (!escrow.address) return;
+    setFaucetBusy(true);
+    setStakeError(null);
+    try {
+      await escrow.getFaucet(parseUnits("1000", EC_COLLATERAL_DECIMALS));
+      escrow.refetch();
+    } catch (e) {
+      setStakeError(e instanceof Error ? e.message : "Faucet failed");
+    } finally {
+      setFaucetBusy(false);
+    }
   };
 
   return (
@@ -791,6 +833,80 @@ function ReadyUpScreen({ game, onReady }: { game: ReturnType<typeof useGameState
         </div>
       </div>
 
+      <div style={{
+        width: "100%", maxWidth: 480, marginBottom: 32, padding: "20px 24px",
+        border: "1px solid #334155", borderRadius: 12, background: "rgba(15,23,42,0.7)",
+      }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <div style={{ fontSize: 13, color: "#94a3b8", letterSpacing: "0.1em", fontWeight: 700 }}>PvP POT {"\u2014"} ONCHAIN ESCROW</div>
+          <div style={{ fontSize: 12, color: "#38bdf8", fontFamily: "'Courier New', monospace" }}>
+            tUSDC {escrow.usdcBalanceFormatted ?? "\u2014"}
+          </div>
+        </div>
+
+        {escrow.usdcBalanceFormatted != null && Number(escrow.usdcBalanceFormatted) < 10 && (
+          <button
+            onClick={handleFaucet}
+            disabled={faucetBusy}
+            style={{
+              width: "100%", marginBottom: 10, padding: "8px 12px", borderRadius: 6, cursor: "pointer",
+              border: "1px dashed #f59e0b", background: "rgba(245,158,11,0.08)", color: "#fbbf24",
+              fontWeight: 700, fontSize: 12,
+            }}
+          >
+            {faucetBusy ? "MINTING 1000 tUSDC..." : "+ GET 1000 TEST tUSDC FROM THE TESTNET FAUCET"}
+          </button>
+        )}
+
+        <div style={{ fontSize: 12, color: "#64748b", marginBottom: 12 }}>
+          Real tUSDC is pledged to the DreamDuel escrow. Winner takes the pot on-chain; both players must stake the SAME amount.
+        </div>
+
+        <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
+          {stakePresets.map((a) => (
+            <button
+              key={a}
+              onClick={() => setPvpStake(a)}
+              style={{
+                padding: "6px 12px", borderRadius: 6, cursor: "pointer",
+                border: pvpStake === a ? "2px solid #38bdf8" : "1px solid #334155",
+                background: pvpStake === a ? "rgba(14,165,233,0.15)" : "#0f172a",
+                color: "#e2e8f0", fontWeight: 700, fontSize: 13,
+              }}
+            >
+              {a} tUSDC
+            </button>
+          ))}
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10, fontSize: 12, color: "#94a3b8" }}>
+          <span>YOU: {escrow.hasStaked ? "\u2713 STAKED" : "NOT STAKED"}</span>
+          <span style={{ color: "#334155" }}>|</span>
+          <span>OPPONENT: {escrow.bothStaked && escrow.hasStaked ? "\u2713" : escrow.bothStaked ? "\u2713 STAKED" : "NOT STAKED"}</span>
+          <span style={{ color: "#334155" }}>|</span>
+          <span>POT: {escrow.stakeAmountFormatted ? (Number(escrow.stakeAmountFormatted) * 2).toString() : "0"} tUSDC</span>
+        </div>
+
+        {escrow.hasStaked ? (
+          <div style={{ fontSize: 12, color: "#10b981", fontWeight: 700 }}>Your tUSDC is locked in escrow for this duel.</div>
+        ) : (
+          <button
+            onClick={handleStake}
+            disabled={stakeBusy || (!escrow.address)}
+            style={{ ...ctaButtonStyle, fontSize: 14, padding: "10px 20px", opacity: stakeBusy ? 0.6 : 1, cursor: stakeBusy ? "wait" : "pointer" }}
+          >
+            {stakeBusy ? "APPROVING + STAKING..." : escrow.allowance == null ? "APPROVE + STAKE" : "\u2694 STAKE " + pvpStake + " tUSDC"}
+          </button>
+        )}
+
+        {!escrow.address && (
+          <div style={{ marginTop: 8, fontSize: 11, color: "#f59e0b" }}>Connect your wallet to pledge tUSDC.</div>
+        )}
+        {stakeError && (
+          <div style={{ marginTop: 8, fontSize: 11, color: "#ef4444", wordBreak: "break-word" }}>{stakeError}</div>
+        )}
+      </div>
+
       {!ready ? (
         <button onClick={handleReady} style={{ ...ctaButtonStyle, fontSize: 18, padding: "14px 48px" }}>
           {"\u2713"} READY UP
@@ -804,7 +920,7 @@ function ReadyUpScreen({ game, onReady }: { game: ReturnType<typeof useGameState
   );
 }
 
-function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
+function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; escrow: ReturnType<typeof useDreamEscrow> }) {
   const [countdown, setCountdown] = useState(3);
   const [showResult, setShowResult] = useState(false);
   const [revealText, setRevealText] = useState("");
@@ -881,16 +997,14 @@ function ArenaScreen({ game }: { game: ReturnType<typeof useGameState> }) {
             SOMNIA TESTNET
           </div>
           {(() => {
-            const pnl = game.roundHistory.reduce((s, r) => s + (r.playerPnL ?? 0), 0);
-            const run = (game.playerStartBalance ?? 100) + pnl;
-            const bal = game.playerBalance ?? run;
+            const bal = escrow.usdcBalanceFormatted;
             return (
               <div style={{
                 fontSize: 10, color: "#38bdf8", letterSpacing: "0.08em",
                 padding: "2px 6px", borderRadius: 3, border: "1px solid #0ea5e9",
                 background: "rgba(14,165,233,0.08)", fontFamily: "'Courier New', monospace",
               }}>
-                {bal.toFixed(2)} USDso
+                {bal != null ? bal + " tUSDC" : "tUSDC \u2014"}
               </div>
             );
           })()}
@@ -1804,7 +1918,8 @@ function MatchDetailScreen({ matchId, address, onBack }: { matchId: string | nul
               const isFlat = r.actual === "FLAT";
               const accent = isFlat ? "#64748b" : ok ? "#10b981" : "#ef4444";
               const exec = r.playerExecution;
-              return (
+
+  return (
                 <div key={r.roundNum} style={{
                   border: `1px solid ${accent}${"55"}`,
                   borderRadius: 6, padding: "8px 12px",

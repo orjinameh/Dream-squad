@@ -10,6 +10,8 @@ export type RoundPhase = (typeof ROUND_PHASE)[number];
 
 export type StatsProcessedStatus = "PENDING" | "PROCESSING" | "COMPLETE" | "FAILED";
 
+export type EscrowStatus = "PENDING" | "SETTLED" | "DRAWN" | "FAILED";
+
 export interface RoundRecord {
   roundNum: number;
   playerPrediction: "UP" | "DOWN" | null;
@@ -115,6 +117,8 @@ export interface MatchDoc {
   priceModel?: MatchPriceModel;
   // Stats idempotency (lifecycle)
   statsProcessed: StatsProcessedStatus;
+  // On-chain escrow settlement state (PvP only)
+  escrowStatus?: EscrowStatus;
 }
 
 const ROUND_DURATION_MS = 10_000;
@@ -229,6 +233,7 @@ const MatchSchema = new Schema<MatchDoc>(
     rivalFinalBalance: { type: Number },
     priceModel: { type: Schema.Types.Mixed },
     statsProcessed: { type: String, enum: ["PENDING", "PROCESSING", "COMPLETE", "FAILED"], default: "PENDING" },
+    escrowStatus: { type: String, enum: ["PENDING", "SETTLED", "DRAWN", "FAILED"], default: "PENDING" },
   },
   { versionKey: false },
 );

@@ -5,16 +5,12 @@ import { normalizeAddress } from "@/lib/addresses";
 import { jsonError } from "@/lib/utils";
 import { executeGameRound, type RoundExecutionResult } from "@/lib/operator";
 import { getPvpWinPoints } from "@/lib/rank";
+import { settlePvpMatchEscrow } from "@/lib/ec/settleMatch";
+import { findArenaFloor, readArenaPrice, type EcArenaMarket } from "@/lib/ec/executor";
 import { z } from "zod";
 import { isAddress } from "viem";
-import { fetchLivePriceUsd } from "@/lib/prices-api";
 
 const PAYOUT_MULTIPLIER = 1.8;
-
-// Live one-tick resolution keeps the market noisy even when the live feed only
-// moves a few bps, so round outcomes aren't trivially predictable. Anything
-// within this band is judged FLAT.
-const LIVE_RESOLUTION_FLAT_BAND_PCT = 0.0005;
 
 const MAX_HP = 100;
 const BASE_DAMAGE = 15;
@@ -40,6 +36,37 @@ function computeLongestStreak(rounds: Array<{ playerCorrect: boolean }>): number
     else { current = 0; }
   }
   return max;
+}
+
+// Flat band for the EC YES-price oracle (probability scale 0..1). Any round
+// whose YES mid moves by less than this is judged FLAT.
+const EC_ORACLE_FLAT_BAND = 0.0008;
+
+/**
+ * Resolve the Event-Contract arena floor a match's rounds run inside. Reuses
+ * the arena already pinned on the match while it is still live, otherwise
+ * discovers the freshest active BTC/ETH binary window via `findArenaFloor` and
+ * pins it on the match. Returns null when no live EC floor exists right now
+ * (the arena between windows / pre-resolution) — the caller falls back to an
+ * honest FLAT no-op rather than faking a price.
+ */
+async function ecArenaForMatch(match: any, asset: "BTC" | "ETH"): Promise<EcArenaMarket | null> {
+  const pinned = match.priceModel?.arena as EcArenaMarket | undefined;
+  const now = Math.floor(Date.now() / 1000);
+  if (pinned?.marketId && pinned.expiry > now) {
+    return pinned;
+  }
+  try {
+    const arena = await findArenaFloor(asset, 30);
+    if (!arena) return null;
+    await import("@/db/models/Match").then(({ Match }) =>
+      Match.updateOne({ _id: match._id }, { $set: { "priceModel.arena": arena } }),
+    ).catch(() => {});
+    return arena;
+  } catch (err) {
+    console.error(`[predict] arena floor discovery failed for ${asset}`, err);
+    return null;
+  }
 }
 
 /**
@@ -112,27 +139,30 @@ async function resolveRound(match: any, now: Date): Promise<{
     rivalResult = await executeGameRound(marketSymbol, match.player2Address, rivalPred, roundNumber, matchId, rivalBet);
   }
 
-  // REAL PRICE RESOLUTION — the DreamDEX oracle is the only source. The round's
-  // open is anchored to the match entry price (round 1) or the previous round's
-  // real close; the close is the live oracle spot fetched at resolution. No
-  // synthetic path exists: if the real price can't be read, resolution throws
-  // and the outer handler records an honest no-op draw (never a fake UP/DOWN).
-  const entryPrice = match.priceModel?.entryPrice ?? 0;
+  // REAL EC ORACLE RESOLUTION — the Event-Contract order book is the only
+  // source. Each round reads the arena's live YES mid from its real order book
+  // and derives direction from the delta vs. the round anchor. If the arena
+  // floor isn't live or the book has no two-sided quote, resolution throws and
+  // the outer handler records an honest no-op draw (never a fake UP/DOWN).
   const resolvedRounds = match.rounds ?? [];
   const prevRound = resolvedRounds.length > 0 ? resolvedRounds[resolvedRounds.length - 1] : undefined;
-  const anchorOpen = roundNumber === 1 ? entryPrice : (prevRound?.endPrice ?? entryPrice);
-  const asset = match.priceModel?.asset ?? match.predictionAsset ?? "BTC";
+  const entryPrice = match.priceModel?.entryPrice ?? 0;
+  const arenaSeed = prevRound?.endPrice ?? entryPrice;
+  const asset = (match.priceModel?.asset ?? match.predictionAsset ?? "BTC") as "BTC" | "ETH";
 
-  const liveClose = await fetchLivePriceUsd(marketSymbol);
-  if (liveClose == null || !(anchorOpen > 0)) {
-    throw new Error(`real price unavailable for ${marketSymbol} (open=${anchorOpen} close=${liveClose})`);
+  const arena = await ecArenaForMatch(match, asset);
+  if (!arena) {
+    throw new Error(`no live EC arena floor for ${asset} — arena is between windows`);
+  }
+  const quote = await readArenaPrice(arena);
+  if (quote.yesPrice == null || !(arenaSeed > 0)) {
+    throw new Error(`EC YES price unavailable for ${arena.marketId} (seed=${arenaSeed})`);
   }
 
-  const band = anchorOpen * LIVE_RESOLUTION_FLAT_BAND_PCT;
-  const diff = liveClose - anchorOpen;
-  const actual: "UP" | "DOWN" | "FLAT" = diff > band ? "UP" : diff < -band ? "DOWN" : "FLAT";
-  const startPrice = anchorOpen;
-  const endPrice = liveClose;
+  const diff = quote.yesPrice - arenaSeed;
+  const actual: "UP" | "DOWN" | "FLAT" = diff > EC_ORACLE_FLAT_BAND ? "UP" : diff < -EC_ORACLE_FLAT_BAND ? "DOWN" : "FLAT";
+  const startPrice = arenaSeed;
+  const endPrice = quote.yesPrice;
   const volume = [startPrice, endPrice];
 
   const isFlat = actual === "FLAT";
@@ -494,6 +524,7 @@ export async function POST(req: Request): Promise<Response> {
           const updated = await Match.findById(match._id);
           if (updated && nextStatus === "COMPLETED") {
             await updatePlayerStatsAtomic(updated, updated.rounds, "draw", now);
+            await settlePvpMatchEscrow(updated);
           }
           return Response.json(buildState(updated!, now));
         }
@@ -562,6 +593,8 @@ export async function POST(req: Request): Promise<Response> {
           const matchForStats = { ...(typeof claim.toObject === "function" ? claim.toObject() : claim), rounds: allRounds };
           await updatePlayerStatsAtomic(matchForStats, allRounds, winner, now);
           await Match.findByIdAndUpdate(match._id, { $set: { statsProcessed: "COMPLETE" as StatsProcessedStatus } });
+          // Real on-chain pot settlement (PvP only): pay the winner / refund both.
+          await settlePvpMatchEscrow(matchForStats);
         }
 
         const updated = await Match.findById(match._id);
@@ -618,6 +651,7 @@ export async function POST(req: Request): Promise<Response> {
         if (decided && updated) {
           await updatePlayerStatsAtomic(updated, updated.rounds ?? [], "draw", now);
           await Match.findByIdAndUpdate(match._id, { $set: { statsProcessed: "COMPLETE" as StatsProcessedStatus } });
+          await settlePvpMatchEscrow(updated);
           const finalized = await Match.findById(match._id);
           return Response.json({ ...buildState(finalized!, now), executionFailed: true, error: "DreamDEX execution failed, round recorded as no-op" });
         }

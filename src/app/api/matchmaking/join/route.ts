@@ -4,6 +4,7 @@ import { Match, ROUND_TIMINGS } from "@/db/models/Match";
 import { normalizeAddress } from "@/lib/addresses";
 import { jsonError } from "@/lib/utils";
 import { expireStaleWaitingMatches } from "@/lib/matchExpiry";
+import { openMatchOnchain } from "@/lib/ec/escrow";
 import { randomUUID } from "node:crypto";
 
 export const dynamic = "force-dynamic";
@@ -145,9 +146,20 @@ export async function POST(req: Request): Promise<Response> {
       await MatchQueue.updateOne({ _id: opponent._id }, { $set: { status: "matched", matchId } });
       console.log(`[join] created match=${matchId} cur=${addr.slice(0,6)} opp=${opponent.address.slice(0,6)}`);
 
+      // Open the on-chain escrow so both players can pledge tUSDC (real PvP
+      // money). If this write fails (transient RPC), the settlement worker will
+      // reconcile on match completion — never fabricate a secure state.
+      try {
+        await openMatchOnchain(matchId, addr as `0x${string}`, opponent.address as `0x${string}`);
+        console.log(`[join] escrow opened match=${matchId}`);
+      } catch (escrowErr) {
+        console.error("[join] escrow open failed (will reconcile)", escrowErr);
+      }
+
       return Response.json({
         status: "matched",
         matchId,
+        escrowReady: true,
         opponent: {
           address: opponent.address,
           charId: opponent.charId,

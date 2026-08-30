@@ -126,11 +126,17 @@ describe("POST /api/matches/predict", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.rounds.length).toBe(1);
-    // This test's market (default SOMI:USDso) has no DreamDEX oracle row, so
-    // real resolution is impossible and the round is recorded as an honest
-    // no-op FLAT draw — never a fabricated UP/DOWN.
-    expect(body.rounds[0].actual).toBe("FLAT");
-    expect(body.rounds[0].playerCorrect).toBe(false);
+    // A bot match resolves against the real EC YES oracle whenever a live
+    // BTC arena window exists, else records an honest no-op FLAT draw. Either
+    // way the recorded round must be internally consistent — never fabricated.
+    const round = body.rounds[0];
+    expect(["UP", "DOWN", "FLAT"]).toContain(round.actual);
+    const pred = round.playerPrediction;
+    if (round.actual === "FLAT") {
+      expect(round.playerCorrect).toBe(false);
+    } else {
+      expect(round.playerCorrect).toBe(pred === round.actual);
+    }
   });
 });
 
