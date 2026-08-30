@@ -104,6 +104,8 @@ export async function GET(req: Request): Promise<Response> {
       rank: rankInfo,
       rankLabel,
       leaderboardRank: rank,
+      // Trading balance (USDso)
+      balance: stats.balance ?? 100,
       // Active match
       activeMatchId: activeMatch?._id ?? null,
     });

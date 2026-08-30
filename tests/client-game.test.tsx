@@ -163,19 +163,16 @@ describe("client bot game full loop", () => {
       r = renderer(<Probe />);
     });
 
-    // Full bot flow
+    // Full bot flow — pick the call up front (locked), then fight the bot.
     act(() => { latest!.actions.selectMarket(DEFAULT_TRADE_MARKET); });
     await waitFor((h) => h.phase === "CHAR_SELECT", 3000, "CHAR_SELECT");
     act(() => { latest!.actions.selectChar(CHARACTERS[0]); });
-    await waitFor((h) => h.phase === "DUEL_CONFIRM", 3000, "DUEL_CONFIRM");
-    act(() => { latest!.actions.confirmDuel(); });
     await waitFor((h) => h.phase === "PREDICTION_SELECT", 3000, "PREDICTION_SELECT");
-    act(() => { latest!.actions.selectPrediction({ id: "btc", asset: "BTC", question: "", color: "#000" }); });
+    act(() => { latest!.actions.setMatchPrediction("UP"); });
+    act(() => { latest!.actions.fightBotInstead(); });
     await waitFor((h) => h.phase === "ROUND_ACTIVE", 10_000, "first ROUND_ACTIVE");
 
-    // Make a prediction on round 1, then let subsequent rounds resolve via the
-    // bot countdown timer (the realistic "no-pick" auto-play path).
-    act(() => { latest!.actions.makePrediction("UP"); });
+    // Every round auto-uses the locked pre-match call (no in-match picking).
     await waitFor((h) => h.roundHistory.length >= 1, 30_000, "round 1 resolved");
 
     // Should advance automatically through the remaining rounds without further taps
@@ -198,23 +195,24 @@ describe("client bot game full loop", () => {
     act(() => { latest!.actions.selectMarket(DEFAULT_TRADE_MARKET); });
     await waitFor((h) => h.phase === "CHAR_SELECT", 3000, "CHAR_SELECT");
     act(() => { latest!.actions.selectChar(CHARACTERS[0]); });
-    await waitFor((h) => h.phase === "DUEL_CONFIRM", 3000, "DUEL_CONFIRM");
-    act(() => { latest!.actions.confirmDuel(); });
     await waitFor((h) => h.phase === "PREDICTION_SELECT", 3000, "PREDICTION_SELECT");
-    act(() => { latest!.actions.selectPrediction({ id: "btc", asset: "BTC", question: "", color: "#000" }); });
+    act(() => { latest!.actions.setMatchPrediction("UP"); });
+    act(() => { latest!.actions.fightBotInstead(); });
     await waitFor((h) => h.phase === "ROUND_ACTIVE", 10_000, "first ROUND_ACTIVE");
 
-    // Pick UP — the position commits for the live round.
-    act(() => { latest!.actions.makePrediction("UP"); });
+    // The pre-match call is seeded into the open round and is locked.
     expect(latest!.playerPrediction).toBe("UP");
+    expect(latest!.lockedCall).toBe("UP");
 
     // The round must NOT resolve instantly on the pick — it stays open (timer running).
     expect(latest!.roundHistory.length).toBe(0);
     expect(latest!.phase).toBe("ROUND_ACTIVE");
 
-    // Attempting to change to DOWN is ignored — the live-round choice is locked.
+    // Attempting to change the call mid-match is ignored — makePrediction is a
+    // no-op once a call is locked for the fight.
     act(() => { latest!.actions.makePrediction("DOWN"); });
     expect(latest!.playerPrediction).toBe("UP");
+    expect(latest!.lockedCall).toBe("UP");
 
     // Resolves when the round closes (timeout), with the locked pick.
     await waitFor((h) => h.roundHistory.length >= 1, 25_000, "round resolves at close (not on pick)");
@@ -242,14 +240,12 @@ describe("client bot game full loop", () => {
     act(() => { latest!.actions.selectMarket(DEFAULT_TRADE_MARKET); });
     await waitFor((h) => h.phase === "CHAR_SELECT", 3000, "CHAR_SELECT");
     act(() => { latest!.actions.selectChar(CHARACTERS[0]); });
-    await waitFor((h) => h.phase === "DUEL_CONFIRM", 3000, "DUEL_CONFIRM");
-    act(() => { latest!.actions.confirmDuel(); });
     await waitFor((h) => h.phase === "PREDICTION_SELECT", 3000, "PREDICTION_SELECT");
-    act(() => { latest!.actions.selectPrediction({ id: "btc", asset: "BTC", question: "", color: "#000" }); });
+    act(() => { latest!.actions.setMatchPrediction("UP"); });
+    act(() => { latest!.actions.fightBotInstead(); });
     await waitFor((h) => h.phase === "ROUND_ACTIVE", 10_000, "first ROUND_ACTIVE");
 
-    // Tap a prediction — first submit fails (500), retry must succeed.
-    act(() => { latest!.actions.makePrediction("UP"); });
+    // The round auto-submits the locked call; first submit fails (500), retry must succeed.
     await waitFor((h) => h.roundHistory.length >= 1, 25_000, "round 1 resolved after retry");
     expect(predictCalls).toBeGreaterThanOrEqual(2);
     r?.unmount();

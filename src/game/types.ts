@@ -75,12 +75,14 @@ export interface TradeMarket {
 }
 
 export const TRADE_MARKETS: TradeMarket[] = (
-  ["SOMI:USDso", "WETH:USDso", "WBTC:USDso"] as const
+  ["WETH:USDso", "WBTC:USDso"] as const
 ).map((symbol) => {
   const m = MARKETS[symbol];
-  const asset = symbol.replace(":USDso", "");
-  const live = symbol === "SOMI:USDso";
-  const color = symbol === "SOMI:USDso" ? "#10b981" : symbol === "WETH:USDso" ? "#627eea" : "#f59e0b";
+  const asset = symbol === "WBTC:USDso" ? "BTC" : "ETH";
+  // Binary contracts on DreamDEX are strictly BTC and ETH. Both are live
+  // deployable pools; bets/payouts settle in USDso.
+  const live = true;
+  const color = asset === "BTC" ? "#f59e0b" : "#627eea";
   return {
     symbol,
     asset,
@@ -110,7 +112,6 @@ export interface PredictionConfig {
 export const PREDICTIONS: PredictionConfig[] = [
   { id: "btc", asset: "BTC", question: "WILL BTC GO UP OR DOWN?", color: "#f59e0b" },
   { id: "eth", asset: "ETH", question: "WILL ETH GO UP OR DOWN?", color: "#627eea" },
-  { id: "somi", asset: "SOMI", question: "WILL SOMI GO UP OR DOWN?", color: "#10b981" },
 ];
 
 export interface RoundResult {

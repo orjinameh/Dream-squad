@@ -44,6 +44,7 @@ export interface GameActions {
   selectChar: (char: CharacterDef) => void;
   confirmDuel: () => void;
   selectPrediction: (pred: PredictionConfig) => void;
+  setMatchPrediction: (pred: "UP" | "DOWN") => void;
   selectDifficulty: (diff: BotDifficulty) => void;
   selectAmount: (amount: number) => void;
   makePrediction: (pred: "UP" | "DOWN") => void;
@@ -70,6 +71,7 @@ export interface GameHook {
   rivalStreak: number;
   timeLeft: number;
   playerPrediction: Prediction;
+  lockedCall: "UP" | "DOWN" | null;
   roundResult: RoundResult | null;
   roundHistory: RoundResult[];
   hitEffect: "none" | "player-hit" | "rival-hit" | "both-hit";
@@ -156,6 +158,10 @@ export function useGameState(): GameHook {
   const [selectedPrediction, setSelectedPrediction] = useState<PredictionConfig>(PREDICTIONS[0]);
   const [botDifficulty, setBotDifficulty] = useState<BotDifficulty>("normal");
   const [selectedAmount, setSelectedAmount] = useState<number>(1);
+  // The player's single, locked call for the whole match — chosen once on the
+  // pre-match prediction screen. It is carried across every round and can never
+  // change once the match starts (no per-round re-picking).
+  const [storedPrediction, setStoredPrediction] = useState<"UP" | "DOWN" | null>(null);
   const [executionStatus, setExecutionStatus] = useState<"idle" | "executing" | "success" | "failed" | "retrying">("idle");
   const [executionError, setExecutionError] = useState<string | null>(null);
   const [lastTxHash, setLastTxHash] = useState<string | null>(null);
@@ -175,6 +181,7 @@ export function useGameState(): GameHook {
   const enteredFromIntroRef = useRef(false);
   const modeRef = useRef<GameMode | null>(null);
   const localPredictionRef = useRef<Prediction>(null);
+  const storedPredictionRef = useRef<"UP" | "DOWN" | null>(null);
   const phaseRef = useRef<GamePhase>("HOME");
   const playerHPRef = useRef(MAX_HP);
   const rivalHPRef = useRef(MAX_HP);
@@ -365,8 +372,10 @@ export function useGameState(): GameHook {
       } else {
         setPlayerCharState("idle"); setRivalCharState("idle");
         setRoundResult(null); setLastDamage(null);
-        setLocalPrediction(null); setPlayerPrediction(null);
-        setLockedPrediction(null);
+        // The player's call is locked for the whole match: seed every round with
+        // the pre-chosen position instead of asking them to re-pick.
+        setLocalPrediction(storedPredictionRef.current); setPlayerPrediction(storedPredictionRef.current);
+        setLockedPrediction(storedPredictionRef.current);
         setPredictionUIStatus("idle");
         const nextRound = rNum + 1;
         setDisplayRound(nextRound);
@@ -670,9 +679,9 @@ export function useGameState(): GameHook {
       roundIdentityRef.current = `${isBotMatch ? "bot" : "pvp"}-${ss.currentRound}`;
       activeRoundNumRef.current = ss.currentRound;
       roundPhaseRef.current = "LOCKED";
-      setLocalPrediction(null);
-      setPlayerPrediction(null);
-      setLockedPrediction(null);
+      setLocalPrediction(storedPredictionRef.current);
+      setPlayerPrediction(storedPredictionRef.current);
+      setLockedPrediction(storedPredictionRef.current);
       setPredictionUIStatus("idle");
       setRoundResult(null);
       setLastDamage(null);
@@ -726,7 +735,8 @@ export function useGameState(): GameHook {
     setPlayerScore(0); setRivalScore(0);
     setPlayerStreak(0); setRivalStreak(0);
     setRoundHistory([]); setRoundResult(null);
-    setPlayerPrediction(null); setLocalPrediction(null); setLockedPrediction(null);
+    // Seed round 1 with the locked pre-match call.
+    setPlayerPrediction(storedPredictionRef.current); setLocalPrediction(storedPredictionRef.current); setLockedPrediction(storedPredictionRef.current);
     setHitEffect("none"); setShakeScreen(false);
     setShowStreak(null);
     setPlayerCharState("idle"); setRivalCharState("idle");
@@ -782,22 +792,20 @@ export function useGameState(): GameHook {
   // You pick your position ONCE as the round goes live. From then on the the
   // choice is LOCKED for the fight — only the live chart updates (no mid-round
   // repositioning). The locked choice is cleared when the round resolves.
-  const makePrediction = useCallback((pred: "UP" | "DOWN") => {
+  // The player's call is decided ONCE before the match and locked for the whole
+  // fight. In-match there is nothing to re-pick: each round automatically uses
+  // the stored call (see the round-open seeding). Kept as a no-op defensively so
+  // any lingering UI button can never flip the position mid-match.
+  const makePrediction = useCallback((_pred: "UP" | "DOWN") => {
+    if (storedPrediction) return;
     if (phase !== "ROUND_ACTIVE") return;
-    // Lock: ignore further changes once a position is committed this round.
-    if (lockedPrediction) return;
-
-    setLocalPrediction(pred);
-    setPlayerPrediction(pred);
-    setLockedPrediction(pred);
+    setLocalPrediction(_pred);
+    setPlayerPrediction(_pred);
+    setLockedPrediction(_pred);
     setPredictionUIStatus("selected");
 
-    // PvP: store the locked position server-side immediately so the round can
-    // resolve as soon as BOTH players have picked (no waiting for the 10s
-    // deadline). The countdown effect still auto-submits at timeout as a
-    // fallback for a player who never taps a side.
     if (!isBotMatch) {
-      mp.actions.submitPrediction(pred).then((d) => {
+      mp.actions.submitPrediction(_pred).then((d) => {
         if (d && d.rounds && d.rounds.length) {
           roundPhaseRef.current = "WAITING_SERVER";
           setExecutionStatus("success");
@@ -808,7 +816,7 @@ export function useGameState(): GameHook {
         roundPhaseRef.current = "LOCKED";
       });
     }
-  }, [phase, lockedPrediction, isBotMatch, mp.actions]);
+  }, [phase, storedPrediction, isBotMatch, mp.actions]);
 
   const rematch = useCallback(() => {
     clearAllTimers();
@@ -820,6 +828,7 @@ export function useGameState(): GameHook {
     lastServerPhaseKeyRef.current = null;
     setPhase("CHAR_SELECT");
     setPlayerPrediction(null); setLocalPrediction(null); setLockedPrediction(null);
+    setStoredPrediction(null); storedPredictionRef.current = null;
     setRoundResult(null); setRoundHistory([]);
     setPlayerScore(0); setRivalScore(0);
     setPlayerStreak(0); setRivalStreak(0);
@@ -842,9 +851,14 @@ export function useGameState(): GameHook {
   const goToMatchHistory = useCallback(() => { setPhase("MATCH_HISTORY"); }, []);
   const goToMatchDetail = useCallback((matchId: string) => { setSelectedMatchId(matchId); setPhase("MATCH_DETAIL"); }, []);
   const selectMarket = useCallback((m: TradeMarket) => { setMarketSymbol(m.symbol); setMode(DEFAULT_MODE); setPhase("CHAR_SELECT"); }, []);
-  const selectChar = useCallback((c: CharacterDef) => { setPlayerChar(c); setPhase("DUEL_CONFIRM"); }, []);
+  const selectChar = useCallback((c: CharacterDef) => { setPlayerChar(c); setPhase("PREDICTION_SELECT"); }, []);
   const confirmDuel = useCallback(() => { setPhase("PREDICTION_SELECT"); }, []);
-  const selectPrediction = useCallback((pred: PredictionConfig) => { setSelectedPrediction(pred); startMatch(); }, [startMatch]);
+  const selectPrediction = useCallback((pred: PredictionConfig) => { setSelectedPrediction(pred); }, []);
+  const setMatchPrediction = useCallback((c: "UP" | "DOWN") => {
+    setSelectedPrediction((prev) => ({ ...prev, prediction: c }));
+    setStoredPrediction(c);
+    storedPredictionRef.current = c;
+  }, []);
   const selectDifficulty = useCallback((diff: BotDifficulty) => { setBotDifficulty(diff); }, []);
   const selectAmount = useCallback((amount: number) => { setSelectedAmount(amount); }, []);
 
@@ -895,9 +909,9 @@ export function useGameState(): GameHook {
   const fightBotInstead = useCallback(() => {
     clearAllTimers();
     mp.actions.reset();
-    setPhase("CHAR_SELECT");
     setIsBotMatch(true);
-  }, [clearAllTimers, mp.actions]);
+    startMatch();
+  }, [clearAllTimers, mp.actions, startMatch]);
 
   const connectionDisplay: ConnectionStatus = isBotMatch ? "local" : mp.state.connectionStatus;
 
@@ -910,6 +924,7 @@ export function useGameState(): GameHook {
     playerStreak: mp.state.serverState?.playerStreak ?? playerStreak,
     rivalStreak: mp.state.serverState?.rivalStreak ?? rivalStreak,
     timeLeft, playerPrediction: localPrediction,
+    lockedCall: storedPrediction,
     roundResult, roundHistory,
     hitEffect, shakeScreen, showStreak,
     playerCharState, rivalCharState,
@@ -942,7 +957,7 @@ export function useGameState(): GameHook {
     actions: {
       goToHome, goToMarketSelect, goToCharSelect, goToLeaderboard,
       goToProfile, goToMatchHistory, goToMatchDetail,
-      selectMarket, selectChar, confirmDuel, selectPrediction, selectDifficulty, selectAmount, makePrediction, rematch,
+      selectMarket, selectChar, confirmDuel, selectPrediction, setMatchPrediction, selectDifficulty, selectAmount, makePrediction, rematch,
       joinMatchmaking, startPvPMatch, setReady, cancelMatchmaking, fightBotInstead,
     },
   };
