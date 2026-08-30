@@ -528,6 +528,19 @@ export function useGameState(): GameHook {
   // Responds to server state changes for both bot and PvP matches
   useEffect(() => {
     const ss = mp.state.serverState;
+    // PvP: hydrate the player/rival character objects from the server-provided
+    // charId strings. In PvP startPvPMatch never sets rivalChar, so without this
+    // the ArenaScreen would render RetroCharacter with a null char and crash
+    // on char.colors the instant the round opens.
+    if (!isBotMatch && ss?.playerChar) {
+      const pc = CHARACTERS.find((c) => c.id === ss.playerChar);
+      if (pc && pc.id !== playerChar?.id) setPlayerChar(pc);
+    }
+    if (!isBotMatch && ss?.rivalChar) {
+      const rc = CHARACTERS.find((c) => c.id === ss.rivalChar);
+      if (rc && rc.id !== rivalChar?.id) setRivalChar(rc);
+      if (ss.rivalName && ss.rivalName !== rivalName) setRivalName(ss.rivalName);
+    }
     if (!ss || ss.status !== "ACTIVE") {
       // Check for completed match
       if (ss && ss.status === "COMPLETED" && phase !== "MATCH_RESULT") {
