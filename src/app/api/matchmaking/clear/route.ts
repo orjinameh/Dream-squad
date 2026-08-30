@@ -20,15 +20,15 @@ export async function POST(): Promise<Response> {
 
     const queueCleared = await MatchQueue.deleteMany({});
 
-    // Abandon open PvP matches that never started (still WAITING for readiness)
-    // OR are freshly ACTIVE but stale — these are the ones that hijack pairing.
+    // Abandon ANY open ACTIVE PvP match (started or not) — this is the manual
+    // reset button, so every leftover match is scrubbed; these are the ones
+    // that otherwise show up as "REJOIN MATCH" or hijack a fresh pairing.
     const abandoned = await Match.updateMany(
       {
         opponentType: "player",
         status: "ACTIVE",
-        $or: [{ roundPhase: "WAITING" }, { roundStartTime: { $lt: new Date(Date.now() - 60_000) } }],
       },
-      { $set: { status: "COMPLETED", completedAt: new Date(), winner: "draw" } },
+      { $set: { status: "ABANDONED", completedAt: new Date() } },
     );
 
     return Response.json({

@@ -30,7 +30,7 @@ export async function POST(req: Request): Promise<Response> {
         status: "ACTIVE",
         roundPhase: "WAITING",
       },
-      { $set: { status: "COMPLETED", completedAt: new Date(), winner: "draw" } },
+      { $set: { status: "ABANDONED", completedAt: new Date() } },
     );
 
     return Response.json({ status: "left" });

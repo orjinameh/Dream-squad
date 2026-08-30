@@ -145,7 +145,7 @@ describe("PvP matchmaking (two devices)", () => {
 
     // The stale match is no longer ACTIVE.
     const stale = await Match.findById("stale-waiting").lean();
-    expect(stale!.status).toBe("COMPLETED");
+    expect(stale!.status).toBe("ABANDONED");
   });
 
   it("treats mixed-case (checksummed) wallets the same as lowercase ones", async () => {
@@ -200,7 +200,7 @@ describe("PvP matchmaking (two devices)", () => {
     await leaveRoute(jsonPost("/api/matchmaking/leave", { address: B }));
 
     const abandoned = await Match.findById("left-match").lean();
-    expect(abandoned!.status).toBe("COMPLETED");
+    expect(abandoned!.status).toBe("ABANDONED");
 
     // Re-join — must start fresh in the queue, not be routed to the old match.
     const rB = await join(B);
@@ -245,6 +245,6 @@ describe("PvP matchmaking (two devices)", () => {
     // Queue is empty, so a fresh join has no phantom to match against.
     expect(await MatchQueue.countDocuments({})).toBe(0);
     const phantom = await Match.findById("phantom-match").lean();
-    expect(phantom!.status).toBe("COMPLETED");
+    expect(phantom!.status).toBe("ABANDONED");
   });
 });

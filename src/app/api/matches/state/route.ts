@@ -3,6 +3,7 @@ import { Match, ROUND_TIMINGS, type RoundPhase, type StatsProcessedStatus } from
 import { PlayerStats } from "@/db/models/PlayerStats";
 import { normalizeAddress } from "@/lib/addresses";
 import { jsonError } from "@/lib/utils";
+import { expireStaleWaitingMatches } from "@/lib/matchExpiry";
 import { getPvpWinPoints } from "@/lib/rank";
 
 export const dynamic = "force-dynamic";
@@ -20,6 +21,12 @@ export async function GET(req: Request): Promise<Response> {
     await connectToDatabase();
     const match = await Match.findById(matchId);
     if (!match) return jsonError(404, "match not found");
+
+    // Abandon any stuck match for this viewer (rejoin/resume path) so a stale
+    // WAITING or never-resolved round can't be lazily resumed.
+    if (viewerAddress && viewerAddress.startsWith("0x")) {
+      await expireStaleWaitingMatches(normalizeAddress(viewerAddress));
+    }
 
     const now = new Date();
     const isPvP = match.opponentType === "player";

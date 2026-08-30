@@ -171,6 +171,7 @@ export function useGameState(): GameHook {
   const phaseTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const roundProcessedRef = useRef<number[]>([]);
   const botTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pvpTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const enteredFromIntroRef = useRef(false);
   const modeRef = useRef<GameMode | null>(null);
   const localPredictionRef = useRef<Prediction>(null);
@@ -203,6 +204,7 @@ export function useGameState(): GameHook {
     phaseTimersRef.current.forEach(clearTimeout);
     phaseTimersRef.current = [];
     if (botTimerRef.current) { clearInterval(botTimerRef.current); botTimerRef.current = null; }
+    if (pvpTimerRef.current) { clearInterval(pvpTimerRef.current); pvpTimerRef.current = null; }
   }, []);
 
   useEffect(() => () => { clearAllTimers(); cancelAnimationFrame(animFrameRef.current); }, [clearAllTimers]);
@@ -524,6 +526,72 @@ export function useGameState(): GameHook {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isBotMatch, phase]);
 
+  // --- PVP ROUND COUNTDOWN + SUBMIT ---
+  // PvP rounds resolve server-authoritatively via the predict route, which
+  // claims the round, waiting for both players to submit (or resolving after
+  // the deadline). This effect (a) keeps the UI countdown in lockstep with the
+  // shared server deadline, (b) locks the UI at timeout, and (c) makes sure the
+  // player's side is always submitted — auto-picking if they never tapped. It
+  // keeps ticking through ROUND_LOCKED and re-submits if the round is still
+  // unresolved past its deadline (e.g. both players submitted just before the
+  // close and the server momentarily reverted to ACTIVE), so a round can never
+  // deadlock. The resolved outcome/animation flows back via the server-sync
+  // effect below, which advances the phase and tears this timer down.
+  useEffect(() => {
+    if (isBotMatch) return;
+    if (phase !== "ROUND_ACTIVE" && phase !== "ROUND_LOCKED") return;
+    const trackedRound = activeRoundNumRef.current;
+    if (trackedRound <= 0) return;
+
+    let lastSubmitAt = 0;
+    let lastSubmitPred: "UP" | "DOWN" | null = null;
+    const SUBMIT_BACKOFF_MS = 1200;
+
+    const check = () => {
+      if (phaseRef.current !== "ROUND_ACTIVE" && phaseRef.current !== "ROUND_LOCKED") return;
+      if (activeRoundNumRef.current !== trackedRound) return;
+      const remaining = mp.actions.getTimeRemaining();
+      setTimeLeft(+Math.max(0, remaining).toFixed(2));
+
+      if (remaining > 0) return;
+      // Deadline elapsed — lock the UI once
+      if (phaseRef.current === "ROUND_ACTIVE") {
+        phaseRef.current = "ROUND_LOCKED";
+        setPhase("ROUND_LOCKED");
+        setPlayerCharState("locked");
+        setRivalCharState("locked");
+      }
+
+      // Make sure this player's prediction is stored server-side.
+      const pred = localPredictionRef.current as "UP" | "DOWN";
+      if (lastSubmitPred !== pred || Date.now() - lastSubmitAt >= SUBMIT_BACKOFF_MS) {
+        lastSubmitPred = pred;
+        lastSubmitAt = Date.now();
+        roundPhaseRef.current = "SUBMITTING";
+        setExecutionStatus("executing");
+        mp.actions.submitPrediction(pred).then((d) => {
+          if (d && d.rounds && d.rounds.length) {
+            setExecutionStatus("success");
+            roundPhaseRef.current = "WAITING_SERVER";
+            // Round resolved — the server-sync effect will play it and advance.
+          } else {
+            // Not resolved yet (waiting on opponent / reverted) — keep retrying.
+            roundPhaseRef.current = "LOCKED";
+          }
+        }).catch(() => {
+          roundPhaseRef.current = "LOCKED";
+        });
+      }
+    };
+
+    check();
+    pvpTimerRef.current = setInterval(check, 200) as unknown as ReturnType<typeof setInterval>;
+    return () => {
+      if (pvpTimerRef.current) { clearInterval(pvpTimerRef.current); pvpTimerRef.current = null; }
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isBotMatch, phase, mp.actions]);
+
   // --- SERVER-SYNCED MULTIPLAYER ---
   // Responds to server state changes for both bot and PvP matches
   useEffect(() => {
@@ -554,6 +622,9 @@ export function useGameState(): GameHook {
         setPlayerCharState(won ? "victory" : draw ? "idle" : "defeat");
         setRivalCharState(won ? "defeat" : draw ? "idle" : "victory");
         setPhase("MATCH_RESULT");
+      } else if (ss && ss.status === "ABANDONED") {
+        // A stuck/stale match was abandoned server-side — leave it quietly.
+        clearAllTimers(); mp.actions.reset(); setPhase("HOME");
       }
       return;
     }
@@ -720,7 +791,24 @@ export function useGameState(): GameHook {
     setPlayerPrediction(pred);
     setLockedPrediction(pred);
     setPredictionUIStatus("selected");
-  }, [phase, lockedPrediction]);
+
+    // PvP: store the locked position server-side immediately so the round can
+    // resolve as soon as BOTH players have picked (no waiting for the 10s
+    // deadline). The countdown effect still auto-submits at timeout as a
+    // fallback for a player who never taps a side.
+    if (!isBotMatch) {
+      mp.actions.submitPrediction(pred).then((d) => {
+        if (d && d.rounds && d.rounds.length) {
+          roundPhaseRef.current = "WAITING_SERVER";
+          setExecutionStatus("success");
+        } else {
+          roundPhaseRef.current = "LOCKED";
+        }
+      }).catch(() => {
+        roundPhaseRef.current = "LOCKED";
+      });
+    }
+  }, [phase, lockedPrediction, isBotMatch, mp.actions]);
 
   const rematch = useCallback(() => {
     clearAllTimers();
