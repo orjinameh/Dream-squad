@@ -3,17 +3,13 @@ import { MatchQueue } from "@/db/models/MatchQueue";
 import { Match, ROUND_TIMINGS } from "@/db/models/Match";
 import { normalizeAddress } from "@/lib/addresses";
 import { jsonError } from "@/lib/utils";
+import { expireStaleWaitingMatches } from "@/lib/matchExpiry";
 import { randomUUID } from "node:crypto";
 
 export const dynamic = "force-dynamic";
 
 const READY_TIMEOUT_MS = 30_000;
 const QUEUE_TIMEOUT_MS = 120_000;
-
-// A PvP match whose readiness window lapses with no opponent is abandoned. We
-// expire it so a stale ACTIVE/WAITING record can never hijack the active-match
-// guard and prevent two real players from being paired on a later attempt.
-const READY_EXPIRE_MS = READY_TIMEOUT_MS + 15_000;
 
 export async function POST(req: Request): Promise<Response> {
   const body = await req.json().catch(() => ({}));
@@ -33,17 +29,10 @@ export async function POST(req: Request): Promise<Response> {
     const addr = normalizeAddress(address);
 
     // Check for existing active match — do not allow queueing if already in a
-    // match, UNLESS it's an abandoned PvP match still stuck in WAITING past its
-    // readiness window, in which case expire it so it can't block a real pair.
-    await Match.updateMany(
-      {
-        $or: [{ playerAddress: addr }, { player2Address: addr }],
-        status: "ACTIVE",
-        roundPhase: "WAITING",
-        roundDeadline: { $lt: new Date(Date.now() - READY_EXPIRE_MS) },
-      },
-      { $set: { status: "COMPLETED", completedAt: new Date(), winner: "draw" } },
-    );
+    // match, UNLESS it's an abandoned PvP match still WAITING with no round
+    // started past the stale window, in which case expire it so it can't block
+    // a real pair (or phantom-pair a lone player on a re-join).
+    await expireStaleWaitingMatches(addr);
 
     const activeMatch = await Match.findOne({
       $or: [{ playerAddress: addr }, { player2Address: addr }],

@@ -3,11 +3,9 @@ import { MatchQueue } from "@/db/models/MatchQueue";
 import { Match } from "@/db/models/Match";
 import { normalizeAddress } from "@/lib/addresses";
 import { jsonError } from "@/lib/utils";
+import { expireStaleWaitingMatches } from "@/lib/matchExpiry";
 
 export const dynamic = "force-dynamic";
-
-const READY_TIMEOUT_MS = 30_000;
-const READY_EXPIRE_MS = READY_TIMEOUT_MS + 15_000;
 
 export async function GET(req: Request): Promise<Response> {
   const url = new URL(req.url);
@@ -21,17 +19,9 @@ export async function GET(req: Request): Promise<Response> {
     await connectToDatabase();
     const addr = normalizeAddress(address);
 
-    // Expire any abandoned PvP match still stuck in WAITING past its readiness
+    // Expire any abandoned PvP match still stuck in WAITING past its 10s stale
     // window so it can't masquerade as an active match and block re-queueing.
-    await Match.updateMany(
-      {
-        $or: [{ playerAddress: addr }, { player2Address: addr }],
-        status: "ACTIVE",
-        roundPhase: "WAITING",
-        roundDeadline: { $lt: new Date(Date.now() - READY_EXPIRE_MS) },
-      },
-      { $set: { status: "COMPLETED", completedAt: new Date(), winner: "draw" } },
-    );
+    await expireStaleWaitingMatches(addr);
 
     // Check for active match first
     const activeMatch = await Match.findOne({

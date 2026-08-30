@@ -2,6 +2,7 @@ import { connectToDatabase } from "@/db/connect";
 import { Match } from "@/db/models/Match";
 import { normalizeAddress } from "@/lib/addresses";
 import { jsonError } from "@/lib/utils";
+import { expireStaleWaitingMatches } from "@/lib/matchExpiry";
 
 export const dynamic = "force-dynamic";
 
@@ -13,6 +14,9 @@ export async function GET(req: Request): Promise<Response> {
   try {
     await connectToDatabase();
     const addr = normalizeAddress(address);
+
+    // Don't auto-resume a stale WAITING match that never started a round.
+    await expireStaleWaitingMatches(addr);
 
     const match = await Match.findOne({
       status: "ACTIVE",

@@ -120,6 +120,7 @@ describe("PvP matchmaking (two devices)", () => {
       opponentType: "player",
       status: "ACTIVE",
       roundPhase: "WAITING",
+      roundStartTime: new Date(Date.now() - 60_000),
       roundDeadline: new Date(Date.now() - 60_000),
       player1Ready: false,
       player2Ready: false,
