@@ -78,7 +78,7 @@ export default function GameApp() {
     }}>
       <style>{globalCSS}</style>
 
-      {g.phase === "HOME" && <HomeScreen onEnter={g.actions.goToMarketSelect} onLeaderboard={g.actions.goToLeaderboard} onProfile={g.actions.goToProfile} onHistory={g.actions.goToMatchHistory} onRejoin={activeMatchId ? rejoinMatch : undefined} />}
+      {g.phase === "HOME" && <HomeScreen address={address} onEnter={g.actions.goToMarketSelect} onLeaderboard={g.actions.goToLeaderboard} onProfile={g.actions.goToProfile} onHistory={g.actions.goToMatchHistory} onRejoin={activeMatchId ? rejoinMatch : undefined} />}
       {g.phase === "MARKET_SELECT" && <TradeSelect onSelect={g.actions.selectMarket} onBack={g.actions.goToHome} />}
       {g.phase === "CHAR_SELECT" && <CharSelect onSelect={g.actions.selectChar} onBack={g.actions.goToMarketSelect} />}
       {g.phase === "DUEL_CONFIRM" && <DuelConfirm mode={g.mode!} char={g.playerChar!} difficulty={g.botDifficulty} amount={g.selectedAmount} onSelectAmount={g.actions.selectAmount} onConfirm={() => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.confirmDuel(); }} onBack={g.actions.goToCharSelect} onQuickMatch={(rounds) => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.joinMatchmaking(rounds); mm.actions.joinQueue(rounds, g.playerChar?.id ?? "dreamer"); }} onSelectDifficulty={g.actions.selectDifficulty} />}
@@ -172,7 +172,19 @@ function ReconnectOverlay() {
   );
 }
 
-function HomeScreen({ onEnter, onLeaderboard, onProfile, onHistory, onRejoin }: { onEnter: () => void; onLeaderboard: () => void; onProfile: () => void; onHistory: () => void; onRejoin?: () => void }) {
+function HomeScreen({ address, onEnter, onLeaderboard, onProfile, onHistory, onRejoin }: { address?: string; onEnter: () => void; onLeaderboard: () => void; onProfile: () => void; onHistory: () => void; onRejoin?: () => void }) {
+  const [balance, setBalance] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!address) { setBalance(null); return; }
+    let done = false;
+    fetch(`/api/player/profile?address=${encodeURIComponent(address)}`)
+      .then((r) => r.json())
+      .then((d) => { if (!done) setBalance(Number.isFinite(Number(d?.balance)) ? Number(d.balance) : null); })
+      .catch(() => { if (!done) setBalance(null); });
+    return () => { done = true; };
+  }, [address]);
+
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "100vh", padding: "40px 20px" }}>
       <div style={{ position: "absolute", inset: 0, background: "radial-gradient(ellipse at 50% 30%, rgba(168,85,247,0.08) 0%, transparent 60%)", pointerEvents: "none" }} />
@@ -188,6 +200,19 @@ function HomeScreen({ onEnter, onLeaderboard, onProfile, onHistory, onRejoin }: 
       <p style={{ fontSize: 18, letterSpacing: "0.3em", color: "#a855f7", marginBottom: 40, textShadow: "0 0 15px rgba(168,85,247,0.4)" }}>
         PREDICT. STRIKE. WIN.
       </p>
+
+      {address && balance !== null && (
+        <div style={{
+          display: "flex", alignItems: "center", gap: 8, marginBottom: 24,
+          padding: "8px 18px", borderRadius: 6, border: "1px solid #0ea5e9",
+          background: "rgba(14,165,233,0.08)",
+        }}>
+          <span style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.15em" }}>BALANCE</span>
+          <span style={{ fontSize: 16, fontWeight: 900, color: "#38bdf8", fontFamily: "'Courier New', monospace" }}>
+            {balance.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDso
+          </span>
+        </div>
+      )}
 
       {onRejoin && (
         <button onClick={onRejoin} style={{ ...ctaButtonStyle, background: "linear-gradient(135deg, #b45309, #f59e0b)", marginBottom: 16, fontSize: 16, padding: "14px 40px" }}>
