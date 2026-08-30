@@ -177,7 +177,7 @@ export function LiveChart({ asset, height = 260, showHeader = true }: Props) {
         setErr(null);
       })
       .catch((e) => {
-        if (!disposed) setErr("Live feed unavailable — using simulated market.");
+        if (!disposed) setErr("Live feed unavailable — chart paused.");
       });
 
     // Live edge: refresh the current spot and fold it into the forming candle.

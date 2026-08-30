@@ -29,7 +29,7 @@ import { GET as stateRoute } from "@/app/api/matches/state/route";
 import { GET as leaderboardRoute } from "@/app/api/leaderboard/route";
 import { Match } from "@/db/models/Match";
 import { normalizeAddress } from "@/lib/addresses";
-import { generateMatchPriceModel } from "@/lib/prices";
+import { buildMatchPriceModel } from "@/lib/prices";
 
 let mongo: MongoMemoryServer;
 const PLAYER = "0x9196d7670eea0CB723af11465d4285541a2eA86a";
@@ -96,10 +96,10 @@ describe("POST /api/matches/create", () => {
 });
 
 describe("POST /api/matches/predict", () => {
-  it("resolves a round against the continuous price model and returns state", async () => {
+  it("resolves a round from the REAL price model; no-op FLAT when the feed can't resolve", async () => {
     const matchId = `test-predict-${Date.now()}`;
     const addr = normalizeAddress(PLAYER);
-    const priceModel = generateMatchPriceModel(matchId, "BTC", 3);
+    const priceModel = buildMatchPriceModel("BTC", 78147);
     await Match.create({
       _id: matchId,
       playerAddress: addr,
@@ -126,9 +126,11 @@ describe("POST /api/matches/predict", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.rounds.length).toBe(1);
-    expect(body.rounds[0].actual).toBeTruthy();
-    // The round's outcome must match the precomputed checkpoint for round 1.
-    expect(body.rounds[0].actual).toBe(priceModel.checkpoints[0].actual);
+    // This test's market (default SOMI:USDso) has no DreamDEX oracle row, so
+    // real resolution is impossible and the round is recorded as an honest
+    // no-op FLAT draw — never a fabricated UP/DOWN.
+    expect(body.rounds[0].actual).toBe("FLAT");
+    expect(body.rounds[0].playerCorrect).toBe(false);
   });
 });
 

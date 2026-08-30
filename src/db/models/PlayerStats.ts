@@ -40,7 +40,7 @@ export interface PlayerStatsDoc {
   timesKnockedOut: number;
   // Rank
   rankPoints: number;
-  // Balance & P&L (simulated STT balance)
+  // In-game USDso balance & P&L
   balance: number;
   totalPnL: number;
   // Idempotency: processed match IDs (capped at 200 most recent)

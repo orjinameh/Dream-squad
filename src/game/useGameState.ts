@@ -8,7 +8,6 @@ import {
   type ConnectionStatus,
 } from "./useMultiplayer";
 import { useAccount } from "wagmi";
-import { generateMatchPriceModel, type MatchPriceModel, type Checkpoint } from "@/lib/prices";
 
 const LOCK_DURATION = 1200;
 const REVEAL_DURATION = 1500;
@@ -199,7 +198,6 @@ export function useGameState(): GameHook {
     matchId: string;
     asset: string;
     totalRounds: number;
-    model: MatchPriceModel;
   } | null>(null);
 
   // Keep refs in sync for use inside intervals/timeouts
@@ -434,11 +432,10 @@ export function useGameState(): GameHook {
 
     const m = localMatchRef.current;
     const rNum = activeRoundNumRef.current;
-    const cp = m?.model?.checkpoints?.[rNum - 1];
     setExecutionStatus("success");
     playCombatAnimation({
       roundNum: rNum,
-      actual: cp?.actual ?? "FLAT",
+      actual: "FLAT",
       playerPrediction: localPredictionRef.current ?? "UP",
       rivalPrediction: (localPredictionRef.current === "UP" ? "DOWN" : "UP"),
       playerCorrect: true,
@@ -447,9 +444,9 @@ export function useGameState(): GameHook {
       rivalDamage: 0,
       isCritical: false,
       knockout: false,
-      startPrice: cp?.startPrice ?? 0,
-      endPrice: cp?.endPrice ?? 0,
-      prices: cp?.prices ?? [],
+      startPrice: 0,
+      endPrice: 0,
+      prices: [],
       asset: m?.asset ?? "BTC",
       playerPnL: 0,
       rivalPnL: 0,

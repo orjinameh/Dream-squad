@@ -3,7 +3,8 @@ import { randomUUID } from "node:crypto";
 import { Match, ROUND_TIMINGS } from "@/db/models/Match";
 import { normalizeAddress } from "@/lib/addresses";
 import { jsonError } from "@/lib/utils";
-import { generateMatchPriceModel } from "@/lib/prices";
+import { buildMatchPriceModel } from "@/lib/prices";
+import { baseToFeedAsset, fetchSpotAsset } from "@/lib/price-feed";
 import { getMarket } from "@/lib/markets";
 import { z } from "zod";
 import { isAddress } from "viem";
@@ -64,9 +65,17 @@ export async function POST(req: Request): Promise<Response> {
     const marketSymbol = input.marketSymbol && getMarket(input.marketSymbol)
       ? input.marketSymbol
       : "SOMI:USDso";
-    // ONE continuous market for the whole match (seeded by matchId) — carved
-    // into round checkpoints so the chart, combat, and P&L all agree.
-    const priceModel = generateMatchPriceModel(matchId, asset, input.totalRounds);
+    // Real entry price from the DreamDEX oracle (no synthetic model). If the
+    // feed is unreachable at creation the match still opens with entry 0 and
+    // the first round anchors on a live fetch (see predict resolution).
+    let entryPrice = 0;
+    const feedAsset = baseToFeedAsset(asset);
+    if (feedAsset) {
+      try { entryPrice = await fetchSpotAsset(feedAsset); } catch {}
+    }
+    // ONE continuous real market for the whole match: the observed entry price
+    // plus live-resolved round checkpoints (appended by the predict endpoint).
+    const priceModel = buildMatchPriceModel(asset, entryPrice);
 
     const match = await Match.create({
       _id: matchId,

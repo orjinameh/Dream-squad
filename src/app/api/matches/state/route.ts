@@ -168,11 +168,21 @@ function buildState(match: any, serverTime: Date, isViewerP2: boolean, viewerAdd
   const myStreak = isViewerP2 ? match.rivalStreak : match.playerStreak;
   const theirStreak = isViewerP2 ? match.playerStreak : match.rivalStreak;
 
-  // Checkpoint for the current active round from the match's single continuous
-  // market (chart + resolution agree, no per-round reseed).
+  // Checkpoint for the current active round derives from REAL prices: the entry
+  // price (round 1) or the previous round's real close as the open; the live
+  // close is read by the on-chain chart. Nothing is synthesized.
   const asset = match.priceModel?.asset ?? match.predictionAsset ?? "BTC";
+  const entryPrice = match.priceModel?.entryPrice ?? 0;
+  const resolvedRounds = (match.rounds ?? []);
+  const lastResolved = resolvedRounds.length > 0 ? resolvedRounds[resolvedRounds.length - 1] : undefined;
+  const currentOpen = match.currentRound === 1 ? entryPrice : (lastResolved?.endPrice ?? entryPrice);
   const currentCheckpoint = match.roundPhase === "ACTIVE" && match.status === "ACTIVE"
-    ? match.priceModel?.checkpoints?.[match.currentRound - 1]
+    ? {
+        startPrice: currentOpen,
+        endPrice: currentOpen,
+        prices: currentOpen > 0 ? [currentOpen] : [],
+        actual: "FLAT" as const,
+      }
     : undefined;
 
   // Running balances (STT).

@@ -112,35 +112,28 @@ async function resolveRound(match: any, now: Date): Promise<{
     rivalResult = await executeGameRound(marketSymbol, match.player2Address, rivalPred, roundNumber, matchId, rivalBet);
   }
 
-  // Determine authoritative market outcome from the SINGLE continuous price
-  // model stored on the match. Both players watch the exact same contiguous
-  // path (chart + resolution + P&L all agree) — no per-round reseed.
-  const checkpoint = match.priceModel?.checkpoints?.[roundNumber - 1];
-  const fallbackActual = checkpoint?.actual ?? "FLAT";
-  const fallbackPrices = checkpoint?.prices ?? [];
-  const anchorOpen = checkpoint?.startPrice;
+  // REAL PRICE RESOLUTION — the DreamDEX oracle is the only source. The round's
+  // open is anchored to the match entry price (round 1) or the previous round's
+  // real close; the close is the live oracle spot fetched at resolution. No
+  // synthetic path exists: if the real price can't be read, resolution throws
+  // and the outer handler records an honest no-op draw (never a fake UP/DOWN).
+  const entryPrice = match.priceModel?.entryPrice ?? 0;
+  const resolvedRounds = match.rounds ?? [];
+  const prevRound = resolvedRounds.length > 0 ? resolvedRounds[resolvedRounds.length - 1] : undefined;
+  const anchorOpen = roundNumber === 1 ? entryPrice : (prevRound?.endPrice ?? entryPrice);
   const asset = match.priceModel?.asset ?? match.predictionAsset ?? "BTC";
 
-  // LIVE PRICE RESOLUTION (with fallback). Where the market has a real public
-  // ticker, override the outcome with the actual open→close move: the round's
-  // open price is anchored from the stored series and the close is fetched live
-  // at resolution. If the asset has no public feed, the fetch fails, or it
-  // times out (2.5s cap inside the helper), keep the precomputed model so the
-  // round never freezes on a network call.
-  let actual = fallbackActual;
-  let volume = fallbackPrices;
-  let startPrice = anchorOpen;
-  let endPrice = checkpoint?.endPrice;
-
   const liveClose = await fetchLivePriceUsd(marketSymbol);
-  if (liveClose != null && anchorOpen != null && anchorOpen > 0) {
-    const band = anchorOpen * LIVE_RESOLUTION_FLAT_BAND_PCT;
-    const diff = liveClose - anchorOpen;
-    actual = diff > band ? "UP" : diff < -band ? "DOWN" : "FLAT";
-    startPrice = anchorOpen;
-    endPrice = liveClose;
-    volume = [anchorOpen, liveClose];
+  if (liveClose == null || !(anchorOpen > 0)) {
+    throw new Error(`real price unavailable for ${marketSymbol} (open=${anchorOpen} close=${liveClose})`);
   }
+
+  const band = anchorOpen * LIVE_RESOLUTION_FLAT_BAND_PCT;
+  const diff = liveClose - anchorOpen;
+  const actual: "UP" | "DOWN" | "FLAT" = diff > band ? "UP" : diff < -band ? "DOWN" : "FLAT";
+  const startPrice = anchorOpen;
+  const endPrice = liveClose;
+  const volume = [startPrice, endPrice];
 
   const isFlat = actual === "FLAT";
 
@@ -527,6 +520,17 @@ export async function POST(req: Request): Promise<Response> {
             rivalStreak: newRivalStreak,
             roundPhase: nextRoundPhase,
             status: nextStatus,
+            priceModel: {
+              asset: roundRecord.asset ?? claim.priceModel?.asset ?? "BTC",
+              entryPrice: claim.priceModel?.entryPrice ?? roundRecord.startPrice ?? 0,
+              checkpoints: [...(claim.priceModel?.checkpoints ?? []), {
+                roundNum: roundRecord.roundNum,
+                startPrice: roundRecord.startPrice ?? 0,
+                endPrice: roundRecord.endPrice ?? 0,
+                prices: roundRecord.prices ?? [roundRecord.startPrice ?? 0, roundRecord.endPrice ?? 0],
+                actual: roundRecord.actual,
+              }],
+            },
             ...(matchDecided ? {
               playerStartBalance: claim.playerStartBalance ?? 100,
               rivalStartBalance: claim.rivalStartBalance ?? 100,
@@ -601,6 +605,12 @@ export async function POST(req: Request): Promise<Response> {
           },
         });
         const updated = await Match.findById(match._id);
+        if (decided && updated) {
+          await updatePlayerStatsAtomic(updated, updated.rounds ?? [], "draw", now);
+          await Match.findByIdAndUpdate(match._id, { $set: { statsProcessed: "COMPLETE" as StatsProcessedStatus } });
+          const finalized = await Match.findById(match._id);
+          return Response.json({ ...buildState(finalized!, now), executionFailed: true, error: "DreamDEX execution failed, round recorded as no-op" });
+        }
         return Response.json({ ...buildState(updated!, now), executionFailed: true, error: "DreamDEX execution failed, round recorded as no-op" });
       }
     }
@@ -663,12 +673,20 @@ function buildState(match: any, serverTime: Date): MatchStateResponse {
   const rounds = match.rounds ?? [];
   const lastRound = rounds.length > 0 ? rounds[rounds.length - 1] : undefined;
 
-  // For an unresolved ACTIVE round, return the precomputed checkpoint from the
-  // match's SINGLE continuous market so the chart and the eventual resolution
-  // are driven by the SAME price path (no per-round reseed).
+  // For an unresolved ACTIVE round, expose the REAL anchor for this round: the
+  // entry price (round 1) or the previous round's real close. The live close is
+  // read by the on-chain chart; nothing here is synthesized.
   const asset = match.priceModel?.asset ?? match.predictionAsset ?? "BTC";
+  const entryPrice = match.priceModel?.entryPrice ?? 0;
+  const prevRound = rounds.length > 0 ? rounds[rounds.length - 1] : undefined;
+  const currentOpen = match.currentRound === 1 ? entryPrice : (prevRound?.endPrice ?? entryPrice);
   const currentCheckpoint = match.roundPhase === "ACTIVE" && match.status === "ACTIVE"
-    ? match.priceModel?.checkpoints?.[match.currentRound - 1]
+    ? {
+        startPrice: currentOpen,
+        endPrice: currentOpen,
+        prices: currentOpen > 0 ? [currentOpen] : [],
+        actual: "FLAT" as const,
+      }
     : undefined;
 
   // Running balance on the latest resolved round (or start balance).
