@@ -82,7 +82,7 @@ export default function GameApp() {
     }}>
       <style>{globalCSS}</style>
 
-      {g.phase === "HOME" && <HomeScreen address={address} onEnter={g.actions.goToMarketSelect} onLeaderboard={g.actions.goToLeaderboard} onProfile={g.actions.goToProfile} onHistory={g.actions.goToMatchHistory} onRejoin={activeMatchId ? rejoinMatch : undefined} />}
+      {g.phase === "HOME" && <HomeScreen address={address} escrow={escrow} onEnter={g.actions.goToMarketSelect} onLeaderboard={g.actions.goToLeaderboard} onProfile={g.actions.goToProfile} onHistory={g.actions.goToMatchHistory} onRejoin={activeMatchId ? rejoinMatch : undefined} />}
       {g.phase === "MARKET_SELECT" && <TradeSelect onSelect={g.actions.selectMarket} onBack={g.actions.goToHome} />}
       {g.phase === "CHAR_SELECT" && <CharSelect onSelect={g.actions.selectChar} onBack={g.actions.goToMarketSelect} />}
       {g.phase === "DUEL_CONFIRM" && <DuelConfirm mode={g.mode!} char={g.playerChar!} difficulty={g.botDifficulty} amount={g.selectedAmount} onSelectAmount={g.actions.selectAmount} onConfirm={() => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.confirmDuel(); }} onBack={g.actions.goToCharSelect} onQuickMatch={(rounds) => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.joinMatchmaking(rounds); mm.actions.joinQueue(rounds, g.playerChar?.id ?? "dreamer"); }} onSelectDifficulty={g.actions.selectDifficulty} />}
@@ -94,7 +94,7 @@ export default function GameApp() {
         <ArenaScreen game={g} escrow={escrow} />
       )}
       {g.phase === "MATCH_RESULT" && <MatchResult game={g} onRematch={() => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.rematch(); }} />}
-      {g.phase === "PROFILE" && <ProfileScreen address={address} onBack={g.actions.goToHome} onHistory={g.actions.goToMatchHistory} />}
+      {g.phase === "PROFILE" && <ProfileScreen address={address} escrow={escrow} onBack={g.actions.goToHome} onHistory={g.actions.goToMatchHistory} />}
       {g.phase === "MATCH_HISTORY" && <MatchHistoryScreen address={address} onBack={g.actions.goToHome} onSelectMatch={g.actions.goToMatchDetail} />}
       {g.phase === "MATCH_DETAIL" && <MatchDetailScreen matchId={g.selectedMatchId} address={address} onBack={g.actions.goToMatchHistory} />}
 
@@ -176,19 +176,15 @@ function ReconnectOverlay() {
   );
 }
 
-function HomeScreen({ address, onEnter, onLeaderboard, onProfile, onHistory, onRejoin }: { address?: string; onEnter: () => void; onLeaderboard: () => void; onProfile: () => void; onHistory: () => void; onRejoin?: () => void }) {
-  const [balance, setBalance] = useState<number | null>(null);
-
-  useEffect(() => {
-    if (!address) { setBalance(null); return; }
-    let done = false;
-    fetch(`/api/player/profile?address=${encodeURIComponent(address)}`)
-      .then((r) => r.json())
-      .then((d) => { if (!done) setBalance(Number.isFinite(Number(d?.balance)) ? Number(d.balance) : null); })
-      .catch(() => { if (!done) setBalance(null); });
-    return () => { done = true; };
-  }, [address]);
-
+function HomeScreen({ address, escrow, onEnter, onLeaderboard, onProfile, onHistory, onRejoin }: {
+  address?: string;
+  escrow: ReturnType<typeof useDreamEscrow>;
+  onEnter: () => void;
+  onLeaderboard: () => void;
+  onProfile: () => void;
+  onHistory: () => void;
+  onRejoin?: () => void;
+}) {
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "100vh", padding: "40px 20px" }}>
       <div style={{ position: "absolute", inset: 0, background: "radial-gradient(ellipse at 50% 30%, rgba(168,85,247,0.08) 0%, transparent 60%)", pointerEvents: "none" }} />
@@ -205,15 +201,15 @@ function HomeScreen({ address, onEnter, onLeaderboard, onProfile, onHistory, onR
         PREDICT. STRIKE. WIN.
       </p>
 
-      {address && balance !== null && (
+      {address && escrow.usdcBalanceFormatted !== null && (
         <div style={{
           display: "flex", alignItems: "center", gap: 8, marginBottom: 24,
           padding: "8px 18px", borderRadius: 6, border: "1px solid #0ea5e9",
           background: "rgba(14,165,233,0.08)",
         }}>
-          <span style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.15em" }}>BALANCE</span>
+          <span style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.15em" }}>tUSDC BALANCE</span>
           <span style={{ fontSize: 16, fontWeight: 900, color: "#38bdf8", fontFamily: "'Courier New', monospace" }}>
-            {balance.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDso
+            {escrow.usdcBalanceFormatted}
           </span>
         </div>
       )}
@@ -536,7 +532,7 @@ function PredictionSelect({ asset, onBack, onPredict, difficulty, onSelectDiffic
           fontSize: 11, letterSpacing: "0.14em", marginBottom: 20, padding: "6px 16px", borderRadius: 6,
           background: "rgba(245,158,11,0.12)", border: "1px solid #f59e0b", color: "#fbbf24", fontWeight: 700,
         }}>
-          {`CALL LOCKED: ${localPrediction === "UP" ? "\u2191 UP" : "\u2193 DOWN"} \u2014 ${asset} \u00D7 ${amount} USDso`}
+          {`CALL LOCKED: ${localPrediction === "UP" ? "\u2191 UP" : "\u2193 DOWN"} \u2014 ${asset} \u00D7 ${amount} UNITS (scored)`}
         </div>
       )}
 
@@ -564,9 +560,9 @@ function PredictionSelect({ asset, onBack, onPredict, difficulty, onSelectDiffic
         </div>
       </div>
 
-      {/* Stake (USDso) */}
+      {/* Score units per round (simulated P&L) */}
       <div style={{ marginBottom: 24, textAlign: "center" }}>
-        <div style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.1em", marginBottom: 8 }}>STAKE (USDso) PER ROUND</div>
+        <div style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.1em", marginBottom: 8 }}>SCORE UNITS PER ROUND</div>
         <div style={{ display: "flex", gap: 8 }}>
           {tradeAmounts.map((a) => (
             <button
@@ -1485,7 +1481,7 @@ function MatchResult({ game, onRematch }: { game: ReturnType<typeof useGameState
   );
 }
 
-function ProfileScreen({ address, onBack, onHistory }: { address?: string; onBack: () => void; onHistory: () => void }) {
+function ProfileScreen({ address, escrow, onBack, onHistory }: { address?: string; escrow: ReturnType<typeof useDreamEscrow>; onBack: () => void; onHistory: () => void }) {
   const [profile, setProfile] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
@@ -1562,14 +1558,14 @@ function ProfileScreen({ address, onBack, onHistory }: { address?: string; onBac
         <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 4 }}>{profile.rankPoints} RP</div>
       </div>
 
-      {/* Balance (USDso) */}
+      {/* tUSDC Balance (on-chain) */}
       <div style={{
         background: "rgba(15,23,42,0.9)", border: "2px solid #0ea5e9", borderRadius: 12,
         padding: "16px 32px", textAlign: "center", marginBottom: 24, maxWidth: 400, width: "100%",
       }}>
-        <div style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.15em", marginBottom: 4 }}>BALANCE</div>
+        <div style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.15em", marginBottom: 4 }}>tUSDC BALANCE</div>
         <div style={{ fontSize: 24, fontWeight: 900, color: "#38bdf8", letterSpacing: "0.05em", fontFamily: "'Courier New', monospace" }}>
-          {Number(profile.balance ?? 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDso
+          {escrow.usdcBalanceFormatted ?? "..."}
         </div>
       </div>
 
