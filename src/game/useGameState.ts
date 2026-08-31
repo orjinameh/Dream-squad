@@ -51,6 +51,7 @@ export interface GameActions {
   joinMatchmaking: (rounds: number) => void;
   startPvPMatch: (matchId: string) => void;
   setReady: () => void;
+  startDuel: () => void;
   cancelMatchmaking: () => void;
   fightBotInstead: () => void;
 }
@@ -768,6 +769,18 @@ export function useGameState(): GameHook {
       // Continue even if server create fails
     }
 
+    // GENERAL STAKE GATE: stop at READY_UP (same gate PvP uses) and wait for the
+    // player to confirm "START DUEL" before the fight begins. The bot escrow is
+    // already open on-chain (opened at match creation), so the player can pledge
+    // real tUSDC here, unhurried, before round 1.
+    setPhase("READY_UP");
+  }, [playerChar, mode, marketSymbol, scheduleTimer, address, mp.actions]);
+
+  // Advance from the general stake gate into the fight (bot path only — PvP
+  // advances via the server round-open once both players READY UP).
+  const startDuel = useCallback(() => {
+    if (phase !== "READY_UP" || !isBotMatch) return;
+    setPhase("MATCH_INTRO");
     scheduleTimer(() => {
       setPhase("ROUND_START");
       scheduleTimer(() => {
@@ -776,7 +789,7 @@ export function useGameState(): GameHook {
         setRivalCharState("thinking");
       }, ROUND_TRANSITION_DELAY);
     }, MATCH_INTRO_DURATION);
-  }, [playerChar, mode, marketSymbol, scheduleTimer, address, mp.actions]);
+  }, [phase, isBotMatch, scheduleTimer]);
 
   // --- PREDICTION ---
   // Records the player's chosen position locally but does NOT submit/resolve
@@ -955,7 +968,7 @@ export function useGameState(): GameHook {
       goToHome, goToMarketSelect, goToCharSelect, goToLeaderboard,
       goToProfile, goToMatchHistory, goToMatchDetail,
       selectMarket, selectChar, confirmDuel, selectPrediction, setMatchPrediction, selectDifficulty, selectAmount, makePrediction, rematch,
-      joinMatchmaking, startPvPMatch, setReady, cancelMatchmaking, fightBotInstead,
+      joinMatchmaking, startPvPMatch, setReady, startDuel, cancelMatchmaking, fightBotInstead,
     },
   };
 }

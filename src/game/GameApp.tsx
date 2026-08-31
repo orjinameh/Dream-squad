@@ -89,7 +89,7 @@ export default function GameApp() {
       {g.phase === "PREDICTION_SELECT" && <PredictionSelect asset={(TRADE_MARKETS.find((m) => m.symbol === g.marketSymbol)?.asset) ?? "BTC"} onBack={g.actions.goToCharSelect} onPredict={g.actions.setMatchPrediction} difficulty={g.botDifficulty} onSelectDifficulty={g.actions.selectDifficulty} amount={g.selectedAmount} onSelectAmount={g.actions.selectAmount} char={g.playerChar!} mode={g.mode!} onFightBot={() => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.fightBotInstead(); }} onQuickMatch={() => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.joinMatchmaking(g.mode?.rounds ?? 7); mm.actions.joinQueue(g.mode?.rounds ?? 7, g.playerChar?.id ?? "dreamer"); }} />}
       {g.phase === "MATCHMAKING" && <MatchmakingScreen matchmaking={mm} onFightBot={g.actions.fightBotInstead} onHome={g.actions.cancelMatchmaking} />}
       {g.phase === "MATCH_FOUND" && <MatchFoundScreen game={g} />}
-      {g.phase === "READY_UP" && <ReadyUpScreen game={g} escrow={escrow} onReady={g.actions.setReady} />}
+      {g.phase === "READY_UP" && <ReadyUpScreen game={g} escrow={escrow} onReady={g.actions.setReady} onStartDuel={g.actions.startDuel} />}
       {(g.phase === "MATCH_INTRO" || g.phase === "ROUND_START" || g.phase === "ROUND_ACTIVE" || g.phase === "ROUND_LOCKED" || g.phase === "ROUND_EXECUTING" || g.phase === "ROUND_REVEAL" || g.phase === "ROUND_IMPACT") && (
         <ArenaScreen game={g} escrow={escrow} />
       )}
@@ -736,10 +736,11 @@ function MatchFoundScreen({ game }: { game: ReturnType<typeof useGameState> }) {
   );
 }
 
-function ReadyUpScreen({ game, escrow, onReady }: {
+function ReadyUpScreen({ game, escrow, onReady, onStartDuel }: {
   game: ReturnType<typeof useGameState>;
   escrow: ReturnType<typeof useDreamEscrow>;
   onReady: () => void;
+  onStartDuel: () => void;
 }) {
   const [ready, setReady] = useState(false);
   const [opponentReady, setOpponentReady] = useState(false);
@@ -803,6 +804,39 @@ function ReadyUpScreen({ game, escrow, onReady }: {
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "40px 20px" }}>
       <div style={{ position: "absolute", inset: 0, background: "radial-gradient(ellipse at 50% 40%, rgba(168,85,247,0.06) 0%, transparent 50%)", pointerEvents: "none" }} />
+
+      {game.isBotMatch ? (
+        <div style={{ width: "100%", maxWidth: 520, textAlign: "center" }}>
+          <div style={{
+            fontSize: 24, fontWeight: 900, letterSpacing: "0.15em",
+            color: "#fbbf24", textShadow: "2px 2px 0 #92400e",
+            marginBottom: 8, textAlign: "center",
+          }}>
+            STAKE TO DUEL
+          </div>
+          <div style={{ fontSize: 13, color: "#94a3b8", marginBottom: 28, textAlign: "center" }}>
+            You vs {game.rivalName || "the bot"}. Pledge tUSDC, or fight with no stake.
+          </div>
+          <div style={{ display: "flex", gap: 40, justifyContent: "center", marginBottom: 24 }}>
+            <div style={{ textAlign: "center" }}>
+              <RetroCharacter char={game.playerChar ?? CHARACTERS[0]} state="idle" size={1.2} />
+              <div style={{ marginTop: 10, fontSize: 13, color: "#94a3b8", letterSpacing: "0.1em" }}>YOU</div>
+            </div>
+            <div style={{ textAlign: "center" }}>
+              <RetroCharacter char={game.rivalChar ?? CHARACTERS[1]} state="idle" size={1.2} flip />
+              <div style={{ marginTop: 10, fontSize: 13, color: "#94a3b8", letterSpacing: "0.1em" }}>{game.rivalName || "BOT"}</div>
+            </div>
+          </div>
+          <BotStakePanel game={game} escrow={escrow} />
+          <button onClick={onStartDuel} style={{ ...ctaButtonStyle, fontSize: 18, padding: "14px 48px" }}>
+            {"\u2694"} START DUEL
+          </button>
+          <div style={{ marginTop: 10, fontSize: 11, color: "#475569" }}>
+            Staking is optional. Win/draw returns your stake; a loss sends it to the house treasury.
+          </div>
+        </div>
+      ) : (
+      <>
 
       <div style={{
         fontSize: 24, fontWeight: 900, letterSpacing: "0.15em",
@@ -911,6 +945,8 @@ function ReadyUpScreen({ game, escrow, onReady }: {
         <div style={{ fontSize: 14, color: "#a855f7", letterSpacing: "0.1em" }}>
           Waiting for opponent...
         </div>
+      )}
+      </>
       )}
     </div>
   );
@@ -1205,11 +1241,6 @@ function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; 
               </div>
             )}
           </div>
-        )}
-
-        {/* Bot matches: real-stake pledge before round 1 (player-only escrow) */}
-        {game.isBotMatch && game.phase === "MATCH_INTRO" && escrow && (
-          <BotStakePanel game={game} escrow={escrow} />
         )}
 
         {/* Characters — small, at edges */}
