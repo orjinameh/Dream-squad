@@ -417,7 +417,7 @@ function DuelConfirm({ mode, char, difficulty, amount, onSelectAmount, onConfirm
       {/* Trade amount selector — each player picks their own stake; it drives
           their real DreamDEX order + P&L, independent of the opponent's. */}
       <div style={{ marginBottom: 24, textAlign: "center" }}>
-        <div style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.1em", marginBottom: 8 }}>TRADE AMOUNT (STT)</div>
+        <div style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.1em", marginBottom: 8 }}>TRADE AMOUNT (tUSDC)</div>
         <div style={{ display: "flex", gap: 8 }}>
           {tradeAmounts.map((a) => (
             <button
@@ -1586,7 +1586,7 @@ function MatchResult({ game, onRematch }: { game: ReturnType<typeof useGameState
         padding: "12px 20px", marginBottom: 24, textAlign: "center", maxWidth: 340, width: "100%",
       }}>
         <div style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.1em", marginBottom: 6 }}>
-          TRADING P&L {"\u00B7"} {game.playerAmountPerRound ?? 1} STT / round
+          TRADING P&L {"\u00B7"} {game.playerAmountPerRound ?? 1} tUSDC / round
         </div>
         {(() => {
           const correct = game.roundHistory.filter((r) => r.playerCorrect && !r.isDraw).length;
@@ -1599,10 +1599,10 @@ function MatchResult({ game, onRematch }: { game: ReturnType<typeof useGameState
           return (
             <>
               <div style={{ fontSize: 22, fontWeight: 900, color: pnl >= 0 ? "#10b981" : "#ef4444", letterSpacing: "0.05em" }}>
-                {pnl >= 0 ? "+" : ""}{pnl.toFixed(2)} STT
+                {pnl >= 0 ? "+" : ""}{pnl.toFixed(2)} tUSDC
               </div>
               <div style={{ fontSize: 10, color: "#64748b", marginTop: 4 }}>
-                {startBalance.toFixed(2)} STT {"\u2192"} {endBalance.toFixed(2)} STT
+                {startBalance.toFixed(2)} tUSDC {"\u2192"} {endBalance.toFixed(2)} tUSDC
               </div>
               <div style={{ fontSize: 10, color: "#475569", marginTop: 2 }}>
                 {correct} wins / {wrong} losses / {flat} flat / {game.roundHistory.length - correct - wrong - flat} draws
@@ -1612,9 +1612,20 @@ function MatchResult({ game, onRematch }: { game: ReturnType<typeof useGameState
         })()}
       </div>
 
+      <div style={{ width: "100%", maxWidth: 340, textAlign: "center", marginBottom: 24, padding: "12px 16px", border: "1px dashed #7c3aed", borderRadius: 8, background: "rgba(124,58,237,0.06)" }}>
+        <div style={{ fontSize: 11, color: "#a855f7", fontWeight: 800, letterSpacing: "0.1em", marginBottom: 4 }}>
+          {"\u23F1"} EC SETTLEMENT
+        </div>
+        <div style={{ fontSize: 11, color: "#94a3b8", lineHeight: 1.5 }}>
+          These rounds track the real Event Contract window. Your P&L here is live;
+          it {"\u201C"}locks in{"\u201D"} when the ~15 min window settles on-chain. DUEL AGAIN to
+          keep riding the same window &amp; net your moves together.
+        </div>
+      </div>
+
       <div style={{ display: "flex", gap: 16 }}>
         <button onClick={onRematch} style={ctaButtonStyle}>
-          REMATCH {"\u2694\uFE0F"}
+          {"\u2694\uFE0F"} DUEL AGAIN
         </button>
         {game.matchId && (
           <button onClick={() => game.actions.goToMatchDetail(game.matchId!)} style={{ ...ctaButtonStyle, background: "linear-gradient(135deg, #155e75, #22d3ee)", fontSize: 14, padding: "12px 28px" }}>
@@ -2082,7 +2093,7 @@ function MatchDetailScreen({ matchId, address, onBack }: { matchId: string | nul
                   )}
                   {r.playerPnL != null && (
                     <div style={{ fontSize: 11, fontWeight: 700, color: (r.playerPnL ?? 0) >= 0 ? "#10b981" : "#ef4444" }}>
-                      {(r.playerPnL ?? 0) >= 0 ? "+" : ""}{(r.playerPnL ?? 0).toFixed ? (r.playerPnL).toFixed(2) : r.playerPnL} STT
+                      {(r.playerPnL ?? 0) >= 0 ? "+" : ""}{(r.playerPnL ?? 0).toFixed ? (r.playerPnL).toFixed(2) : r.playerPnL} tUSDC
                     </div>
                   )}
                   {exec?.txHash && (
