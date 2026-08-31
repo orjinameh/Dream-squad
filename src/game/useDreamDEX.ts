@@ -15,7 +15,7 @@ export interface DreamDEXStatus {
   error: string | null;
 }
 
-export function useDreamDEX(marketSymbol: string = "SOMI:USDso") {
+export function useDreamDEX(marketSymbol: string = "SOMI:tUSDC") {
   const { address } = useAccount();
   const [status, setStatus] = useState<DreamDEXStatus>({
     delegationReady: false,

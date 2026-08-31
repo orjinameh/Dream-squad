@@ -56,7 +56,7 @@ export const DEFAULT_MODE: GameMode = {
  *  the on-chain MARKETS registry so the picker reflects what can actually
  *  execute. */
 export interface TradeMarket {
-  /** Canonical pair symbol (SOMI:USDso / WETH:USDso / WBTC:USDso). */
+  /** Canonical pair symbol (SOMI:tUSDC / WETH:tUSDC / WBTC:tUSDC). */
   symbol: string;
   /** Friendly base token label (SOMI / WETH / WBTC). */
   asset: string;
@@ -75,12 +75,12 @@ export interface TradeMarket {
 }
 
 export const TRADE_MARKETS: TradeMarket[] = (
-  ["WETH:USDso", "WBTC:USDso"] as const
+  ["WETH:tUSDC", "WBTC:tUSDC"] as const
 ).map((symbol) => {
   const m = MARKETS[symbol];
-  const asset = symbol === "WBTC:USDso" ? "BTC" : "ETH";
+  const asset = symbol === "WBTC:tUSDC" ? "BTC" : "ETH";
   // Binary contracts on DreamDEX are strictly BTC and ETH. Both are live
-  // deployable pools; bets/payouts settle in USDso.
+  // deployable pools; bets/payouts settle in tUSDC.
   const live = true;
   const color = asset === "BTC" ? "#f59e0b" : "#627eea";
   return {

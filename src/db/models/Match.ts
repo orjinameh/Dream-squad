@@ -210,9 +210,9 @@ const MatchSchema = new Schema<MatchDoc>(
     // Bot difficulty
     botDifficulty: { type: String, enum: ["easy", "normal", "hard"], default: "normal" },
     // DreamDEX market integration
-    marketId: { type: String, default: "SOMI:USDso" },
+    marketId: { type: String, default: "SOMI:tUSDC" },
     executionConfig: {
-      marketSymbol: { type: String, default: "SOMI:USDso" },
+      marketSymbol: { type: String, default: "SOMI:tUSDC" },
       poolAddress: { type: String, default: "0x259fD6559214dd5aD3752322426eA9F9fABEFff4" },
       amountPerRound: { type: Number, default: 1 },
     },

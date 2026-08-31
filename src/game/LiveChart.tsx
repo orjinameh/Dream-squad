@@ -228,7 +228,7 @@ export function LiveChart({ asset, height = 260, showHeader = true }: Props) {
       {showHeader && (
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
           <span style={{ fontSize: 12, fontWeight: 800, letterSpacing: "0.08em", color: "#94a3b8" }}>
-            {symbol} {"\u00B7"} USDso SETTLEMENT
+            {symbol} {"\u00B7"} tUSDC SETTLEMENT
           </span>
           <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
             <span style={{ fontSize: 10, letterSpacing: "0.08em", color: connected ? "#10b981" : "#64748b" }}>

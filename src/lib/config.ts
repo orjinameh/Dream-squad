@@ -150,9 +150,9 @@ export const IS_OPERATOR_AUTHORIZED_ABI = [
 
 /** Approximate USD prices for dollar-pill conversion. */
 export const APPROX_PRICES: Record<string, number> = {
-  "SOMI:USDso": 0.1,
-  "WETH:USDso": 3500,
-  "WBTC:USDso": 95000,
+  "SOMI:tUSDC": 0.1,
+  "WETH:tUSDC": 3500,
+  "WBTC:tUSDC": 95000,
 };
 
 /** Convert a round dollar amount to approximate base-token quantity. */

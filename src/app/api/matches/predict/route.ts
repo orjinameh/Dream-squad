@@ -96,7 +96,7 @@ async function resolveRound(match: any, now: Date): Promise<{
   playerBalance: number;
   rivalBalance: number;
 }> {
-  const marketSymbol = match.executionConfig?.marketSymbol ?? "SOMI:USDso";
+  const marketSymbol = match.executionConfig?.marketSymbol ?? "SOMI:tUSDC";
   const roundNumber = match.currentRound;
   const matchId = match._id;
 

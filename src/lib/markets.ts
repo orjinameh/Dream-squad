@@ -12,7 +12,7 @@ export interface MarketConfig {
   pool: `0x${string}`;
   /** Base token display decimals. */
   baseDecimals: number;
-  /** Quote token display decimals (always 18 for USDso pairs). */
+  /** Quote token display decimals (always 18 for tUSDC pairs). */
   quoteDecimals: number;
   /** Minimum order size in human base units (pool minQuantity). */
   minAmount: number;
@@ -30,24 +30,24 @@ export const GAS_LIMIT_PER_ORDER = 1_500_000n;
 export const OPERATOR_MIN_GAS_BUFFER = 0.05; // STT
 
 export const MARKETS: Record<string, MarketConfig> = {
-  "SOMI:USDso": {
-    symbol: "SOMI:USDso",
+  "SOMI:tUSDC": {
+    symbol: "SOMI:tUSDC",
     pool: "0x259fD6559214dd5aD3752322426eA9F9fABEFff4",
     baseDecimals: 18,
     quoteDecimals: 18,
     minAmount: 1,
     lotSize: 0.01,
   },
-  "WETH:USDso": {
-    symbol: "WETH:USDso",
+  "WETH:tUSDC": {
+    symbol: "WETH:tUSDC",
     pool: "0xD180195da5459C7a0DEA188ed61216ec43682b50",
     baseDecimals: 18,
     quoteDecimals: 18,
     minAmount: 0.001,
     lotSize: 0.001,
   },
-  "WBTC:USDso": {
-    symbol: "WBTC:USDso",
+  "WBTC:tUSDC": {
+    symbol: "WBTC:tUSDC",
     pool: "0x3605f28aA7C50e7441211e77Cb0762d49539326C",
     baseDecimals: 8,
     quoteDecimals: 18,

@@ -59,12 +59,12 @@ export async function POST(req: Request): Promise<Response> {
 
     const asset = input.predictionAsset ?? "BTC";
     const matchId = randomUUID();
-    // Resolve the on-chain market the player chose. Defaults to SOMI:USDso (the
+    // Resolve the on-chain market the player chose. Defaults to SOMI:tUSDC (the
     // only live pool today). A picked market that isn't in the registry falls
     // back to the default so we never persist a non-executable pool.
     const marketSymbol = input.marketSymbol && getMarket(input.marketSymbol)
       ? input.marketSymbol
-      : "SOMI:USDso";
+      : "SOMI:tUSDC";
     // Real entry price from the DreamDEX oracle (no synthetic model). If the
     // feed is unreachable at creation the match still opens with entry 0 and
     // the first round anchors on a live fetch (see predict resolution).
