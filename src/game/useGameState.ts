@@ -673,6 +673,14 @@ export function useGameState(): GameHook {
     // never clobbering proceedToReveal's own advance between rounds.
     const midRound = phase === "ROUND_START" || phase === "ROUND_ACTIVE" || phase === "ROUND_LOCKED"
       || phase === "ROUND_EXECUTING" || phase === "ROUND_REVEAL" || phase === "ROUND_IMPACT";
+    // STAKE GATE: while the player is on the READY_UP stake screen, NEVER
+    // auto-advance into the fight just because the server already opened round
+    // 1. The only way out of READY_UP is the explicit START DUEL action, which
+    // moves to MATCH_INTRO/ROUND_START itself. Otherwise the poll effect would
+    // kick the player out of the stake screen within seconds (the server opens
+    // round 1 ACTIVE the instant createMatch runs) — letting the match start
+    // before the stake is confirmed.
+    if (phase === "READY_UP") return;
     if (ss.roundPhase === "ACTIVE" && !midRound) {
       roundIdentityRef.current = `${isBotMatch ? "bot" : "pvp"}-${ss.currentRound}`;
       activeRoundNumRef.current = ss.currentRound;
