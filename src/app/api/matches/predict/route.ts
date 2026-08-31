@@ -59,8 +59,20 @@ async function ecArenaForMatch(match: any, asset: "BTC" | "ETH"): Promise<EcAren
   try {
     const arena = await findArenaFloor(asset, 30);
     if (!arena) return null;
+    // Only re-anchor if a fresh arena differs from the pinned one. The arena + its
+    // window-open YES seed must be STABLE across the whole window so that a single
+    // position (one directional call, one stake) cleanly spans multiple matches —
+    // and so every round resolves against the SAME real reference instead of the
+    // previous round's near-identical read (the source of all-FLAT 0-0 draws).
+    const same = pinned?.marketId === arena.marketId;
+    const set: Record<string, unknown> = { "priceModel.arena": arena };
+    if (!same && !(match.priceModel?.arenaOpen && match.priceModel.arenaOpen > 0)) {
+      set["priceModel.arenaOpen"] = await readArenaPrice(arena).then((q) =>
+        q.yesPrice && q.yesPrice > 0 ? q.yesPrice : 0,
+      ).catch(() => 0);
+    }
     await import("@/db/models/Match").then(({ Match }) =>
-      Match.updateOne({ _id: match._id }, { $set: { "priceModel.arena": arena } }),
+      Match.updateOne({ _id: match._id }, { $set: set }),
     ).catch(() => {});
     return arena;
   } catch (err) {
@@ -146,8 +158,6 @@ async function resolveRound(match: any, now: Date): Promise<{
   // the outer handler records an honest no-op draw (never a fake UP/DOWN).
   const resolvedRounds = match.rounds ?? [];
   const prevRound = resolvedRounds.length > 0 ? resolvedRounds[resolvedRounds.length - 1] : undefined;
-  const entryPrice = match.priceModel?.entryPrice ?? 0;
-  const arenaSeed = prevRound?.endPrice ?? entryPrice;
   const asset = (match.priceModel?.asset ?? match.predictionAsset ?? "BTC") as "BTC" | "ETH";
 
   const arena = await ecArenaForMatch(match, asset);
@@ -155,13 +165,30 @@ async function resolveRound(match: any, now: Date): Promise<{
     throw new Error(`no live EC arena floor for ${asset} — arena is between windows`);
   }
   const quote = await readArenaPrice(arena);
-  if (quote.yesPrice == null || !(arenaSeed > 0)) {
-    throw new Error(`EC YES price unavailable for ${arena.marketId} (seed=${arenaSeed})`);
+  if (quote.yesPrice == null || !(quote.yesPrice > 0)) {
+    throw new Error(`EC YES price unavailable for ${arena.marketId}`);
   }
 
-  const diff = quote.yesPrice - arenaSeed;
+  // ── WINDOW-OPEN ANCHOR ──────────────────────────────────────────────────────
+  // The match's ONE position reference: the EC window's opening YES price, pinned
+  // once when the arena is first observed (or when the match re-anchors to a new
+  // window). Every round in a match AND any rematch inside the same window resolves
+  // against THIS same seed — so a single directional call / single stake is reused
+  // across matches until the window settles, and the real cumulative movement of
+  // the 15-min EC window drives the outcome (never a previous-round micro-delta).
+  // The spot `priceModel.entryPrice` is a USD price on a different scale and must
+  // NOT be used here — it would misclassify every round.
+  const prevArenaOpen = match.priceModel?.arenaOpen;
+  const arenaOpen = prevArenaOpen && prevArenaOpen > 0 ? prevArenaOpen : quote.yesPrice;
+  if (prevArenaOpen !== arenaOpen && !(prevArenaOpen > 0)) {
+    await import("@/db/models/Match").then(({ Match }) =>
+      Match.updateOne({ _id: match._id }, { $set: { "priceModel.arenaOpen": arenaOpen } }),
+    ).catch(() => {});
+  }
+
+  const diff = quote.yesPrice - arenaOpen;
   const actual: "UP" | "DOWN" | "FLAT" = diff > EC_ORACLE_FLAT_BAND ? "UP" : diff < -EC_ORACLE_FLAT_BAND ? "DOWN" : "FLAT";
-  const startPrice = arenaSeed;
+  const startPrice = prevRound?.endPrice ?? arenaOpen;
   const endPrice = quote.yesPrice;
   const volume = [startPrice, endPrice];
 
@@ -721,9 +748,14 @@ function buildState(match: any, serverTime: Date): MatchStateResponse {
   // entry price (round 1) or the previous round's real close. The live close is
   // read by the on-chain chart; nothing here is synthesized.
   const asset = match.priceModel?.asset ?? match.predictionAsset ?? "BTC";
-  const entryPrice = match.priceModel?.entryPrice ?? 0;
+  // The client-facing round anchor is the same window-open YES seed the server
+  // resolves rounds against (never the USD spot entryPrice, which is a different
+  // scale). Fall back to the last real close, then the arena open.
+  const windowOpen = match.priceModel?.arenaOpen ?? (match.priceModel?.arena as any)?.open;
   const prevRound = rounds.length > 0 ? rounds[rounds.length - 1] : undefined;
-  const currentOpen = match.currentRound === 1 ? entryPrice : (prevRound?.endPrice ?? entryPrice);
+  const currentOpen = match.currentRound === 1
+    ? (windowOpen || prevRound?.endPrice || 0)
+    : (prevRound?.endPrice ?? windowOpen ?? 0);
   const currentCheckpoint = match.roundPhase === "ACTIVE" && match.status === "ACTIVE"
     ? {
         startPrice: currentOpen,
