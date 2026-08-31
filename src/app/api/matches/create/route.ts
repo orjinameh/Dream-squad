@@ -46,14 +46,29 @@ export async function POST(req: Request): Promise<Response> {
     await connectToDatabase();
     const address = normalizeAddress(input.playerAddress);
 
-    // ENFORCE ONE ACTIVE MATCH PER WALLET
-    const activeMatch = await Match.findOne({
-      $or: [{ playerAddress: address }, { player2Address: address }],
-      status: "ACTIVE",
+    // ENFORCE ONE LIVE STAKE PER WALLET (bot + PvP alike).
+    // A player may not open and stake a NEW match while they still have funds
+    // locked in a prior match's escrow. This is the "one stake per window" rule:
+    // the escrow stake is held on-chain until the match/window settles, so we
+    // block any new match while a previous match either is ACTIVE or has an
+    // escrow that has not yet resolved (default "PENDING"). This covers BOTH
+    // bot and real PvP matches so nobody can double-stake across matches while
+    // the earlier stake is still locked.
+    const blocked = await Match.findOne({
+      $or: [
+        { $or: [{ playerAddress: address }, { player2Address: address }], status: "ACTIVE" },
+        {
+          $or: [{ playerAddress: address }, { player2Address: address }],
+          escrowStatus: { $nin: ["SETTLED", "DRAWN", "FAILED"] },
+        },
+      ],
     }).lean();
 
-    if (activeMatch) {
-      return jsonError(409, "already in an active match");
+    if (blocked) {
+      const reason = blocked.status === "ACTIVE"
+        ? "already in an active match"
+        : "your previous match's stake is still locked until the event window settles on-chain";
+      return jsonError(409, reason);
     }
 
     const now = new Date();

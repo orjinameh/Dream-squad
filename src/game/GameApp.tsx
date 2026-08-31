@@ -1023,6 +1023,16 @@ function BotStakePanel({ game, escrow }: { game: ReturnType<typeof useGameState>
         See it on-chain: call <code>matches(escrowMatchId)</code> on {ESCROW_ADDRESS.slice(0, 8)}...
       </div>
 
+      <div style={{
+        fontSize: 11, color: "#fbbf24", lineHeight: 1.5, marginBottom: 12,
+        padding: "8px 10px", borderRadius: 8, border: "1px dashed #f59e0b",
+        background: "rgba(245,158,11,0.06)",
+      }}>
+        {"\u23F1"} Your stake is locked for the ~15 min Event-Contract window and settles
+        on-chain. You can't open another stake until this one resolves — WIN/REFUND or
+        LOSS. Want a fresh stake? Wait for this window to settle or play it out first.
+      </div>
+
       <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
         {presets.map((a) => (
           <button key={a} onClick={() => setStake(a)} style={{
@@ -1464,7 +1474,11 @@ function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; 
         {(game.phase === "ROUND_REVEAL" || game.phase === "ROUND_IMPACT") && (
           <div style={{ textAlign: "center" }}>
             <div style={{ fontSize: 14, color: "#64748b", letterSpacing: "0.1em" }}>
-              {game.roundResult?.isDraw ? "DRAW ROUND — NO DAMAGE" : game.roundResult?.playerCorrect ? "YOU PREDICTED CORRECTLY!" : "MISS! RIVAL SCORES!"}
+              {game.roundResult?.isDraw
+                ? (game.roundResult.playerCorrect === false && game.roundResult.rivalCorrect === false)
+                  ? "YOU BOTH LOST THIS ROUND — NO ONE ATTACKED"
+                  : "DRAW ROUND — NO DAMAGE"
+                : game.roundResult?.playerCorrect ? "YOU PREDICTED CORRECTLY!" : "MISS! RIVAL SCORES!"}
             </div>
             {game.roundResult && !game.roundResult.isDraw && (
               <div style={{ fontSize: 12, color: game.roundResult.playerCorrect ? "#10b981" : "#ef4444", fontWeight: 700, marginTop: 4 }}>
