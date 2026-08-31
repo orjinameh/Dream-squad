@@ -7,6 +7,7 @@ import { CHARACTERS } from "./characters";
 import { TRADE_MARKETS, PREDICTIONS, type GameMode, type PredictionConfig, type TradeMarket, type BotDifficulty, type FighterState } from "./types";
 import { WalletModal } from "@/components/WalletModal";
 import { LiveChart } from "./LiveChart";
+import { EcPositionPanel } from "./EcPositionPanel";
 import { useMatchmaking } from "./useMatchmaking";
 import { useAccount } from "wagmi";
 import { useDreamDEX } from "./useDreamDEX";
@@ -1288,6 +1289,7 @@ function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; 
         {(game.phase === "ROUND_ACTIVE" || game.phase === "ROUND_LOCKED" || game.phase === "ROUND_REVEAL" || game.phase === "ROUND_IMPACT") && (
           <div style={{ width: "100%", maxWidth: 460, margin: "0 auto 16px" }}>
             <LiveChart asset={game.selectedPrediction?.asset ?? "BTC"} height={180} />
+            {game.matchId && <EcPositionPanel matchId={game.matchId} compact />}
           </div>
         )}
 
@@ -1612,14 +1614,12 @@ function MatchResult({ game, onRematch }: { game: ReturnType<typeof useGameState
         })()}
       </div>
 
-      <div style={{ width: "100%", maxWidth: 340, textAlign: "center", marginBottom: 24, padding: "12px 16px", border: "1px dashed #7c3aed", borderRadius: 8, background: "rgba(124,58,237,0.06)" }}>
-        <div style={{ fontSize: 11, color: "#a855f7", fontWeight: 800, letterSpacing: "0.1em", marginBottom: 4 }}>
-          {"\u23F1"} EC SETTLEMENT
-        </div>
-        <div style={{ fontSize: 11, color: "#94a3b8", lineHeight: 1.5 }}>
-          These rounds track the real Event Contract window. Your P&L here is live;
-          it {"\u201C"}locks in{"\u201D"} when the ~15 min window settles on-chain. DUEL AGAIN to
-          keep riding the same window &amp; net your moves together.
+      <div style={{ marginBottom: 24, width: "100%", maxWidth: 340 }}>
+        {game.matchId && <EcPositionPanel matchId={game.matchId} compact />}
+        <div style={{ fontSize: 11, color: "#94a3b8", lineHeight: 1.5, textAlign: "center", marginTop: 4 }}>
+          These rounds track the real Event Contract window. P&amp;L here is live; it
+          {"\u201C"}locks in{"\u201D"} when the window settles on-chain. DUEL AGAIN to keep riding
+          the same window &amp; net your moves together.
         </div>
       </div>
 

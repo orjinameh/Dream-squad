@@ -6,7 +6,8 @@ import { jsonError } from "@/lib/utils";
 import { executeGameRound, type RoundExecutionResult } from "@/lib/operator";
 import { getPvpWinPoints } from "@/lib/rank";
 import { settlePvpMatchEscrow, settleBotMatchEscrow } from "@/lib/ec/settleMatch";
-import { findArenaFloor, readArenaPrice, type EcArenaMarket } from "@/lib/ec/executor";
+import { readArenaPrice } from "@/lib/ec/executor";
+import { ecArenaForMatch } from "@/lib/ec/arena";
 import { z } from "zod";
 import { isAddress } from "viem";
 
@@ -41,45 +42,6 @@ function computeLongestStreak(rounds: Array<{ playerCorrect: boolean }>): number
 // Flat band for the EC YES-price oracle (probability scale 0..1). Any round
 // whose YES mid moves by less than this is judged FLAT.
 const EC_ORACLE_FLAT_BAND = 0.0008;
-
-/**
- * Resolve the Event-Contract arena floor a match's rounds run inside. Reuses
- * the arena already pinned on the match while it is still live, otherwise
- * discovers the freshest active BTC/ETH binary window via `findArenaFloor` and
- * pins it on the match. Returns null when no live EC floor exists right now
- * (the arena between windows / pre-resolution) — the caller falls back to an
- * honest FLAT no-op rather than faking a price.
- */
-async function ecArenaForMatch(match: any, asset: "BTC" | "ETH"): Promise<EcArenaMarket | null> {
-  const pinned = match.priceModel?.arena as EcArenaMarket | undefined;
-  const now = Math.floor(Date.now() / 1000);
-  if (pinned?.marketId && pinned.expiry > now) {
-    return pinned;
-  }
-  try {
-    const arena = await findArenaFloor(asset, 30);
-    if (!arena) return null;
-    // Only re-anchor if a fresh arena differs from the pinned one. The arena + its
-    // window-open YES seed must be STABLE across the whole window so that a single
-    // position (one directional call, one stake) cleanly spans multiple matches —
-    // and so every round resolves against the SAME real reference instead of the
-    // previous round's near-identical read (the source of all-FLAT 0-0 draws).
-    const same = pinned?.marketId === arena.marketId;
-    const set: Record<string, unknown> = { "priceModel.arena": arena };
-    if (!same && !(match.priceModel?.arenaOpen && match.priceModel.arenaOpen > 0)) {
-      set["priceModel.arenaOpen"] = await readArenaPrice(arena).then((q) =>
-        q.yesPrice && q.yesPrice > 0 ? q.yesPrice : 0,
-      ).catch(() => 0);
-    }
-    await import("@/db/models/Match").then(({ Match }) =>
-      Match.updateOne({ _id: match._id }, { $set: set }),
-    ).catch(() => {});
-    return arena;
-  } catch (err) {
-    console.error(`[predict] arena floor discovery failed for ${asset}`, err);
-    return null;
-  }
-}
 
 /**
  * AUTHORITATIVE ROUND RESOLUTION
