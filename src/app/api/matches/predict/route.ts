@@ -5,7 +5,7 @@ import { normalizeAddress } from "@/lib/addresses";
 import { jsonError } from "@/lib/utils";
 import { executeGameRound, type RoundExecutionResult } from "@/lib/operator";
 import { getPvpWinPoints } from "@/lib/rank";
-import { settlePvpMatchEscrow } from "@/lib/ec/settleMatch";
+import { settlePvpMatchEscrow, settleBotMatchEscrow } from "@/lib/ec/settleMatch";
 import { findArenaFloor, readArenaPrice, type EcArenaMarket } from "@/lib/ec/executor";
 import { z } from "zod";
 import { isAddress } from "viem";
@@ -551,7 +551,8 @@ export async function POST(req: Request): Promise<Response> {
           const updated = await Match.findById(match._id);
           if (updated && nextStatus === "COMPLETED") {
             await updatePlayerStatsAtomic(updated, updated.rounds, "draw", now);
-            await settlePvpMatchEscrow(updated);
+            if (updated.opponentType === "player") await settlePvpMatchEscrow(updated);
+            else await settleBotMatchEscrow(updated);
           }
           return Response.json(buildState(updated!, now));
         }
@@ -619,9 +620,12 @@ export async function POST(req: Request): Promise<Response> {
         if (matchDecided) {
           const matchForStats = { ...(typeof claim.toObject === "function" ? claim.toObject() : claim), rounds: allRounds };
           await updatePlayerStatsAtomic(matchForStats, allRounds, winner, now);
-          await Match.findByIdAndUpdate(match._id, { $set: { statsProcessed: "COMPLETE" as StatsProcessedStatus } });
-          // Real on-chain pot settlement (PvP only): pay the winner / refund both.
-          await settlePvpMatchEscrow(matchForStats);
+            await Match.findByIdAndUpdate(match._id, { $set: { statsProcessed: "COMPLETE" as StatsProcessedStatus } });
+          // Real on-chain settlement. PvP: pay the winner the pot / refund both on
+          // draw. Bot: solo — refund the player's stake on win/draw, or send it to
+          // the house treasury on a loss (the bot never stakes).
+          if (match.opponentType === "player") await settlePvpMatchEscrow(matchForStats);
+          else await settleBotMatchEscrow(matchForStats);
         }
 
         const updated = await Match.findById(match._id);
@@ -678,7 +682,8 @@ export async function POST(req: Request): Promise<Response> {
         if (decided && updated) {
           await updatePlayerStatsAtomic(updated, updated.rounds ?? [], "draw", now);
           await Match.findByIdAndUpdate(match._id, { $set: { statsProcessed: "COMPLETE" as StatsProcessedStatus } });
-          await settlePvpMatchEscrow(updated);
+          if (updated.opponentType === "player") await settlePvpMatchEscrow(updated);
+          else await settleBotMatchEscrow(updated);
           const finalized = await Match.findById(match._id);
           return Response.json({ ...buildState(finalized!, now), executionFailed: true, error: "DreamDEX execution failed, round recorded as no-op" });
         }

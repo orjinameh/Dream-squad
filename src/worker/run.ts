@@ -1,7 +1,7 @@
 import { connectToDatabase } from "@/db/connect";
 import { Match, type EscrowStatus } from "@/db/models/Match";
 import { matchInfo } from "@/lib/ec/escrow";
-import { settlePvpMatchEscrow } from "@/lib/ec/settleMatch";
+import { settlePvpMatchEscrow, settleBotMatchEscrow } from "@/lib/ec/settleMatch";
 
 /**
  * DreamDuel settlement worker.
@@ -80,9 +80,44 @@ async function sweepCompletedMatches(): Promise<void> {
   }
 }
 
+/**
+ * Sweep completed BOT matches. The player is the only possible real staker (the
+ * bot / house never stakes). Only run solo settlement when the player actually
+ * staked on-chain — otherwise there's no money and nothing to settle.
+ */
+async function sweepCompletedBotMatches(): Promise<void> {
+  const pending = await Match.find({
+    opponentType: "bot",
+    status: "COMPLETED",
+    escrowStatus: { $nin: ["SETTLED", "DRAWN"] },
+  });
+
+  for (const match of pending) {
+    const id = match._id;
+    try {
+      let staked: boolean | null = null;
+      try {
+        const onchain = (await matchInfo(id)) as OnchainMatch | null;
+        staked = Boolean(onchain && (onchain.stakedA || onchain.stakedB));
+      } catch {
+        staked = null; // read failed — leave for a later sweep
+      }
+      if (staked === false) continue; // no real money staked — nothing to settle
+
+      const result = await settleBotMatchEscrow(match.toObject());
+      if (result === "skipped") {
+        console.warn(`[worker] bot settle skipped match=${id}`);
+      }
+    } catch (err) {
+      console.error(`[worker] bot sweep failed for match=${id}`, err);
+    }
+  }
+}
+
 async function runOnce(): Promise<void> {
   await connectToDatabase();
   await sweepCompletedMatches();
+  await sweepCompletedBotMatches();
   console.log(`[worker] sweep complete @ ${new Date().toISOString()}`);
 }
 

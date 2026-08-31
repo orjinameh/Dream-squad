@@ -23,9 +23,11 @@ import { IERC20 } from "./IERC20.sol";
 contract DreamDuelEscrow {
     event Staked(bytes32 indexed matchId, address indexed player, uint256 amount);
     event Settled(bytes32 indexed matchId, address indexed winner, uint256 amount);
+    event SoloSettled(bytes32 indexed matchId, address player, bool playerWon);
     event Drawn(bytes32 indexed matchId);
     event Refunded(bytes32 indexed matchId, address indexed player, uint256 amount);
     event RefundDelaySet(uint256 delay);
+    event HouseSet(address house);
 
     error NotAdmin();
     error InvalidPlayer();
@@ -51,6 +53,7 @@ contract DreamDuelEscrow {
 
     IERC20 public immutable collateral;
     address public admin;
+    address public house; // treasury that receives forfeited solo (bot) stakes
     uint256 public refundDelay; // seconds a player must wait before self-refunding
 
     mapping(bytes32 => Match) public matches;
@@ -58,6 +61,7 @@ contract DreamDuelEscrow {
     constructor(address collateral_, address admin_, uint256 refundDelay_) {
         collateral = IERC20(collateral_);
         admin = admin_;
+        house = admin_;
         refundDelay = refundDelay_;
         emit RefundDelaySet(refundDelay_);
     }
@@ -126,6 +130,44 @@ contract DreamDuelEscrow {
         bool ok = collateral.transfer(winner, pot);
         if (!ok) revert TransferFailed();
         emit Settled(matchId, winner, pot);
+    }
+
+    /**
+     * @notice Set the treasury that receives forfeited solo (bot-match) stakes.
+     * @dev A bot never stakes; when a player loses a solo match their stake is
+     *      transferred here. Defaults to `admin`. Admin only.
+     */
+    function setHouse(address newHouse) external onlyAdmin {
+        if (newHouse == address(0)) revert InvalidPlayer();
+        house = newHouse;
+        emit HouseSet(newHouse);
+    }
+
+    /**
+     * @notice Settle a SOLO (bot) match where only ONE participant staked.
+     * @dev Used for bot matches: the player stakes real tUSDC, the bot stakes
+     *      nothing. If `playerWon` (or drew) the player's stake is returned;
+     *      otherwise it is transferred to the configured `house` treasury.
+     *      Requires EXACTLY one side staked — cannot be used on a matched PvP
+     *      pot (which must go through `settle`/`draw`).
+     */
+    function settleSolo(bytes32 matchId, bool playerWon) external onlyAdmin {
+        Match storage m = matches[matchId];
+        if (m.settled || m.drawn) revert NotSettled();
+        if (m.stakedA == m.stakedB) revert WrongStake(); // require exactly one staker
+        m.settled = true;
+        address staker = m.stakedA ? m.playerA : m.playerB;
+        if (playerWon) {
+            bool ok = collateral.transfer(staker, m.stake);
+            if (!ok) revert TransferFailed();
+            emit SoloSettled(matchId, staker, true);
+            emit Settled(matchId, staker, m.stake);
+        } else {
+            bool ok = collateral.transfer(house, m.stake);
+            if (!ok) revert TransferFailed();
+            emit SoloSettled(matchId, staker, false);
+            emit Settled(matchId, house, m.stake);
+        }
     }
 
     /** @notice Refund both players their stakes (e.g. a draw). Admin only. */

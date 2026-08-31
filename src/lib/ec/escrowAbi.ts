@@ -61,6 +61,50 @@ export const DREAMDUEL_ESCROW_ABI = [
   },
   {
     "type": "function",
+    "name": "house",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "setHouse",
+    "inputs": [
+      {
+        "name": "newHouse",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "settleSolo",
+    "inputs": [
+      {
+        "name": "matchId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "playerWon",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "matches",
     "inputs": [
       {
@@ -296,6 +340,44 @@ export const DREAMDUEL_ESCROW_ABI = [
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "SoloSettled",
+    "inputs": [
+      {
+        "name": "matchId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "player",
+        "type": "address",
+        "indexed": false,
+        "internalType": "address"
+      },
+      {
+        "name": "playerWon",
+        "type": "bool",
+        "indexed": false,
+        "internalType": "bool"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "HouseSet",
+    "inputs": [
+      {
+        "name": "house",
+        "type": "address",
+        "indexed": false,
+        "internalType": "address"
       }
     ],
     "anonymous": false

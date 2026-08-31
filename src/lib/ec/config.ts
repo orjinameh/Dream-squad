@@ -58,12 +58,16 @@ export const EC_TICK = 1000;
 export const EC_LOT = 1;
 
 /**
- * DreamDuel PvP escrow contract (on-chain tUSDC custody for match stakes).
+ * DreamDuel escrow contract (on-chain tUSDC custody for match stakes).
  * Deployed to Somnia testnet. Players pledge into it at match start; the
  * backend relayer (specified as `admin`) settles the winner on-chain using the
  * real EC share price as the match oracle.
  *
- * ADDRESS: set to the deployed contract once funded + deployed.
+ * NOTE: solo (bot-match) staking required a contract ADDITION (`settleSolo`,
+ * `setHouse`, `house`) — that is NEW bytecode, so the contract must be
+ * REDEPLOYED. `ESCROW_ADDRESS` below must be updated to the new deployment
+ * (run `forge script` via contracts/script/Deploy.s.sol) before solo flows
+ * work. The old address only supports PvP settle/draw.
  */
 export const ESCROW_ADDRESS = "0xBD2DB28715b2Ed5567514Ad888f5760d777CE8bc" as `0x${string}`;
 
@@ -72,3 +76,10 @@ export const ESCROW_REFUND_DELAY = 900;
 
 /** The escrow's controlled `admin` is the same operator that drives matches. */
 export const ESCROW_ADMIN = "0xdd68998C099f7570E59019ae35469E5603cEDA11" as `0x${string}`;
+
+/**
+ * Treasury that receives forfeited solo (bot-match) stakes on a player loss.
+ * The deploy script defaults this to `admin` (the operator wallet) unless a
+ * distinct house address is configured.
+ */
+export const ESCROW_HOUSE = ESCROW_ADMIN as `0x${string}`;

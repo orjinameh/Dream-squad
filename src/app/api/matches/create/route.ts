@@ -6,6 +6,7 @@ import { jsonError } from "@/lib/utils";
 import { buildMatchPriceModel } from "@/lib/prices";
 import { baseToFeedAsset, fetchSpotAsset } from "@/lib/price-feed";
 import { getMarket } from "@/lib/markets";
+import { openBotMatchEscrow } from "@/lib/ec/settleMatch";
 import { z } from "zod";
 import { isAddress } from "viem";
 
@@ -16,6 +17,7 @@ const createMatchSchema = z.object({
   rivalChar: z.string().min(1),
   mode: z.string().min(1),
   totalRounds: z.number().int().positive(),
+  opponentType: z.enum(["bot", "player"]).optional(),
   botDifficulty: z.enum(["easy", "normal", "hard"]).optional(),
   predictionAsset: z.string().optional(),
   amountPerRound: z.number().positive().optional(),
@@ -77,6 +79,7 @@ export async function POST(req: Request): Promise<Response> {
     // plus live-resolved round checkpoints (appended by the predict endpoint).
     const priceModel = buildMatchPriceModel(asset, entryPrice);
 
+    const isBot = input.opponentType !== "player";
     const match = await Match.create({
       _id: matchId,
       playerAddress: address,
@@ -90,6 +93,7 @@ export async function POST(req: Request): Promise<Response> {
       roundStartTime: now,
       roundDeadline: deadline,
       status: "ACTIVE",
+      opponentType: isBot ? "bot" : "player",
       botDifficulty: input.botDifficulty ?? "normal",
       predictionAsset: asset,
       predictionQuestion: `WILL ${asset} GO UP OR DOWN?`,
@@ -106,6 +110,13 @@ export async function POST(req: Request): Promise<Response> {
       playerAmountPerRound: input.amountPerRound ?? 1,
       rivalAmountPerRound: generateRivalStake(),
     });
+
+    // Bot matches: open a SOLO escrow (player vs house) so the player can pledge
+    // real tUSDC when the bot fight starts. Best-effort — a failure is reconciled
+    // by the settlement worker; never blocks match creation.
+    if (isBot) {
+      void openBotMatchEscrow(matchId, address).catch(() => {});
+    }
 
     return Response.json({
       matchId: match._id,

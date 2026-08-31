@@ -110,4 +110,60 @@ contract DreamDuelEscrowTest is Test {
         vm.prank(alice); vm.expectRevert(DreamDuelEscrow.RefundNotDue.selector);
         escrow.refund(matchId);
     }
+
+    // ── Solo (bot) settlement ────────────────────────────────────────────────
+
+    bytes32 soloId = keccak256("solo-1");
+
+    function testSoloWinRefundsPlayerStake() public {
+        vm.prank(admin); escrow.openMatch(soloId, alice, bob); // bot = bob, never stakes
+        vm.prank(alice); escrow.stake(soloId, 100e6);
+        uint256 before = token.balanceOf(alice);
+        vm.prank(admin); escrow.settleSolo(soloId, true);
+        assertEq(token.balanceOf(alice), before + 100e6, "player got stake back on win");
+        assertEq(token.balanceOf(address(escrow)), 0, "escrow emptied");
+    }
+
+    function testSoloLossSendsStakeToHouse() public {
+        vm.prank(admin); escrow.openMatch(soloId, alice, bob);
+        vm.prank(alice); escrow.stake(soloId, 100e6);
+        uint256 houseBefore = token.balanceOf(admin); // house defaults to admin
+        vm.prank(admin); escrow.settleSolo(soloId, false);
+        assertEq(token.balanceOf(admin), houseBefore + 100e6, "house received forfeited stake");
+        assertEq(token.balanceOf(alice), 1000e6 - 100e6, "player did not get stake back on loss");
+    }
+
+    function testSoloRequiresExactlyOneStaker() public {
+        vm.prank(admin); escrow.openMatch(soloId, alice, bob);
+        vm.prank(alice); escrow.stake(soloId, 100e6);
+        vm.prank(bob); escrow.stake(soloId, 100e6);
+        vm.prank(admin); vm.expectRevert(DreamDuelEscrow.WrongStake.selector);
+        escrow.settleSolo(soloId, true);
+    }
+
+    function testSoloCannotSettleWithNoStaker() public {
+        vm.prank(admin); escrow.openMatch(soloId, alice, bob);
+        vm.prank(admin); vm.expectRevert(DreamDuelEscrow.WrongStake.selector);
+        escrow.settleSolo(soloId, true);
+    }
+
+    function testSetHouseOnlyAdmin() public {
+        address house2 = address(0x9999);
+        vm.prank(admin); escrow.setHouse(house2);
+        assertEq(escrow.house(), house2);
+        vm.prank(alice); vm.expectRevert(DreamDuelEscrow.NotAdmin.selector);
+        escrow.setHouse(address(0x8888));
+        vm.prank(admin); vm.expectRevert(DreamDuelEscrow.InvalidPlayer.selector);
+        escrow.setHouse(address(0));
+    }
+
+    function testSoloLossGoesToConfiguredHouse() public {
+        address house2 = address(0x9999);
+        vm.prank(admin); escrow.setHouse(house2);
+        vm.prank(admin); escrow.openMatch(soloId, alice, bob);
+        vm.prank(alice); escrow.stake(soloId, 50e6);
+        vm.prank(admin); escrow.settleSolo(soloId, false);
+        assertEq(token.balanceOf(house2), 50e6, "configured house got stake");
+        assertEq(token.balanceOf(admin), 1000e6, "admin unchanged");
+    }
 }

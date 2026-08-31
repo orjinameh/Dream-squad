@@ -82,6 +82,38 @@ export async function settleOnchain(id: string, winner: `0x${string}`) {
   });
 }
 
+/**
+ * Admin: settle a SOLO (bot) match. The player is the only staker; the bot
+ * never stakes. `playerWon` true refunds the stake to the player; false sends
+ * it to the configured `house` treasury. Requires exactly one side staked.
+ */
+export async function settleSoloOnchain(id: string, playerWon: boolean) {
+  const wc = adminWallet();
+  return wc.writeContract({
+    address: ESCROW_ADDRESS,
+    abi: DREAMDUEL_ESCROW_ABI,
+    functionName: "settleSolo",
+    args: [escrowMatchId(id), playerWon],
+    chain: EC_CHAIN,
+    account: wc.account!,
+    gas: ADMIN_GAS,
+  });
+}
+
+/** Admin: point the `house` treasury (solo-loss recipient) at an address. */
+export async function setHouseOnchain(house: `0x${string}`) {
+  const wc = adminWallet();
+  return wc.writeContract({
+    address: ESCROW_ADDRESS,
+    abi: DREAMDUEL_ESCROW_ABI,
+    functionName: "setHouse",
+    args: [house],
+    chain: EC_CHAIN,
+    account: wc.account!,
+    gas: ADMIN_GAS,
+  });
+}
+
 /** Admin: refund both players (a draw / void). */
 export async function drawOnchain(id: string) {
   const wc = adminWallet();

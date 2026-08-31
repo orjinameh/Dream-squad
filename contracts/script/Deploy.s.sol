@@ -11,10 +11,19 @@ contract DeployScript is Script {
         address admin = 0xdd68998C099f7570E59019ae35469E5603cEDA11;
         uint256 refundDelay = 900;
 
+        // Optional distinct house/treasury that receives forfeited solo (bot)
+        // stakes. Leave as the admin wallet if you want solo losses kept in the
+        // same operator wallet.
+        address house = admin;
+
         vm.startBroadcast();
         DreamDuelEscrow escrow = new DreamDuelEscrow(tUSDC, admin, refundDelay);
+        if (house != admin) {
+            escrow.setHouse(house);
+        }
         vm.stopBroadcast();
 
         console2.log("DreamDuelEscrow deployed at:", address(escrow));
+        console2.log("house:", escrow.house());
     }
 }

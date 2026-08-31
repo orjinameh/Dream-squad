@@ -12,7 +12,7 @@ import { useAccount } from "wagmi";
 import { useDreamDEX } from "./useDreamDEX";
 import { useDreamEscrow } from "./useDreamEscrow";
 import { parseUnits, formatUnits } from "viem";
-import { EC_COLLATERAL_DECIMALS } from "@/lib/ec/config";
+import { EC_COLLATERAL_DECIMALS, ESCROW_ADDRESS } from "@/lib/ec/config";
 
 export default function GameApp() {
   const g = useGameState();
@@ -22,7 +22,7 @@ export default function GameApp() {
   const { isConnected, address } = useAccount();
   const mm = useMatchmaking(address as `0x${string}` | undefined);
   const dreamDex = useDreamDEX(g.marketSymbol);
-  const escrow = useDreamEscrow(g.isBotMatch ? undefined : (g.matchId ?? undefined));
+  const escrow = useDreamEscrow(g.matchId ?? undefined);
   const startedMatchRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -916,6 +916,118 @@ function ReadyUpScreen({ game, escrow, onReady }: {
   );
 }
 
+// Compact stake panel for BOT matches. The player is the ONLY real staker (the
+// bot / house never stakes). Shows real on-chain escrow state: whether the pot
+// is open, whether the player pledged, and how much. Win/draw returns the
+// stake; a loss sends it to the house treasury. Everything shown is read from
+// the deployed escrow contract — never simulated.
+function BotStakePanel({ game, escrow }: { game: ReturnType<typeof useGameState>; escrow: ReturnType<typeof useDreamEscrow> }) {
+  const [stake, setStake] = useState(10);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [faucetBusy, setFaucetBusy] = useState(false);
+  const presets = [1, 5, 10, 25, 50];
+
+  const handleStake = async () => {
+    if (!escrow.address) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await escrow.approveAndStake(parseUnits(String(stake), EC_COLLATERAL_DECIMALS));
+      escrow.refetch();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Stake failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleFaucet = async () => {
+    if (!escrow.address) return;
+    setFaucetBusy(true);
+    setError(null);
+    try {
+      await escrow.getFaucet(parseUnits("1000", EC_COLLATERAL_DECIMALS));
+      escrow.refetch();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Faucet failed");
+    } finally {
+      setFaucetBusy(false);
+    }
+  };
+
+  return (
+    <div style={{
+      width: "100%", maxWidth: 460, margin: "0 auto 16px", padding: "14px 18px",
+      border: "2px solid #7c3aed", borderRadius: 10, background: "rgba(124,58,237,0.08)",
+    }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+        <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.12em", color: "#a855f7" }}>
+          REAL STAKE {"\u2014"} SOLO ESCROW (BOT DOESN'T STAKE)
+        </span>
+        <span style={{ fontSize: 12, color: "#38bdf8", fontFamily: "'Courier New', monospace" }}>
+          tUSDC {escrow.usdcBalanceFormatted ?? "\u2014"}
+        </span>
+      </div>
+
+      {escrow.usdcBalanceFormatted != null && Number(escrow.usdcBalanceFormatted) < 10 && (
+        <button onClick={handleFaucet} disabled={faucetBusy} style={{
+          width: "100%", marginBottom: 8, padding: "6px 10px", borderRadius: 6, cursor: "pointer",
+          border: "1px dashed #f59e0b", background: "rgba(245,158,11,0.08)", color: "#fbbf24",
+          fontWeight: 700, fontSize: 11,
+        }}>
+          {faucetBusy ? "MINTING 1000 tUSDC..." : "+ GET 1000 TEST tUSDC"}
+        </button>
+      )}
+
+      <div style={{ fontSize: 11, color: "#94a3b8", lineHeight: 1.5, marginBottom: 10 }}>
+        Pledge real tUSDC. <span style={{ color: "#4ade80" }}>Win/Draw = stake returned</span>.{" "}
+        <span style={{ color: "#f87171" }}>Loss = stake sent to the house treasury.</span>
+        See it on-chain: call <code>matches(escrowMatchId)</code> on {ESCROW_ADDRESS.slice(0, 8)}...
+      </div>
+
+      <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
+        {presets.map((a) => (
+          <button key={a} onClick={() => setStake(a)} style={{
+            padding: "5px 10px", borderRadius: 6, cursor: "pointer",
+            border: stake === a ? "2px solid #a855f7" : "1px solid #334155",
+            background: stake === a ? "rgba(168,85,247,0.15)" : "#0f172a",
+            color: "#e2e8f0", fontWeight: 700, fontSize: 12,
+          }}>
+            {a} tUSDC
+          </button>
+        ))}
+      </div>
+
+      <div style={{ fontSize: 11, color: "#94a3b8", marginBottom: 8 }}>
+        YOU: {escrow.hasStaked ? "\u2713 STAKED" : "NOT STAKED"}
+        {"  "}<span style={{ color: "#334155" }}>|</span>{"  "}
+        POT: {escrow.stakeAmountFormatted || "0"} tUSDC
+      </div>
+
+      {escrow.hasStaked ? (
+        <div style={{ fontSize: 11, color: "#10b981", fontWeight: 700 }}>
+          Your tUSDC is locked in the escrow for this bot duel.
+        </div>
+      ) : (
+        <button onClick={handleStake} disabled={busy || !escrow.address} style={{
+          ...ctaButtonStyle, fontSize: 13, padding: "9px 18px", opacity: busy ? 0.6 : 1,
+          cursor: busy ? "wait" : "pointer", background: "linear-gradient(135deg, #7c3aed, #a855f7)",
+        }}>
+          {busy ? "APPROVING + STAKING..." : escrow.allowance == null ? "APPROVE + STAKE" : "\u2694 STAKE " + stake + " tUSDC"}
+        </button>
+      )}
+
+      {!escrow.address && (
+        <div style={{ marginTop: 6, fontSize: 10, color: "#f59e0b" }}>Connect your wallet to pledge real tUSDC.</div>
+      )}
+      {error && (
+        <div style={{ marginTop: 6, fontSize: 10, color: "#ef4444", wordBreak: "break-word" }}>{error}</div>
+      )}
+    </div>
+  );
+}
+
 function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; escrow: ReturnType<typeof useDreamEscrow> }) {
   const [countdown, setCountdown] = useState(3);
   const [showResult, setShowResult] = useState(false);
@@ -1093,6 +1205,11 @@ function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; 
               </div>
             )}
           </div>
+        )}
+
+        {/* Bot matches: real-stake pledge before round 1 (player-only escrow) */}
+        {game.isBotMatch && game.phase === "MATCH_INTRO" && escrow && (
+          <BotStakePanel game={game} escrow={escrow} />
         )}
 
         {/* Characters — small, at edges */}
