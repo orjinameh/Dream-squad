@@ -164,6 +164,7 @@ contract DreamDuelEscrowTest is Test {
         vm.prank(alice); escrow.stake(soloId, 50e6);
         vm.prank(admin); escrow.settleSolo(soloId, false);
         assertEq(token.balanceOf(house2), 50e6, "configured house got stake");
-        assertEq(token.balanceOf(admin), 1000e6, "admin unchanged");
+        assertEq(token.balanceOf(admin), 0, "admin unchanged (no cut)");
+        assertEq(token.balanceOf(address(escrow)), 0, "escrow emptied");
     }
 }
