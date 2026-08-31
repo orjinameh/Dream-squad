@@ -6,3 +6,9 @@ node_modules/
 next-env.d.ts
 .vscode/
 *.log
+
+# Foundry build artifacts, cache, and vendored libs
+contracts/out/
+contracts/cache/
+contracts/lib/
+broadcast/
