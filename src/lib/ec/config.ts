@@ -63,13 +63,11 @@ export const EC_LOT = 1;
  * backend relayer (specified as `admin`) settles the winner on-chain using the
  * real EC share price as the match oracle.
  *
- * NOTE: solo (bot-match) staking required a contract ADDITION (`settleSolo`,
- * `setHouse`, `house`) — that is NEW bytecode, so the contract must be
- * REDEPLOYED. `ESCROW_ADDRESS` below must be updated to the new deployment
- * (run `forge script` via contracts/script/Deploy.s.sol) before solo flows
- * work. The old address only supports PvP settle/draw.
+ * DEPLOYED (solo-capable, with settleSolo/setHouse/house) via cast create on
+ * nonce 49 — see chain 50312, tx 0x69e1...e4a0. Verified: admin, collateral
+ * (tUSDC), house (defaults to admin), refundDelay (900).
  */
-export const ESCROW_ADDRESS = "0xBD2DB28715b2Ed5567514Ad888f5760d777CE8bc" as `0x${string}`;
+export const ESCROW_ADDRESS = "0x95efe2E2C8D6bd99584Ed0630F566616cb7fB370" as `0x${string}`;
 
 /** Seconds a player must wait before self-refunding a stuck match. */
 export const ESCROW_REFUND_DELAY = 900;
