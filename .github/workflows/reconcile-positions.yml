@@ -2,13 +2,15 @@ name: Reconcile EC Positions
 
 # Settle DreamDEX EC positions on-chain from the REAL EC settlement. Vercel
 # (serverless) can't run a long-lived worker, so an external scheduler pings the
-# admin-guarded web hook every ~15s instead. The route is idempotent — it only
-# settles ACTIVE positions whose window has closed, so frequent calls are safe.
+# admin-guarded web hook on a short cadence instead. The route is idempotent —
+# it only settles ACTIVE positions whose window has closed, so frequent calls
+# are safe. GitHub Actions cron minimum is 1 minute (sub-minute isn't allowed),
+# so windows settle within ~1 min of closing.
 
 on:
   schedule:
-    # every 15 seconds
-    - cron: '*/15 * * * * *'
+    # every minute (min allowed by GitHub Actions)
+    - cron: '*/1 * * * * *'
   workflow_dispatch: {}
 
 jobs:
@@ -47,6 +49,10 @@ jobs:
           echo "http=$code"
           echo "body=$(cat /tmp/reconcile.out 2>/dev/null || echo '<empty>')"
 
+          if [ -z "$code" ]; then
+            echo "::error::Could not reach reconcile endpoint (empty HTTP code) - check VERCEL_RECONCILE_URL points at the deployed app."
+            exit 1
+          fi
           if [ "$code" = "401" ]; then
             echo "::error::Reconcile endpoint returned 401 - ADMIN_TOKEN mismatch between Vercel env and this repo secret."
             exit 1
