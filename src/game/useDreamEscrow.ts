@@ -5,7 +5,9 @@ import {
   useAccount,
   useReadContract,
   useWaitForTransactionReceipt,
+  useConnectorClient,
 } from "wagmi";
+import { createWalletClient, custom, type EIP1193Provider } from "viem";
 import { parseUnits, formatUnits, createPublicClient, http, type Hash } from "viem";
 import { encodeFunctionData } from "viem";
 import { EC_CHAIN, EC_RPC_URL, ESCROW_ADDRESS, EC_ADDRESSES, EC_COLLATERAL_DECIMALS } from "@/lib/ec/config";
@@ -109,37 +111,37 @@ export function useDreamEscrow(windowId?: string | null) {
   const isOpen = Boolean(raw?.open && !raw?.settled);
   const hasStaked = Boolean(raw && isMine && raw.balance > 0n);
 
-  // Writes go through the injected EIP-1193 provider DIRECTLY (not wagmi's
-  // useWriteContract) because wagmi's stacked prepare+send could hang without
-  // a popup on this chain. Raw eth_sendTransaction with explicit gas always
-  // provokes MetaMask's signature prompt or throws a surfaced error.
+  // Writes go through the connected wagmi connector's EIP-1193 provider (NOT
+  // raw window.ethereum, which is often unset even when a wallet is connected
+  // via RainbowKit/extension). Use the connector client's transport so the
+  // signature prompt works for injected, WalletConnect, and other connectors.
   const [lastHash, setLastHash] = useState<`0x${string}` | null>(null);
   const receipt = useWaitForTransactionReceipt({ hash: lastHash ?? undefined, chainId: EC_CHAIN.id });
+  const { data: connClient } = useConnectorClient({ chainId: EC_CHAIN.id });
 
   const sendRaw = useCallback(
     async (to: `0x${string}`, data: `0x${string}`, value = 0n): Promise<`0x${string}`> => {
-      const eth = (window as any).ethereum as any;
-      if (!eth || typeof eth.request !== "function") throw new Error("No injected wallet (window.ethereum) detected");
-      const from = eth.selectedAddress ?? address;
+      const connTransport = connClient?.transport as { value?: unknown } | undefined;
+      const connProvider = (connTransport?.value ?? (window as any).ethereum) as EIP1193Provider | undefined;
+      const provider = (connProvider && typeof (connProvider as any).request === "function") ? connProvider : undefined;
+      if (!provider) {
+        throw new Error("No usable wallet provider — reconnect your wallet and try again");
+      }
+      const from = (provider as any).selectedAddress ?? address;
       if (!from) throw new Error("Wallet not connected");
-      const txParams: Record<string, string> = {
-        from,
-        to,
-        data,
-        gas: EC_TX_GAS.toString(),
-        chainId: `0x${EC_CHAIN.id.toString(16)}`,
-      };
-      if (value > 0n) txParams.value = value.toString();
-      const req = eth.request({ method: "eth_sendTransaction", params: [txParams] });
-      // Race the request against a timeout so a silently-hung popup becomes an
-      // explicit error instead of an endless "STAKING..." spinner.
+      const wc = createWalletClient({ account: from as `0x${string}`, chain: EC_CHAIN, transport: custom(provider) });
       const hash = await Promise.race([
-        req,
+        wc.sendTransaction({
+          to,
+          data,
+          gas: EC_TX_GAS,
+          value,
+        }),
         new Promise((_, reject) => setTimeout(() => reject(new Error("Wallet prompt timed out — check your wallet's popup/permission settings")), 90_000)),
       ]);
       return hash as `0x${string}`;
     },
-    [address],
+    [connClient, address],
   );
 
   // Approve the escrow to spend the stake, then open/restake the position.
