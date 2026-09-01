@@ -49,7 +49,7 @@ async function main() {
 
   // Use a large but affordable gas limit (overshoot is safe).
   const affordable = balance / gasPrice;
-  const gasLimit = affordable > 3_000_000n ? 3_000_000n : affordable;
+  const gasLimit = affordable > 30_000_000n ? 30_000_000n : affordable;
 
   console.log(`broadcasting create with gasLimit=${gasLimit.toString()}...`);
   const hash = await walletClient.sendTransaction({ data, gas: gasLimit });

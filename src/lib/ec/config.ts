@@ -58,16 +58,15 @@ export const EC_TICK = 1000;
 export const EC_LOT = 1;
 
 /**
- * DreamDuel escrow contract (on-chain tUSDC custody for match stakes).
- * Deployed to Somnia testnet. Players pledge into it at match start; the
- * backend relayer (specified as `admin`) settles the winner on-chain using the
- * real EC share price as the match oracle.
+ * DreamDuel escrow contract (on-chain tUSDC custody for EC POSITIONS).
+ * Deployed to Somnia testnet. Players stake a EC position (direction x amount)
+ * for a 15-min window; the backend relayer (`admin`) settles the window with
+ * the REAL EC settlement outcome (won/lost) and credits/forfeits the stake once.
  *
- * DEPLOYED (solo-capable, with settleSolo/setHouse/house) via cast create on
- * nonce 49 — see chain 50312, tx 0x69e1...e4a0. Verified: admin, collateral
- * (tUSDC), house (defaults to admin), refundDelay (900).
+ * DEPLOYED (v2 window-keyed) via scripts/deploy-escrow.ts — chain 50312, tx
+ * 0x0641...8f. Verified: admin, collateral (tUSDC), windowLength (900).
  */
-export const ESCROW_ADDRESS = "0x95efe2E2C8D6bd99584Ed0630F566616cb7fB370" as `0x${string}`;
+export const ESCROW_ADDRESS = "0x1debf7cc74b77734fdbef8c18bb8915fc474eb3f" as `0x${string}`;
 
 /** Seconds a player must wait before self-refunding a stuck match. */
 export const ESCROW_REFUND_DELAY = 900;
