@@ -31,6 +31,7 @@ export interface EcPositionDoc {
   // Lifecycle
   status: PositionStatus;
   windowId?: string; // on-chain escrow slot id (bytes32 hex)
+  stakeTxHash?: string; // the player's `stake()` transaction on-chain (0x…)
   windowOpenAt?: Date;
   windowCloseAt?: Date; // when the EC window is expected to resolve
   settledWon?: boolean; // resolved binary result (null while unsettled)
@@ -53,6 +54,7 @@ export const EcPositionSchema = new Schema<EcPositionDoc>(
     arenaOpen: { type: Number },
     status: { type: String, enum: POSITION_STATUS, default: "ACTIVE" },
     windowId: { type: String },
+    stakeTxHash: { type: String },
     windowOpenAt: { type: Date },
     windowCloseAt: { type: Date },
     settledWon: { type: Boolean },

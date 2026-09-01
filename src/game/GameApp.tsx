@@ -328,7 +328,7 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
   escrow: ReturnType<typeof useDreamEscrow>;
   onBack: () => void;
   onNext: () => void;
-  onOpenPosition: (opts: { direction: "UP" | "DOWN"; market: string; amount: number; positionId: string; windowId: string }) => void;
+  onOpenPosition: (opts: { direction: "UP" | "DOWN"; market: string; amount: number; positionId: string; windowId: string; stakeTxHash: string | null }) => void;
 }) {
   const { address } = useAccount();
   const asset = (TRADE_MARKETS.find((m) => m.symbol === game.marketSymbol)?.asset) ?? "BTC";
@@ -367,9 +367,16 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       const amountRaw = parseUnits(String(amount), EC_COLLATERAL_DECIMALS);
-      await escrow.approveAndStake(data.windowId, amountRaw);
+      const stakeTxHash = (await escrow.approveAndStake(data.windowId, amountRaw)) ?? null;
+      if (stakeTxHash && data.position?._id) {
+        fetch("/api/position", {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ address, positionId: data.position._id, stakeTxHash }),
+        }).catch(() => { /* recording is best-effort */ });
+      }
       escrow.refetch();
-      onOpenPosition({ direction, market: asset, amount, positionId: data.position?._id ?? data.positionId, windowId: data.windowId });
+      onOpenPosition({ direction, market: asset, amount, positionId: data.position?._id ?? data.positionId, windowId: data.windowId, stakeTxHash });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to open position");
     } finally {
@@ -474,7 +481,9 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
       </div>
 
       <a
-        href={`https://shannon-explorer.somnia.network/address/${ESCROW_ADDRESS}`}
+        href={game.positionStakeTxHash
+          ? `https://shannon-explorer.somnia.network/tx/${game.positionStakeTxHash}`
+          : `https://shannon-explorer.somnia.network/address/${ESCROW_ADDRESS}`}
         target="_blank"
         rel="noreferrer"
         style={{
@@ -482,7 +491,9 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
           display: "inline-flex", alignItems: "center", gap: 6, letterSpacing: "0.06em",
         }}
       >
-        {"\u{1F517}"} VIEW EC ON EXPLORER {"\u00B7"} {ESCROW_ADDRESS.slice(0, 8)}...{ESCROW_ADDRESS.slice(-6)}
+        {game.positionStakeTxHash
+          ? `\u{1F517} VIEW STAKE ON-CHAIN · ${game.positionStakeTxHash.slice(0, 8)}...${game.positionStakeTxHash.slice(-6)}`
+          : `\u{1F517} VIEW EC ON EXPLORER · ${ESCROW_ADDRESS.slice(0, 8)}...${ESCROW_ADDRESS.slice(-6)}`}
       </a>
     </div>
   );

@@ -3,8 +3,9 @@ import { normalizeAddress } from "@/lib/addresses";
 import { jsonError } from "@/lib/utils";
 import { findActivePosition, openPosition, PositionError } from "@/lib/ec/position";
 import { positionInfo } from "@/lib/ec/escrow";
+import { EcPosition } from "@/db/models/EcPosition";
 import { z } from "zod";
-import { isAddress, formatUnits } from "viem";
+import { isAddress, formatUnits, isHash } from "viem";
 import { EC_COLLATERAL_DECIMALS, ESCROW_ADDRESS } from "@/lib/ec/config";
 
 const openSchema = z.object({
@@ -13,6 +14,18 @@ const openSchema = z.object({
   market: z.enum(["BTC", "ETH"]),
   amount: z.number().positive(),
 });
+
+const patchSchema = z.object({
+  address: z.string().refine((v) => isAddress(v), "invalid address"),
+  positionId: z.string().min(1),
+  stakeTxHash: z.string().refine((v) => isHash(v), "invalid transaction hash"),
+});
+
+/** Deep-convert BigInt values to strings so `Response.json` can serialize them
+ *  (the stored `arena` object carries bigint `yesId`/`noId` from the SDK). */
+function jsonSafe(value: unknown): unknown {
+  return JSON.parse(JSON.stringify(value, (_key, v) => (typeof v === "bigint" ? v.toString() : v)));
+}
 
 /** GET /api/position?address=0x… — the wallet's active EC position. */
 export async function GET(req: Request) {
@@ -55,6 +68,7 @@ export async function GET(req: Request) {
         matchCount: pos.matchCount,
         escrowAddress: ESCROW_ADDRESS,
         windowId: pos.windowId ?? null,
+        stakeTxHash: pos.stakeTxHash ?? null,
         onchain,
       },
     });
@@ -80,10 +94,38 @@ export async function POST(req: Request) {
       market: input.market,
       amount: input.amount,
     });
-    return Response.json(result, { status: 201 });
+    return Response.json(
+      { position: jsonSafe(result.position), windowId: result.windowId },
+      { status: 201 },
+    );
   } catch (err) {
     if (err instanceof PositionError) return jsonError(err.status, err.message);
     console.error("open position failed", err);
     return jsonError(500, "failed to open position");
+  }
+}
+
+/** PATCH /api/position — after the wallet signs the `stake()` tx, record its
+ *  on-chain transaction hash on the position so it can be linked in the UI. */
+export async function PATCH(req: Request) {
+  let body: unknown;
+  try { body = await req.json(); } catch { return jsonError(400, "body must be JSON"); }
+  const parsed = patchSchema.safeParse(body);
+  if (!parsed.success) {
+    return jsonError(400, `validation failed: ${parsed.error.issues.map((i) => i.message).join("; ")}`);
+  }
+  const input = parsed.data;
+  try {
+    await connectToDatabase();
+    const updated = await EcPosition.findOneAndUpdate(
+      { _id: input.positionId, address: normalizeAddress(input.address).toLowerCase() },
+      { $set: { stakeTxHash: input.stakeTxHash } },
+      { new: true },
+    ).lean();
+    if (!updated) return jsonError(404, "position not found");
+    return Response.json({ position: { id: updated._id, stakeTxHash: updated.stakeTxHash ?? null } });
+  } catch (err) {
+    console.error("record stake tx failed", err);
+    return jsonError(500, "failed to record stake transaction");
   }
 }

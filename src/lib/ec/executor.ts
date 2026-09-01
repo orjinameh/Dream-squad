@@ -82,8 +82,13 @@ export async function findArenaFloor(
   const floorAny: EcArenaMarket[] = [];
   for (const m of markets) {
     if (m.type !== "binary") continue;
-    const info = m.info as BinaryMarket;
     if (!m.symbol.startsWith(prefix)) continue;
+    const info = m.info as BinaryMarket & { expiry?: string | number };
+    // Cheap indexer-side pre-filter: only near-future windows. This bounds the
+    // expensive per-market on-chain probe to the handful of windows potentially
+    // live (the venue keeps rolling fresh ones), instead of RPC-probing all
+    // historical windows on every call (that blew past serverless timeouts).
+    if (!info.expiry || Number(info.expiry) <= now + minLeftSec) continue;
     const onchain = await exchange.client
       .getMarketOnchain(m.id as `0x${string}`)
       .catch(() => null);

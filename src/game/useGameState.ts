@@ -56,7 +56,7 @@ export interface GameActions {
   fightBotInstead: () => void;
   goToPosition: () => void;
   goToMatchType: () => void;
-  openPosition: (opts: { direction: "UP" | "DOWN"; market: string; amount: number; positionId: string; windowId: string }) => void;
+  openPosition: (opts: { direction: "UP" | "DOWN"; market: string; amount: number; positionId: string; windowId: string; stakeTxHash: string | null }) => void;
   changePosition: () => void;
 }
 
@@ -126,6 +126,7 @@ export interface GameHook {
   positionDirection: "UP" | "DOWN" | null;
   positionAmount: number | null;
   positionMarket: string | null;
+  positionStakeTxHash: string | null;
   hasActivePosition: boolean;
   actions: GameActions;
 }
@@ -188,6 +189,7 @@ export function useGameState(): GameHook {
   const [positionDirection, setPositionDirection] = useState<"UP" | "DOWN" | null>(null);
   const [positionAmount, setPositionAmount] = useState<number | null>(null);
   const [positionMarket, setPositionMarket] = useState<string | null>(null);
+  const [positionStakeTxHash, setPositionStakeTxHash] = useState<string | null>(null);
   const [positionId, setPositionId] = useState<string | null>(null);
   const hasActivePosition = Boolean(positionWindowId && positionDirection);
 
@@ -901,16 +903,17 @@ export function useGameState(): GameHook {
   // positionId; we store them so combat matches can reference this position.
   const goToPosition = useCallback(() => { setPhase("POSITION"); }, []);
   const goToMatchType = useCallback(() => { if (!hasActivePosition) return; setPhase("MATCH_TYPE"); }, [hasActivePosition]);
-  const openPosition = useCallback((opts: { direction: "UP" | "DOWN"; market: string; amount: number; positionId: string; windowId: string }) => {
+  const openPosition = useCallback((opts: { direction: "UP" | "DOWN"; market: string; amount: number; positionId: string; windowId: string; stakeTxHash: string | null }) => {
     setPositionDirection(opts.direction);
     setPositionAmount(opts.amount);
     setPositionMarket(opts.market);
     setPositionId(opts.positionId);
     setPositionWindowId(opts.windowId);
+    setPositionStakeTxHash(opts.stakeTxHash);
   }, []);
   const changePosition = useCallback(() => {
     setPositionDirection(null); setPositionAmount(null); setPositionMarket(null);
-    setPositionId(null); setPositionWindowId(null);
+    setPositionId(null); setPositionWindowId(null); setPositionStakeTxHash(null);
     setPhase("POSITION");
   }, []);
   const selectPrediction = useCallback((pred: PredictionConfig) => { setSelectedPrediction(pred); }, []);
@@ -1018,6 +1021,7 @@ export function useGameState(): GameHook {
     positionDirection,
     positionAmount,
     positionMarket,
+    positionStakeTxHash,
     hasActivePosition: Boolean(positionWindowId && positionDirection),
     actions: {
       goToHome, goToMarketSelect, goToCharSelect, goToLeaderboard,
