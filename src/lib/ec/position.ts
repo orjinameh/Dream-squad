@@ -34,10 +34,23 @@ export async function openPosition(input: OpenPositionInput) {
   await connectToDatabase();
   const addr = input.address.toLowerCase();
 
-  const existing = await EcPosition.findOne({ address: addr, status: "ACTIVE" }).lean();
-  if (existing) {
-    throw new PositionError(409, "you already have an active EC position. Settle it or switch direction by opening a new one.");
+  // Mirror on-chain truth: a DB doc is only a REAL active position if tUSDC is
+  // actually staked/open on-chain for its windowId (`position(windowId)`).
+  // A phantom (browser stake never landed) must NOT lock the wallet — clear it
+  // so the player can simply stake again.
+  const existing = await EcPosition.find({ address: addr, status: "ACTIVE" }).lean();
+  for (const pos of existing) {
+    if (!pos.windowId) continue;
+    // On a read error, assume it's a real stake (never clear a possibly-funded
+    // position) — safe direction.
+    const open = await positionOpen(pos.windowId as `0x${string}`).catch(() => true);
+    if (open) {
+      throw new PositionError(409, "you already have an active EC position. Settle it or switch direction by opening a new one.");
+    }
   }
+  // We only reach here if none of the wallet's ACTIVE docs are funded on-chain,
+  // so they're all phantoms — remove them so they can't block a fresh stake.
+  await EcPosition.deleteMany({ address: addr, status: "ACTIVE" });
 
   // Pin the live EC arena floor (the 15-min window the position rides).
   const arena = await findArenaFloor(input.market, 30);
@@ -127,6 +140,12 @@ export async function reconcilePositions({ inWindow = true } = {}): Promise<numb
           },
         );
         settled += 1;
+        continue;
+      }
+      // A doc that was never funded on-chain (browser stake failed) is a phantom.
+      // There's nothing to settle or collect — drop it so it never blocks.
+      if (onchain && !onchain.open) {
+        await EcPosition.deleteOne({ _id: pos._id });
         continue;
       }
       // Resolve the real outcome and implement it on-chain.

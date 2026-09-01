@@ -367,7 +367,7 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       const amountRaw = parseUnits(String(amount), EC_COLLATERAL_DECIMALS);
-      await escrow.approveAndStake(amountRaw);
+      await escrow.approveAndStake(data.windowId, amountRaw);
       escrow.refetch();
       onOpenPosition({ direction, market: asset, amount, positionId: data.position?._id ?? data.positionId, windowId: data.windowId });
     } catch (e) {
@@ -391,6 +391,10 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
         Your balance is FIXED for the whole window. It settles ONCE on-chain when the EC pays:
         win {"\u2192"} stake back in full, loss {"\u2192"} forfeited. Combats are bragging/stats only.
       </p>
+
+      <div style={{ width: "100%", maxWidth: 440, marginBottom: 20 }}>
+        <LiveChart asset={asset} height={220} />
+      </div>
 
       <div style={{ width: "100%", maxWidth: 440, marginBottom: 16, padding: "16px 20px", border: "1px solid #334155", borderRadius: 10, background: "rgba(15,23,42,0.75)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
@@ -444,8 +448,8 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
 
         {hasActive ? (
           <div style={{ fontSize: 12, color: "#f59e0b", lineHeight: 1.5, marginBottom: 10 }}>
-            You already hold an active position: {"\uD83D\uDCC8"} {activeDirection} {"\u00D7"} {activeAmount} tUSDC.
-            To switch UP {"\u2194"} DOWN you must restake a new position (old one settles on its own).
+            You already hold a position: {"\uD83D\uDCC8"} {activeDirection} {"\u00D7"} {activeAmount} tUSDC.
+            {"\n"}To switch UP {"\u2194"} DOWN, open a new position below (a fresh one for this window). The old one settles on its own.
           </div>
         ) : null}
 
@@ -453,7 +457,7 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
           width: "100%", padding: "12px 0", borderRadius: 6, cursor: "pointer", fontWeight: 800, fontSize: 14,
           background: "linear-gradient(135deg, #7c3aed, #a855f7)", border: "none", color: "#fff", letterSpacing: "0.08em", opacity: busy ? 0.6 : 1,
         }}>
-          {busy ? "STAKING..." : `\u2694 STAKE ${direction} ${amount} tUSDC`}
+          {busy ? "STAKING..." : hasActive ? `\u21BB RE-STAKE \u2192 OPEN ${direction} ${amount} tUSDC` : `\u2694 STAKE ${direction} ${amount} tUSDC`}
         </button>
 
         {!escrow.address && <div style={{ marginTop: 8, fontSize: 11, color: "#f59e0b" }}>Connect your wallet to stake tUSDC.</div>}
@@ -468,6 +472,18 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
           {"\u2694\uFE0F"} CHOOSE MATCH TYPE
         </button>
       </div>
+
+      <a
+        href={`https://shannon-explorer.somnia.network/address/${ESCROW_ADDRESS}`}
+        target="_blank"
+        rel="noreferrer"
+        style={{
+          marginTop: 24, fontSize: 11, color: "#64748b", textDecoration: "none",
+          display: "inline-flex", alignItems: "center", gap: 6, letterSpacing: "0.06em",
+        }}
+      >
+        {"\u{1F517}"} VIEW EC ON EXPLORER {"\u00B7"} {ESCROW_ADDRESS.slice(0, 8)}...{ESCROW_ADDRESS.slice(-6)}
+      </a>
     </div>
   );
 }

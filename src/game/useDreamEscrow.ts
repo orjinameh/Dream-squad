@@ -109,9 +109,13 @@ export function useDreamEscrow(windowId?: string | null) {
   const receipt = useWaitForTransactionReceipt({ hash: lastHash ?? undefined, chainId: EC_CHAIN.id });
 
   // Approve the escrow to spend the stake, then open/restake the position.
+  // `windowId` is the position the player just opened (returned by POST
+  // /api/position) — the hook's own key is only set AFTER onOpenPosition runs,
+  // so callers must pass the explicit windowId here.
   const approveAndStake = useCallback(
-    async (amountRaw: bigint) => {
-      if (!key || !address) throw new Error("Wallet not connected");
+    async (windowId: Hash | string | null | undefined, amountRaw: bigint) => {
+      const wid = (windowId ?? key) as Hash | undefined;
+      if (!wid || !address) throw new Error("Wallet not connected");
       const currentAllowance = allowance.data as bigint | undefined;
       if ((currentAllowance ?? 0n) < amountRaw) {
         const approveHash = (await writeContractAsync({
@@ -128,7 +132,7 @@ export function useDreamEscrow(windowId?: string | null) {
         abi: DREAMDUEL_ESCROW_ABI,
         address: ESCROW_ADDRESS,
         functionName: "stake",
-        args: [key, amountRaw],
+        args: [wid, amountRaw],
         chainId: EC_CHAIN.id,
       }))!;
       setLastHash(stakeHash);
