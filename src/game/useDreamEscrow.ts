@@ -14,6 +14,11 @@ import { DREAMDUEL_ESCROW_ABI } from "@/lib/ec/escrowAbi";
 export const TUSDC_ADDRESS: `0x${string}` =
   (EC_ADDRESSES.testUsdc ?? EC_ADDRESSES.collateral)!;
 
+// Somnia testnet rejects `eth_estimateGas`, so browser writes must carry an
+// explicit gas cap or the tx is never constructed (no wallet popup appears).
+// The escrow deploy required ~11.9M gas (30M cap); use 30M for player writes.
+const EC_TX_GAS = 30_000_000n;
+
 const TUSDC_ABI = [
   {
     type: "function",
@@ -123,6 +128,7 @@ export function useDreamEscrow(windowId?: string | null) {
           address: TUSDC_ADDRESS,
           functionName: "approve",
           args: [ESCROW_ADDRESS, amountRaw],
+          gas: EC_TX_GAS,
           chainId: EC_CHAIN.id,
         }))!;
         setLastHash(approveHash);
@@ -133,6 +139,7 @@ export function useDreamEscrow(windowId?: string | null) {
         address: ESCROW_ADDRESS,
         functionName: "stake",
         args: [wid, amountRaw],
+        gas: EC_TX_GAS,
         chainId: EC_CHAIN.id,
       }))!;
       setLastHash(stakeHash);
