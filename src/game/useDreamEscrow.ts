@@ -4,10 +4,10 @@ import { useCallback, useState } from "react";
 import {
   useAccount,
   useReadContract,
-  useWriteContract,
   useWaitForTransactionReceipt,
 } from "wagmi";
 import { parseUnits, formatUnits, createPublicClient, http, type Hash } from "viem";
+import { encodeFunctionData } from "viem";
 import { EC_CHAIN, EC_RPC_URL, ESCROW_ADDRESS, EC_ADDRESSES, EC_COLLATERAL_DECIMALS } from "@/lib/ec/config";
 import { DREAMDUEL_ESCROW_ABI } from "@/lib/ec/escrowAbi";
 
@@ -109,9 +109,38 @@ export function useDreamEscrow(windowId?: string | null) {
   const isOpen = Boolean(raw?.open && !raw?.settled);
   const hasStaked = Boolean(raw && isMine && raw.balance > 0n);
 
-  const { writeContractAsync } = useWriteContract();
+  // Writes go through the injected EIP-1193 provider DIRECTLY (not wagmi's
+  // useWriteContract) because wagmi's stacked prepare+send could hang without
+  // a popup on this chain. Raw eth_sendTransaction with explicit gas always
+  // provokes MetaMask's signature prompt or throws a surfaced error.
   const [lastHash, setLastHash] = useState<`0x${string}` | null>(null);
   const receipt = useWaitForTransactionReceipt({ hash: lastHash ?? undefined, chainId: EC_CHAIN.id });
+
+  const sendRaw = useCallback(
+    async (to: `0x${string}`, data: `0x${string}`, value = 0n): Promise<`0x${string}`> => {
+      const eth = (window as any).ethereum as any;
+      if (!eth || typeof eth.request !== "function") throw new Error("No injected wallet (window.ethereum) detected");
+      const from = eth.selectedAddress ?? address;
+      if (!from) throw new Error("Wallet not connected");
+      const txParams: Record<string, string> = {
+        from,
+        to,
+        data,
+        gas: EC_TX_GAS.toString(),
+        chainId: `0x${EC_CHAIN.id.toString(16)}`,
+      };
+      if (value > 0n) txParams.value = value.toString();
+      const req = eth.request({ method: "eth_sendTransaction", params: [txParams] });
+      // Race the request against a timeout so a silently-hung popup becomes an
+      // explicit error instead of an endless "STAKING..." spinner.
+      const hash = await Promise.race([
+        req,
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Wallet prompt timed out — check your wallet's popup/permission settings")), 90_000)),
+      ]);
+      return hash as `0x${string}`;
+    },
+    [address],
+  );
 
   // Approve the escrow to spend the stake, then open/restake the position.
   // `windowId` is the position the player just opened (returned by POST
@@ -123,62 +152,48 @@ export function useDreamEscrow(windowId?: string | null) {
       if (!wid || !address) throw new Error("Wallet not connected");
       const currentAllowance = allowance.data as bigint | undefined;
       if ((currentAllowance ?? 0n) < amountRaw) {
-        const approveHash = (await writeContractAsync({
+        const approveData = encodeFunctionData({
           abi: TUSDC_ABI,
-          address: TUSDC_ADDRESS,
           functionName: "approve",
           args: [ESCROW_ADDRESS, amountRaw],
-          gas: EC_TX_GAS,
-          chainId: EC_CHAIN.id,
-        }))!;
-        setLastHash(approveHash);
-        await waitForReceipt(approveHash);
+        });
+        const approveHash = await sendRaw(TUSDC_ADDRESS, approveData);
+        setLastHash(approveHash as `0x${string}`);
+        await waitForReceipt(approveHash as `0x${string}`);
       }
-      const stakeHash = (await writeContractAsync({
+      const stakeData = encodeFunctionData({
         abi: DREAMDUEL_ESCROW_ABI,
-        address: ESCROW_ADDRESS,
         functionName: "stake",
-        args: [wid, amountRaw],
-        gas: EC_TX_GAS,
-        chainId: EC_CHAIN.id,
-      }))!;
-      setLastHash(stakeHash);
-      await waitForReceipt(stakeHash);
-      return stakeHash;
+        args: [wid as `0x${string}`, amountRaw],
+      });
+      const stakeHash = await sendRaw(ESCROW_ADDRESS, stakeData);
+      setLastHash(stakeHash as `0x${string}`);
+      await waitForReceipt(stakeHash as `0x${string}`);
+      return stakeHash as `0x${string}`;
     },
-    [key, address, allowance.data, writeContractAsync],
+    [key, address, allowance.data, sendRaw],
   );
 
   // Collect a WON position (stake returned in full).
   const withdraw = useCallback(async () => {
     if (!key) throw new Error("No position");
-    const hash = (await writeContractAsync({
-      abi: DREAMDUEL_ESCROW_ABI,
-      address: ESCROW_ADDRESS,
-      functionName: "withdraw",
-      args: [key],
-      chainId: EC_CHAIN.id,
-    }))!;
+    const data = encodeFunctionData({ abi: DREAMDUEL_ESCROW_ABI, functionName: "withdraw", args: [key as `0x${string}`] });
+    const hash = await sendRaw(ESCROW_ADDRESS, data);
     setLastHash(hash);
     await waitForReceipt(hash);
     return hash;
-  }, [key, writeContractAsync]);
+  }, [key, sendRaw]);
 
   const getFaucet = useCallback(
     async (amountRaw: bigint) => {
       if (!address) throw new Error("Wallet not connected");
-      const hash = await writeContractAsync({
-        abi: TUSDC_ABI,
-        address: TUSDC_ADDRESS,
-        functionName: "faucet",
-        args: [amountRaw],
-        chainId: EC_CHAIN.id,
-      });
+      const data = encodeFunctionData({ abi: TUSDC_ABI, functionName: "faucet", args: [amountRaw] });
+      const hash = await sendRaw(TUSDC_ADDRESS, data);
       setLastHash(hash);
       await waitForReceipt(hash);
       return hash;
     },
-    [address, writeContractAsync],
+    [address, sendRaw],
   );
 
   return {
