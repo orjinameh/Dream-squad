@@ -1,0 +1,24 @@
+name: Reconcile EC Positions
+
+# Settle DreamDEX EC positions on-chain from the REAL EC settlement. Vercel
+# (serverless) can't run a long-lived worker, so an external scheduler pings the
+# admin-guarded web hook every ~15s instead. The route is idempotent — it only
+# settles ACTIVE positions whose window has closed, so frequent calls are safe.
+
+on:
+  schedule:
+    # every 15 seconds
+    - cron: '*/15 * * * * *'
+  workflow_dispatch: {}
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger position reconcile
+        run: |
+          code=$(curl -sS -o /tmp/reconcile.out -w '%{http_code}' \
+            -X POST "${{ vars.VERCEL_RECONCILE_URL }}" \
+            -H "x-admin-token: ${{ secrets.ADMIN_TOKEN }}")
+          echo "http=$code"
+          echo "body=$(cat /tmp/reconcile.out)"
