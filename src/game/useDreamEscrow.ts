@@ -5,11 +5,9 @@ import {
   useAccount,
   useReadContract,
   useWaitForTransactionReceipt,
-  useConnectorClient,
+  useWriteContract,
 } from "wagmi";
-import { createWalletClient, custom, type EIP1193Provider } from "viem";
 import { parseUnits, formatUnits, createPublicClient, http, type Hash } from "viem";
-import { encodeFunctionData } from "viem";
 import { EC_CHAIN, EC_RPC_URL, ESCROW_ADDRESS, EC_ADDRESSES, EC_COLLATERAL_DECIMALS } from "@/lib/ec/config";
 import { DREAMDUEL_ESCROW_ABI } from "@/lib/ec/escrowAbi";
 
@@ -111,37 +109,26 @@ export function useDreamEscrow(windowId?: string | null) {
   const isOpen = Boolean(raw?.open && !raw?.settled);
   const hasStaked = Boolean(raw && isMine && raw.balance > 0n);
 
-  // Writes go through the connected wagmi connector's EIP-1193 provider (NOT
-  // raw window.ethereum, which is often unset even when a wallet is connected
-  // via RainbowKit/extension). Use the connector client's transport so the
-  // signature prompt works for injected, WalletConnect, and other connectors.
+  // Writes go through wagmi's useWriteContract, which drives the connected
+  // connector's own client (WalletConnect-aware) — raw window.ethereum is never
+  // set on a mobile WC session. Explicit gas is required (Somnia rejects
+  // eth_estimateGas), and each write is raced against a 90s timeout so a hung
+  // prompt surfaces an error instead of an endless STAKING... spinner.
   const [lastHash, setLastHash] = useState<`0x${string}` | null>(null);
   const receipt = useWaitForTransactionReceipt({ hash: lastHash ?? undefined, chainId: EC_CHAIN.id });
-  const { data: connClient } = useConnectorClient({ chainId: EC_CHAIN.id });
+  const { writeContractAsync } = useWriteContract();
 
-  const sendRaw = useCallback(
-    async (to: `0x${string}`, data: `0x${string}`, value = 0n): Promise<`0x${string}`> => {
-      const connTransport = connClient?.transport as { value?: unknown } | undefined;
-      const connProvider = (connTransport?.value ?? (window as any).ethereum) as EIP1193Provider | undefined;
-      const provider = (connProvider && typeof (connProvider as any).request === "function") ? connProvider : undefined;
-      if (!provider) {
-        throw new Error("No usable wallet provider — reconnect your wallet and try again");
-      }
-      const from = (provider as any).selectedAddress ?? address;
-      if (!from) throw new Error("Wallet not connected");
-      const wc = createWalletClient({ account: from as `0x${string}`, chain: EC_CHAIN, transport: custom(provider) });
-      const hash = await Promise.race([
-        wc.sendTransaction({
-          to,
-          data,
-          gas: EC_TX_GAS,
-          value,
-        }),
-        new Promise((_, reject) => setTimeout(() => reject(new Error("Wallet prompt timed out — check your wallet's popup/permission settings")), 90_000)),
-      ]);
-      return hash as `0x${string}`;
+  const writeWithTimeout = useCallback(
+    async (params: Parameters<typeof writeContractAsync>[0]): Promise<`0x${string}`> => {
+      if (!writeContractAsync) throw new Error("Wallet not connected");
+      return Promise.race([
+        writeContractAsync({ ...params, gas: EC_TX_GAS } as any),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("Wallet prompt timed out — check your wallet's popup/permission settings")), 90_000),
+        ),
+      ]) as Promise<`0x${string}`>;
     },
-    [connClient, address],
+    [writeContractAsync],
   );
 
   // Approve the escrow to spend the stake, then open/restake the position.
@@ -154,48 +141,60 @@ export function useDreamEscrow(windowId?: string | null) {
       if (!wid || !address) throw new Error("Wallet not connected");
       const currentAllowance = allowance.data as bigint | undefined;
       if ((currentAllowance ?? 0n) < amountRaw) {
-        const approveData = encodeFunctionData({
+        const approveHash = await writeWithTimeout({
           abi: TUSDC_ABI,
+          address: TUSDC_ADDRESS,
           functionName: "approve",
           args: [ESCROW_ADDRESS, amountRaw],
+          chainId: EC_CHAIN.id,
         });
-        const approveHash = await sendRaw(TUSDC_ADDRESS, approveData);
         setLastHash(approveHash as `0x${string}`);
         await waitForReceipt(approveHash as `0x${string}`);
       }
-      const stakeData = encodeFunctionData({
+      const stakeHash = await writeWithTimeout({
         abi: DREAMDUEL_ESCROW_ABI,
+        address: ESCROW_ADDRESS,
         functionName: "stake",
-        args: [wid as `0x${string}`, amountRaw],
+        args: [wid, amountRaw],
+        chainId: EC_CHAIN.id,
       });
-      const stakeHash = await sendRaw(ESCROW_ADDRESS, stakeData);
       setLastHash(stakeHash as `0x${string}`);
       await waitForReceipt(stakeHash as `0x${string}`);
       return stakeHash as `0x${string}`;
     },
-    [key, address, allowance.data, sendRaw],
+    [key, address, allowance.data, writeWithTimeout],
   );
 
   // Collect a WON position (stake returned in full).
   const withdraw = useCallback(async () => {
     if (!key) throw new Error("No position");
-    const data = encodeFunctionData({ abi: DREAMDUEL_ESCROW_ABI, functionName: "withdraw", args: [key as `0x${string}`] });
-    const hash = await sendRaw(ESCROW_ADDRESS, data);
-    setLastHash(hash);
-    await waitForReceipt(hash);
-    return hash;
-  }, [key, sendRaw]);
+    const hash = await writeWithTimeout({
+      abi: DREAMDUEL_ESCROW_ABI,
+      address: ESCROW_ADDRESS,
+      functionName: "withdraw",
+      args: [key],
+      chainId: EC_CHAIN.id,
+    });
+    setLastHash(hash as `0x${string}`);
+    await waitForReceipt(hash as `0x${string}`);
+    return hash as `0x${string}`;
+  }, [key, writeWithTimeout]);
 
   const getFaucet = useCallback(
     async (amountRaw: bigint) => {
       if (!address) throw new Error("Wallet not connected");
-      const data = encodeFunctionData({ abi: TUSDC_ABI, functionName: "faucet", args: [amountRaw] });
-      const hash = await sendRaw(TUSDC_ADDRESS, data);
-      setLastHash(hash);
-      await waitForReceipt(hash);
-      return hash;
+      const hash = await writeWithTimeout({
+        abi: TUSDC_ABI,
+        address: TUSDC_ADDRESS,
+        functionName: "faucet",
+        args: [amountRaw],
+        chainId: EC_CHAIN.id,
+      });
+      setLastHash(hash as `0x${string}`);
+      await waitForReceipt(hash as `0x${string}`);
+      return hash as `0x${string}`;
     },
-    [address, sendRaw],
+    [address, writeWithTimeout],
   );
 
   return {
