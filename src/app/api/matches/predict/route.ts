@@ -10,8 +10,15 @@ import { readArenaPrice } from "@/lib/ec/executor";
 import { ecArenaForMatch } from "@/lib/ec/arena";
 import { z } from "zod";
 import { isAddress } from "viem";
+import { randomBytes } from "node:crypto";
 
 const PAYOUT_MULTIPLIER = 1.8;
+
+// CSPRNG float in [0, 1) — avoid Math.random() for anything influencing the
+// bot's on-chain prediction/order decisions.
+function randomDouble(): number {
+  return randomBytes(6).readUIntLE(0, 6) / 0x1000000000000;
+}
 
 const MAX_HP = 100;
 const BASE_DAMAGE = 15;
@@ -84,12 +91,12 @@ async function resolveRound(match: any, now: Date): Promise<{
     const difficulty = match.botDifficulty ?? "normal";
     const accuracy = difficulty === "easy" ? 0.30 : difficulty === "hard" ? 0.70 : 0.50;
     // Bot uses a simple bias: slightly favor UP (market uptrend) unless difficulty randomizes
-    const randomFactor = Math.random();
+    const randomFactor = randomDouble();
     rivalPred = randomFactor < accuracy
       ? (playerPred ?? "UP")  // Match player's likely correct prediction
       : (playerPred === "UP" ? "DOWN" : "UP");  // Opposite of player
     // Ensure bot always has a prediction
-    if (!rivalPred) rivalPred = Math.random() > 0.5 ? "UP" : "DOWN";
+    if (!rivalPred) rivalPred = randomDouble() > 0.5 ? "UP" : "DOWN";
   }
 
   let playerResult: RoundExecutionResult | null = null;

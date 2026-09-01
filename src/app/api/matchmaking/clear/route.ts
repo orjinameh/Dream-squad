@@ -10,11 +10,19 @@ export const dynamic = "force-dynamic";
  * open PvP match still waiting for readiness (so it can never phantom re-pair a
  * player against a leftover opponent).
  *
- * This is intentionally unauthenticated: the app is a single-user hackathon
- * project and leaving a stale queue entry behind (e.g. a closed tab) otherwise
- * creates phantom pairings that block real two-player matches.
+ * If ADMIN_TOKEN is configured (recommended for any shared/staged deployment),
+ * a request must present X-Admin-Token matching it; otherwise the endpoint is
+ * served open for local single-user development.
  */
-export async function POST(): Promise<Response> {
+export async function POST(req: Request): Promise<Response> {
+  const adminToken = process.env.ADMIN_TOKEN;
+  if (adminToken) {
+    const provided = req.headers.get("x-admin-token");
+    if (provided !== adminToken) {
+      return Response.json({ cleared: false, error: "unauthorized" }, { status: 401 });
+    }
+  }
+
   try {
     await connectToDatabase();
 

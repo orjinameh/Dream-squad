@@ -238,7 +238,7 @@ describe("PvP matchmaking (two devices)", () => {
       rivalPrediction: null,
     });
 
-    const res = await clearRoute();
+    const res = await clearRoute(new Request("http://localhost/api/matchmaking/clear", { method: "POST" }));
     const data = await res.json();
     expect(data.cleared).toBe(true);
 

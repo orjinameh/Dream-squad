@@ -14,16 +14,20 @@ import { createPublicClient, createWalletClient, http, parseUnits, formatUnits }
 import { SOMNIA_CHAIN, SPOT_POOL_ABI, OPERATOR_REGISTRY_ABI, OPERATOR_ADDRESS, SELECTORS } from "../src/lib/config";
 import { MARKETS, GAS_LIMIT_PER_ORDER } from "../src/lib/markets";
 
-const FUND_KEY     = "0x84e04f1fd7ce8f03c4d0862945c032646633dcdf3ca852a969d4833d4333c1a4";
-const FUND_ADDR   = "0x9196d7670eea0CB723af11465d4285541a2eA86a" as `0x${string}`;
 const REGISTRY    = "0x15C7e8CE38F021c5b45d098AaD788f63090bF20A" as `0x${string}`;
 const RPC         = "https://dream-rpc.somnia.network";
 const EXPLORER    = "https://shannon-explorer.somnia.network/tx/";
 const MAX_FEE     = 10_000_000_000n;
 const MAX_PRIO    = 100_000_000n;
 
+// Funding account that grants the operator order-delegation. NEVER hardcode a
+// private key — read it from the environment (see .env.example).
+const fundKey = process.env.FUND_KEY;
+if (!fundKey) throw new Error("FUND_KEY is not set (funding account for operator delegation)");
+const fundAccount = (await import("viem/accounts")).privateKeyToAccount(fundKey as `0x${string}`);
+const FUND_ADDR = fundAccount.address as `0x${string}`;
+
 const market = MARKETS["SOMI:USDso"];
-const fundAccount = (await import("viem/accounts")).privateKeyToAccount(FUND_KEY);
 const publicClient = createPublicClient({ transport: http(RPC) });
 const fundWallet   = createWalletClient({ account: fundAccount, chain: SOMNIA_CHAIN, transport: http(RPC) });
 
