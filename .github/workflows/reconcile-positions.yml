@@ -16,9 +16,38 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Trigger position reconcile
+        env:
+          RECONCILE_URL: ${{ vars.VERCEL_RECONCILE_URL }}
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
         run: |
+          set -u
+
+          if [ -z "$RECONCILE_URL" ]; then
+            echo "::error::VERCEL_RECONCILE_URL is not set."
+            echo "Add it in the repo under Settings > Secrets and variables > Actions > Variables."
+            exit 1
+          fi
+          if [ -z "$ADMIN_TOKEN" ]; then
+            echo "::error::ADMIN_TOKEN secret is not set."
+            echo "Add it in the repo under Settings > Secrets and variables > Actions > Secrets,"
+            echo "matching the Vercel ADMIN_TOKEN env var."
+            exit 1
+          fi
+
+          # --retry tolerates transient DNS/network blips so one bad tick never
+          # silently kills the sweep. We print the code+body and don't fail the
+          # job on a non-2xx because the route is polled constantly — the next
+          # tick retries anyway.
           code=$(curl -sS -o /tmp/reconcile.out -w '%{http_code}' \
-            -X POST "${{ vars.VERCEL_RECONCILE_URL }}" \
-            -H "x-admin-token: ${{ secrets.ADMIN_TOKEN }}")
+            --max-time 30 \
+            --retry 3 --retry-delay 5 --retry-all-errors \
+            -X POST "$RECONCILE_URL" \
+            -H "x-admin-token: $ADMIN_TOKEN")
+
           echo "http=$code"
-          echo "body=$(cat /tmp/reconcile.out)"
+          echo "body=$(cat /tmp/reconcile.out 2>/dev/null || echo '<empty>')"
+
+          if [ "$code" = "401" ]; then
+            echo "::error::Reconcile endpoint returned 401 - ADMIN_TOKEN mismatch between Vercel env and this repo secret."
+            exit 1
+          fi
