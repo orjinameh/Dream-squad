@@ -123,10 +123,35 @@ async function runOnce(): Promise<void> {
 
 async function main(): Promise<void> {
   console.log("[worker] DreamDuel settlement worker starting");
+
+  let handle: NodeJS.Timeout | null = null;
+  let sweeping = false;
+  let stopping = false;
+
+  const tick = async (): Promise<void> => {
+    if (stopping || sweeping) return; // no overlap; drain on shutdown
+    sweeping = true;
+    try {
+      await runOnce();
+    } catch (err) {
+      console.error("[worker] tick failed", err);
+    } finally {
+      sweeping = false;
+    }
+  };
+
+  const stop = (): void => {
+    if (stopping) return;
+    stopping = true;
+    console.log("[worker] stopping (in-flight sweep will drain)");
+    if (handle) clearInterval(handle);
+  };
+
+  process.on("SIGTERM", () => { stop(); process.exit(0); });
+  process.on("SIGINT", () => { stop(); process.exit(0); });
+
   await runOnce();
-  setInterval(() => {
-    runOnce().catch((err) => console.error("[worker] tick failed", err));
-  }, SWEEP_INTERVAL_MS);
+  handle = setInterval(() => { tick().catch((err) => console.error("[worker] tick failed", err)); }, SWEEP_INTERVAL_MS);
 }
 
 main().catch((err) => {

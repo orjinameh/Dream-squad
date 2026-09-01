@@ -125,6 +125,16 @@ async function updateStatsForAutoResolved(match: any, now: Date) {
     },
     { upsert: true },
   );
+
+  // Keep the idempotency list from growing toward MongoDB's 16MB doc limit.
+  try {
+    await PlayerStats.updateOne(
+      { _id: addr },
+      { $push: { processedMatches: { $each: [], $slice: -200 } } },
+    );
+  } catch (err) {
+    console.error("[state] failed to cap processedMatches", err);
+  }
 }
 
 function buildState(match: any, serverTime: Date, isViewerP2: boolean, viewerAddress: string | null) {

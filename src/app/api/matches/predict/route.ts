@@ -337,6 +337,7 @@ async function updatePlayerStatsAtomic(match: any, allRounds: any[], winner: str
     },
     { upsert: true },
   );
+  await capProcessedArrays(match.playerAddress);
 
   // Player 2 stats (PvP only) — same atomic pattern
   if (match.opponentType === "player" && match.player2Address) {
@@ -376,6 +377,7 @@ async function updatePlayerStatsAtomic(match: any, allRounds: any[], winner: str
       },
       { upsert: true },
     );
+    await capProcessedArrays(match.player2Address);
   }
 }
 
@@ -392,6 +394,29 @@ async function creditRoundPnL(matchId: string, roundNum: number, addr: string, p
     },
     { upsert: true },
   );
+  await capProcessedArrays(_addr);
+}
+
+// Cap the idempotency bookkeeping so a long-lived player's stats doc can't grow
+// toward MongoDB's 16MB limit (schema comment claims 200 but $addToSet grows
+// unboundedly). Keep only the most recent entries.
+const MAX_PROCESSED_MATCHES = 200;
+const MAX_PROCESSED_ROUNDS = 300;
+
+async function capProcessedArrays(addr: string): Promise<void> {
+  try {
+    await PlayerStats.updateOne(
+      { _id: normalizeAddress(addr) },
+      {
+        $push: {
+          processedMatches: { $each: [], $slice: -MAX_PROCESSED_MATCHES },
+          processedRounds: { $each: [], $slice: -MAX_PROCESSED_ROUNDS },
+        },
+      },
+    );
+  } catch (err) {
+    console.error("[stats] failed to cap processed arrays", err);
+  }
 }
 
 export async function POST(req: Request): Promise<Response> {
