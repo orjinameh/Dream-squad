@@ -4,13 +4,14 @@ name: Reconcile EC Positions
 # (serverless) can't run a long-lived worker, so an external scheduler pings the
 # admin-guarded web hook on a short cadence instead. The route is idempotent —
 # it only settles ACTIVE positions whose window has closed, so frequent calls
-# are safe. GitHub Actions cron is 5-field POSIX (minute hour day month weekday);
-# the minimum interval is 1 minute, so windows settle within ~1 min of closing.
+# are safe. GitHub Actions cron is 5-field POSIX (minute hour day month weekday)
+# and enforces a minimum interval of 5 minutes, so windows settle within ~5 min
+# of closing.
 
 on:
   schedule:
-    # every minute: minute=* hour=* day=* month=* weekday=*
-    - cron: '* * * * *'
+    # every 5 minutes: minute=*/5 hour=* day=* month=* weekday=*
+    - cron: '*/5 * * * *'
   workflow_dispatch: {}
 
 jobs:
