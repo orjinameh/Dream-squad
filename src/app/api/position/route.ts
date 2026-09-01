@@ -1,7 +1,7 @@
 import { connectToDatabase } from "@/db/connect";
 import { normalizeAddress } from "@/lib/addresses";
 import { jsonError } from "@/lib/utils";
-import { findActivePosition, openPosition, PositionError } from "@/lib/ec/position";
+import { findActivePosition, openPosition, reconcilePositions, PositionError } from "@/lib/ec/position";
 import { positionInfo } from "@/lib/ec/escrow";
 import { EcPosition } from "@/db/models/EcPosition";
 import { z } from "zod";
@@ -69,6 +69,14 @@ export async function GET(req: Request) {
         escrowAddress: ESCROW_ADDRESS,
         windowId: pos.windowId ?? null,
         stakeTxHash: pos.stakeTxHash ?? null,
+        arena: pos.arena
+          ? {
+              symbol: (pos.arena as { symbol?: string }).symbol ?? null,
+              strike: (pos.arena as { strike?: string }).strike ?? null,
+              marketId: (pos.arena as { marketId?: string }).marketId ?? null,
+              expiry: (pos.arena as { expiry?: number }).expiry ?? null,
+            }
+          : null,
         onchain,
       },
     });
@@ -88,6 +96,10 @@ export async function POST(req: Request) {
   }
   const input = parsed.data;
   try {
+    // Lazy-settle any resolved positions first (covers the case where the
+    // external cron was delayed/skipped) — a settled position no longer blocks
+    // opening a fresh one.
+    await reconcilePositions().catch(() => {});
     const result = await openPosition({
       address: normalizeAddress(input.address).toLowerCase(),
       direction: input.direction,

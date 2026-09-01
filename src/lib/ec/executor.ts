@@ -61,9 +61,15 @@ export interface EcArenaMarket {
 
 /**
  * Resolve the currently-trading binary market for an asset ("BTC"|"ETH") that
- * has a real strike (not the place-holder zero strike) and a future expiry.
- * Prefers the window with the longest time remaining that still has >minLeftSec.
- * Returns null when no such live arena floor exists (e.g. between windows).
+ * has a REAL strike (not the "ETH-0-" placeholder the venue lists for rolling
+ * liquidity) and a future expiry. The venue rolls real-strike windows roughly
+ * every minute, so one is essentially always live; the soonest-settling window
+ * is picked so the position resolves ~a minute after opening. Returns null when
+ * only zero-strike placeholder windows remain (503 — try again in a moment).
+ *
+ * NOTE: zero-strike "ETH-0-" windows are deliberately skipped: the venue never
+ * resolves them (isResolved stays false forever), so a position anchored to one
+ * could NEVER settle — it would lock the player's tUSDC indefinitely.
  */
 export async function findArenaFloor(
   asset: "BTC" | "ETH",
@@ -79,10 +85,10 @@ export async function findArenaFloor(
   }
 
   const floors: EcArenaMarket[] = [];
-  const floorAny: EcArenaMarket[] = [];
   for (const m of markets) {
     if (m.type !== "binary") continue;
     if (!m.symbol.startsWith(prefix)) continue;
+    if (m.symbol.includes("-0-")) continue; // zero-strike placeholder: never settles
     const info = m.info as BinaryMarket & { expiry?: string | number };
     // Cheap indexer-side pre-filter: only near-future windows. This bounds the
     // expensive per-market on-chain probe to the handful of windows potentially
@@ -97,7 +103,7 @@ export async function findArenaFloor(
     if (!onchain.expiry || Number(onchain.expiry) <= now) continue;
     const leftSec = Number(onchain.expiry) - now;
     if (leftSec < minLeftSec) continue;
-    const arena: EcArenaMarket = {
+    floors.push({
       symbol: m.symbol,
       marketId: m.id,
       pool: onchain.pool,
@@ -108,18 +114,14 @@ export async function findArenaFloor(
       strike: info.strike ?? "",
       decimals: onchain.decimals,
       expiry: Number(onchain.expiry),
-    };
-    if (m.symbol.includes("-0-")) floorAny.push(arena); // zero-strike placeholder floor
-    else floors.push(arena); // real-strike tradeable floor
+    });
   }
 
-  // Prefer a real-strike floor; fall back to any live floor (incl. zero-strike)
-  // so players can always open a position when the venue only lists "ETH-0-"
-  // rollover windows. Within each group pick the soonest-settling window (the
-  // position's 15-min lifecycle should resolve shortly after opening, not at a
-  // far-future expiry).
-  const pick = (list: EcArenaMarket[]) => (list.length ? list.sort((a, b) => a.expiry - b.expiry)[0] : null);
-  return pick(floors) ?? pick(floorAny);
+  if (floors.length === 0) return null;
+  // Pick the soonest-settling window so the position resolves shortly after
+  // opening (not at a far-future expiry).
+  floors.sort((a, b) => a.expiry - b.expiry);
+  return floors[0];
 }
 
 // ─── Live YES price oracle (real order book) ────────────────────────────────
@@ -189,6 +191,7 @@ export async function readArenaBalances(addr: string, arena: EcArenaMarket): Pro
 /**
  * Read the on-chain state of the arena floor after (or before) settlement.
  * `isResolved` is the binary settlement flag; `winningOutcome` is 0=YES / 1=NO.
+ * Uses the marketId (NOT the pool address — getMarketOnchain keys on marketId).
  */
 export async function readArenaSettlement(arena: EcArenaMarket): Promise<{
   isResolved: boolean;
@@ -196,8 +199,9 @@ export async function readArenaSettlement(arena: EcArenaMarket): Promise<{
   status: number;
 }> {
   const exchange = ecExchange();
+  if (!arena.marketId) return { isResolved: false, winningOutcome: 0, status: 0 };
   try {
-    const oc = await exchange.client.getMarketOnchain(arena.pool);
+    const oc = await exchange.client.getMarketOnchain(arena.marketId as `0x${string}`);
     return {
       isResolved: oc.isResolved,
       winningOutcome: Number(oc.winningOutcome ?? 0),
