@@ -415,10 +415,12 @@ function DuelConfirm({ mode, char, difficulty, amount, onSelectAmount, onConfirm
         </div>
       </div>
 
-      {/* Trade amount selector — each player picks their own stake; it drives
-          their real DreamDEX order + P&L, independent of the opponent's. */}
+      {/* Trade amount selector — EACH ROUND you place a real DreamDEX order of
+          this size with your wallet, driving your on-chain P&L. This is NOT the
+          match escrow stake (that's one separate deposit confirmed at the
+          ready/stake screen and locked until the window settles). */}
       <div style={{ marginBottom: 24, textAlign: "center" }}>
-        <div style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.1em", marginBottom: 8 }}>TRADE AMOUNT (tUSDC)</div>
+        <div style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.1em", marginBottom: 8 }}>TRADE SIZE PER ROUND (tUSDC)</div>
         <div style={{ display: "flex", gap: 8 }}>
           {tradeAmounts.map((a) => (
             <button
@@ -437,6 +439,10 @@ function DuelConfirm({ mode, char, difficulty, amount, onSelectAmount, onConfirm
               {a}
             </button>
           ))}
+        </div>
+        <div style={{ fontSize: 10, color: "#64748b", marginTop: 6, maxWidth: 360, lineHeight: 1.5 }}>
+          Your per-round DreamDEX order size (drives your P&amp;L). Separate from the
+          one-time escrow stake you confirm next — that locks for the match window.
         </div>
       </div>
 
@@ -890,7 +896,9 @@ function ReadyUpScreen({ game, escrow, onReady, onStartDuel }: {
         )}
 
         <div style={{ fontSize: 12, color: "#64748b", marginBottom: 12 }}>
-          Real tUSDC is pledged to the DreamDuel escrow. Winner takes the pot on-chain; both players must stake the SAME amount.
+          This is your one-time match escrow stake (separate from your per-round
+          trade size). Real tUSDC is pledged to the DreamDuel escrow; winner takes
+          the pot on-chain. Both players must stake the SAME amount.
         </div>
 
         <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
@@ -1097,7 +1105,12 @@ function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; 
   useEffect(() => {
     if (game.phase === "ROUND_REVEAL" && game.roundResult) {
       setShowResult(true);
-      setRevealText(game.roundResult.actual === "UP" ? "RESULT: \u2191 UP" : game.roundResult.actual === "DOWN" ? "RESULT: \u2193 DOWN" : "RESULT: \u2192 FLAT");
+      const called = game.playerPrediction;
+      const actual = game.roundResult.actual;
+      const mark = called === actual ? "\u2713" : "\u2717";
+      setRevealText(
+        `YOU CALLED: ${called === "UP" ? "\u2191 UP" : called === "DOWN" ? "\u2193 DOWN" : "?"} ${mark} RESULT: ${actual === "UP" ? "\u2191 UP" : actual === "DOWN" ? "\u2193 DOWN" : "\u2192 FLAT"}`,
+      );
     }
     if (game.phase === "ROUND_IMPACT" && game.roundResult) {
       if (game.roundResult.isDraw) {
@@ -1342,8 +1355,8 @@ function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; 
         {/* Result reveal */}
         {showResult && game.phase !== "ROUND_IMPACT" && (
           <div style={{
-            fontSize: 22, fontWeight: 900, color: "#fbbf24", letterSpacing: "0.1em",
-            textShadow: "2px 2px 0 #92400e", marginBottom: 16,
+            fontSize: 17, fontWeight: 900, color: "#fbbf24", letterSpacing: "0.08em",
+            textShadow: "2px 2px 0 #92400e", marginBottom: 16, textAlign: "center", maxWidth: 460,
           }}>
             {revealText}
           </div>
