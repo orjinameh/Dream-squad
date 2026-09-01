@@ -101,7 +101,7 @@ function buildPlaceholder(prev: Candle | null | undefined, price?: number): Cand
   return { time: Math.floor(Date.now() / 1000), open: price ?? 0, high: price ?? 0, low: price ?? 0, close: price ?? 0 };
 }
 
-const GAP_MS = 10_000;
+const GAP_MS = 2_000;
 const LIVE_EDGE_MS = 65_000;
 
 export function LiveChart({ asset, height = 260, showHeader = true }: Props) {
