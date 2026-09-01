@@ -79,11 +79,11 @@ export async function findArenaFloor(
   }
 
   const floors: EcArenaMarket[] = [];
+  const floorAny: EcArenaMarket[] = [];
   for (const m of markets) {
     if (m.type !== "binary") continue;
     const info = m.info as BinaryMarket;
     if (!m.symbol.startsWith(prefix)) continue;
-    if (m.symbol.includes("-0-")) continue; // never a tradeable strike
     const onchain = await exchange.client
       .getMarketOnchain(m.id as `0x${string}`)
       .catch(() => null);
@@ -92,7 +92,7 @@ export async function findArenaFloor(
     if (!onchain.expiry || Number(onchain.expiry) <= now) continue;
     const leftSec = Number(onchain.expiry) - now;
     if (leftSec < minLeftSec) continue;
-    floors.push({
+    const arena: EcArenaMarket = {
       symbol: m.symbol,
       marketId: m.id,
       pool: onchain.pool,
@@ -103,13 +103,18 @@ export async function findArenaFloor(
       strike: info.strike ?? "",
       decimals: onchain.decimals,
       expiry: Number(onchain.expiry),
-    });
+    };
+    if (m.symbol.includes("-0-")) floorAny.push(arena); // zero-strike placeholder floor
+    else floors.push(arena); // real-strike tradeable floor
   }
 
-  if (floors.length === 0) return null;
-  // Prefer the arena with the most time left (the freshest window).
-  floors.sort((a, b) => b.expiry - a.expiry);
-  return floors[0];
+  // Prefer a real-strike floor; fall back to any live floor (incl. zero-strike)
+  // so players can always open a position when the venue only lists "ETH-0-"
+  // rollover windows. Within each group pick the soonest-settling window (the
+  // position's 15-min lifecycle should resolve shortly after opening, not at a
+  // far-future expiry).
+  const pick = (list: EcArenaMarket[]) => (list.length ? list.sort((a, b) => a.expiry - b.expiry)[0] : null);
+  return pick(floors) ?? pick(floorAny);
 }
 
 // ─── Live YES price oracle (real order book) ────────────────────────────────
