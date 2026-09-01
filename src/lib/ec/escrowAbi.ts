@@ -13,7 +13,7 @@ export const DREAMDUEL_ESCROW_ABI = [
         "internalType": "address"
       },
       {
-        "name": "refundDelay_",
+        "name": "windowLength_",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -48,10 +48,10 @@ export const DREAMDUEL_ESCROW_ABI = [
   },
   {
     "type": "function",
-    "name": "draw",
+    "name": "collectLost",
     "inputs": [
       {
-        "name": "matchId",
+        "name": "windowId",
         "type": "bytes32",
         "internalType": "bytes32"
       }
@@ -61,51 +61,63 @@ export const DREAMDUEL_ESCROW_ABI = [
   },
   {
     "type": "function",
-    "name": "house",
-    "inputs": [],
+    "name": "position",
+    "inputs": [
+      {
+        "name": "windowId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
     "outputs": [
       {
         "name": "",
-        "type": "address",
-        "internalType": "address"
+        "type": "tuple",
+        "internalType": "struct DreamDuelEscrow.Position",
+        "components": [
+          {
+            "name": "owner",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "balance",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "windowOpen",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "windowClose",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "won",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "open",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "settled",
+            "type": "bool",
+            "internalType": "bool"
+          }
+        ]
       }
     ],
     "stateMutability": "view"
   },
   {
     "type": "function",
-    "name": "setHouse",
-    "inputs": [
-      {
-        "name": "newHouse",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "settleSolo",
-    "inputs": [
-      {
-        "name": "matchId",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      },
-      {
-        "name": "playerWon",
-        "type": "bool",
-        "internalType": "bool"
-      }
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "matches",
+    "name": "positions",
     "inputs": [
       {
         "name": "",
@@ -115,27 +127,32 @@ export const DREAMDUEL_ESCROW_ABI = [
     ],
     "outputs": [
       {
-        "name": "playerA",
+        "name": "owner",
         "type": "address",
         "internalType": "address"
       },
       {
-        "name": "playerB",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "stake",
+        "name": "balance",
         "type": "uint256",
         "internalType": "uint256"
       },
       {
-        "name": "stakedA",
-        "type": "bool",
-        "internalType": "bool"
+        "name": "windowOpen",
+        "type": "uint64",
+        "internalType": "uint64"
       },
       {
-        "name": "stakedB",
+        "name": "windowClose",
+        "type": "uint64",
+        "internalType": "uint64"
+      },
+      {
+        "name": "won",
+        "type": "uint8",
+        "internalType": "uint8"
+      },
+      {
+        "name": "open",
         "type": "bool",
         "internalType": "bool"
       },
@@ -143,65 +160,6 @@ export const DREAMDUEL_ESCROW_ABI = [
         "name": "settled",
         "type": "bool",
         "internalType": "bool"
-      },
-      {
-        "name": "drawn",
-        "type": "bool",
-        "internalType": "bool"
-      },
-      {
-        "name": "createdAt",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "openMatch",
-    "inputs": [
-      {
-        "name": "matchId",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      },
-      {
-        "name": "playerA",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "playerB",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "refund",
-    "inputs": [
-      {
-        "name": "matchId",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      }
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "refundDelay",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
       }
     ],
     "stateMutability": "view"
@@ -221,10 +179,10 @@ export const DREAMDUEL_ESCROW_ABI = [
   },
   {
     "type": "function",
-    "name": "setRefundDelay",
+    "name": "setWindowLength",
     "inputs": [
       {
-        "name": "delay",
+        "name": "length",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -234,17 +192,17 @@ export const DREAMDUEL_ESCROW_ABI = [
   },
   {
     "type": "function",
-    "name": "settle",
+    "name": "settleWindow",
     "inputs": [
       {
-        "name": "matchId",
+        "name": "windowId",
         "type": "bytes32",
         "internalType": "bytes32"
       },
       {
-        "name": "winner",
-        "type": "address",
-        "internalType": "address"
+        "name": "won",
+        "type": "bool",
+        "internalType": "bool"
       }
     ],
     "outputs": [],
@@ -255,7 +213,7 @@ export const DREAMDUEL_ESCROW_ABI = [
     "name": "stake",
     "inputs": [
       {
-        "name": "matchId",
+        "name": "windowId",
         "type": "bytes32",
         "internalType": "bytes32"
       },
@@ -269,115 +227,59 @@ export const DREAMDUEL_ESCROW_ABI = [
     "stateMutability": "nonpayable"
   },
   {
-    "type": "event",
-    "name": "Drawn",
-    "inputs": [
+    "type": "function",
+    "name": "totalOwedToPlayers",
+    "inputs": [],
+    "outputs": [
       {
-        "name": "matchId",
-        "type": "bytes32",
-        "indexed": true,
-        "internalType": "bytes32"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "RefundDelaySet",
-    "inputs": [
-      {
-        "name": "delay",
+        "name": "",
         "type": "uint256",
-        "indexed": false,
         "internalType": "uint256"
       }
     ],
-    "anonymous": false
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "windowLength",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "withdraw",
+    "inputs": [
+      {
+        "name": "windowId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
   },
   {
     "type": "event",
-    "name": "Refunded",
+    "name": "AdminCollected",
     "inputs": [
       {
-        "name": "matchId",
+        "name": "windowId",
         "type": "bytes32",
         "indexed": true,
         "internalType": "bytes32"
-      },
-      {
-        "name": "player",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
       },
       {
         "name": "amount",
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "Settled",
-    "inputs": [
-      {
-        "name": "matchId",
-        "type": "bytes32",
-        "indexed": true,
-        "internalType": "bytes32"
-      },
-      {
-        "name": "winner",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      },
-      {
-        "name": "amount",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "SoloSettled",
-    "inputs": [
-      {
-        "name": "matchId",
-        "type": "bytes32",
-        "indexed": true,
-        "internalType": "bytes32"
-      },
-      {
-        "name": "player",
-        "type": "address",
-        "indexed": false,
-        "internalType": "address"
-      },
-      {
-        "name": "playerWon",
-        "type": "bool",
-        "indexed": false,
-        "internalType": "bool"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "HouseSet",
-    "inputs": [
-      {
-        "name": "house",
-        "type": "address",
-        "indexed": false,
-        "internalType": "address"
       }
     ],
     "anonymous": false
@@ -387,13 +289,82 @@ export const DREAMDUEL_ESCROW_ABI = [
     "name": "Staked",
     "inputs": [
       {
-        "name": "matchId",
+        "name": "windowId",
         "type": "bytes32",
         "indexed": true,
         "internalType": "bytes32"
       },
       {
-        "name": "player",
+        "name": "owner",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "WindowLengthSet",
+    "inputs": [
+      {
+        "name": "length",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "WindowSettled",
+    "inputs": [
+      {
+        "name": "windowId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "owner",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "won",
+        "type": "bool",
+        "indexed": false,
+        "internalType": "bool"
+      },
+      {
+        "name": "stake",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "Withdrawn",
+    "inputs": [
+      {
+        "name": "windowId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "owner",
         "type": "address",
         "indexed": true,
         "internalType": "address"
@@ -409,37 +380,22 @@ export const DREAMDUEL_ESCROW_ABI = [
   },
   {
     "type": "error",
-    "name": "AlreadyStaked",
-    "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "InvalidPlayer",
-    "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "MatchNotOpen",
-    "inputs": []
-  },
-  {
-    "type": "error",
     "name": "NotAdmin",
     "inputs": []
   },
   {
     "type": "error",
-    "name": "NotParticipant",
+    "name": "NotOwner",
     "inputs": []
   },
   {
     "type": "error",
-    "name": "NotSettled",
+    "name": "NothingToWithdraw",
     "inputs": []
   },
   {
     "type": "error",
-    "name": "RefundNotDue",
+    "name": "PositionClosedErr",
     "inputs": []
   },
   {
@@ -449,7 +405,7 @@ export const DREAMDUEL_ESCROW_ABI = [
   },
   {
     "type": "error",
-    "name": "WrongStake",
+    "name": "WindowNotOver",
     "inputs": []
   },
   {

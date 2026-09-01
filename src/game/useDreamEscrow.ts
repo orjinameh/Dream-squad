@@ -7,9 +7,8 @@ import {
   useWriteContract,
   useWaitForTransactionReceipt,
 } from "wagmi";
-import { parseUnits, formatUnits, createPublicClient, http } from "viem";
+import { parseUnits, formatUnits, createPublicClient, http, type Hash } from "viem";
 import { EC_CHAIN, EC_RPC_URL, ESCROW_ADDRESS, EC_ADDRESSES, EC_COLLATERAL_DECIMALS } from "@/lib/ec/config";
-import { escrowMatchId } from "@/lib/ec/matchId";
 import { DREAMDUEL_ESCROW_ABI } from "@/lib/ec/escrowAbi";
 
 export const TUSDC_ADDRESS: `0x${string}` =
@@ -52,26 +51,18 @@ const TUSDC_ABI = [
   },
 ] as const;
 
-export type EscrowMatch = {
-  playerA: `0x${string}`;
-  playerB: `0x${string}`;
-  stake: bigint;
-  stakedA: boolean;
-  stakedB: boolean;
-  settled: boolean;
-  drawn: boolean;
-  createdAt: bigint;
-};
-
 /**
- * Client (browser) interface to the deployed DreamDuel escrow for a PvP match.
- * This is the REAL on-chain path: the player's own wallet approves tUSDC and
- * calls `stake` — money only moves when their wallet signs. The pot shown is
- * read from-chain, never simulated.
+ * Client (browser) interface to the deployed v2 DreamDuel escrow for an EC
+ * POSITION (a single tUSDC stake for a 15-minute window). The player's own
+ * wallet approves tUSDC and calls `stake(windowId, amount)` — money only moves
+ * when their wallet signs. On win they call `withdraw(windowId)` to collect in
+ * full. Everything shown is read on-chain via `position(windowId)`, never
+ * simulated. Keyed by windowId, NOT matchId — combat matches are stats/rank
+ * only and ride the plan.
  */
-export function useDreamEscrow(matchId?: string) {
+export function useDreamEscrow(windowId?: string | null) {
   const { address } = useAccount();
-  const matchKey = matchId ? escrowMatchId(matchId) : undefined;
+  const key = (windowId ?? undefined) as Hash | undefined;
 
   const usdc = useReadContract({
     abi: TUSDC_ABI,
@@ -85,32 +76,42 @@ export function useDreamEscrow(matchId?: string) {
     abi: TUSDC_ABI,
     address: TUSDC_ADDRESS,
     functionName: "allowance",
-    args: address && matchKey ? [address, ESCROW_ADDRESS] : undefined,
+    args: address && key ? [address, ESCROW_ADDRESS] : undefined,
     chainId: EC_CHAIN.id,
   });
 
-  const match = useReadContract({
+  const pos = useReadContract({
     abi: DREAMDUEL_ESCROW_ABI,
     address: ESCROW_ADDRESS,
-    functionName: "matches",
-    args: matchKey ? [matchKey] : undefined,
+    functionName: "position",
+    args: key ? [key] : undefined,
     chainId: EC_CHAIN.id,
   });
 
-  const rawMatch = match.data as EscrowMatch | undefined;
-  const isOpen = Boolean(rawMatch && (rawMatch.playerA !== "0x0000000000000000000000000000000000000000" || rawMatch.playerB !== "0x0000000000000000000000000000000000000000"));
-  const isParticipant = Boolean(address && rawMatch && (rawMatch.playerA === address || rawMatch.playerB === address));
-  const hasStaked = Boolean(rawMatch && address && ((rawMatch.playerA === address && rawMatch.stakedA) || (rawMatch.playerB === address && rawMatch.stakedB)));
-  const bothStaked = Boolean(rawMatch?.stakedA && rawMatch.stakedB);
+  const raw = pos.data as
+    | {
+        owner: `0x${string}`;
+        balance: bigint;
+        windowOpen: bigint;
+        windowClose: bigint;
+        won: bigint; // 0 pending / 1 won / 2 lost
+        open: boolean;
+        settled: boolean;
+      }
+    | undefined;
+
+  const isMine = Boolean(raw && address && (raw.owner as `0x${string}`).toLowerCase() === address.toLowerCase());
+  const isOpen = Boolean(raw?.open && !raw?.settled);
+  const hasStaked = Boolean(raw && isMine && raw.balance > 0n);
 
   const { writeContractAsync } = useWriteContract();
   const [lastHash, setLastHash] = useState<`0x${string}` | null>(null);
   const receipt = useWaitForTransactionReceipt({ hash: lastHash ?? undefined, chainId: EC_CHAIN.id });
 
-  // Set allowance high enough to cover the stake, then stake.
+  // Approve the escrow to spend the stake, then open/restake the position.
   const approveAndStake = useCallback(
     async (amountRaw: bigint) => {
-      if (!matchKey || !address) throw new Error("Wallet not connected");
+      if (!key || !address) throw new Error("Wallet not connected");
       const currentAllowance = allowance.data as bigint | undefined;
       if ((currentAllowance ?? 0n) < amountRaw) {
         const approveHash = (await writeContractAsync({
@@ -127,29 +128,30 @@ export function useDreamEscrow(matchId?: string) {
         abi: DREAMDUEL_ESCROW_ABI,
         address: ESCROW_ADDRESS,
         functionName: "stake",
-        args: [matchKey, amountRaw],
+        args: [key, amountRaw],
         chainId: EC_CHAIN.id,
       }))!;
       setLastHash(stakeHash);
       await waitForReceipt(stakeHash);
       return stakeHash;
     },
-    [matchKey, address, allowance.data, writeContractAsync],
+    [key, address, allowance.data, writeContractAsync],
   );
 
-  const refund = useCallback(async () => {
-    if (!matchKey) throw new Error("No match");
+  // Collect a WON position (stake returned in full).
+  const withdraw = useCallback(async () => {
+    if (!key) throw new Error("No position");
     const hash = (await writeContractAsync({
       abi: DREAMDUEL_ESCROW_ABI,
       address: ESCROW_ADDRESS,
-      functionName: "refund",
-      args: [matchKey],
+      functionName: "withdraw",
+      args: [key],
       chainId: EC_CHAIN.id,
     }))!;
     setLastHash(hash);
     await waitForReceipt(hash);
     return hash;
-  }, [matchKey, writeContractAsync]);
+  }, [key, writeContractAsync]);
 
   const getFaucet = useCallback(
     async (amountRaw: bigint) => {
@@ -169,27 +171,26 @@ export function useDreamEscrow(matchId?: string) {
   );
 
   return {
-    matchId: matchKey,
+    windowId: key,
     address,
     usdcBalance: usdc.data as bigint | undefined,
     usdcBalanceFormatted: usdc.data != null ? formatUnits(usdc.data as bigint, EC_COLLATERAL_DECIMALS) : null,
     allowance: allowance.data as bigint | undefined,
-    onchain: rawMatch,
+    onchain: raw,
+    isMine,
     isOpen,
-    isParticipant,
     hasStaked,
-    bothStaked,
-    stakeAmountFormatted: rawMatch?.stake != null && rawMatch.stake > 0n ? formatUnits(rawMatch.stake, EC_COLLATERAL_DECIMALS) : null,
-    settled: rawMatch?.settled,
-    drawn: rawMatch?.drawn,
+    won: raw?.won, // 0 pending / 1 won / 2 lost
+    settled: raw?.settled,
+    stakeAmountFormatted: raw?.balance != null && raw.balance > 0n ? formatUnits(raw.balance, EC_COLLATERAL_DECIMALS) : null,
     approveAndStake,
-    refund,
+    withdraw,
     getFaucet,
-    loading: usdc.isLoading || allowance.isLoading || match.isLoading,
+    loading: usdc.isLoading || allowance.isLoading || pos.isLoading,
     refetch: () => {
       usdc.refetch();
       allowance.refetch();
-      match.refetch();
+      pos.refetch();
     },
   };
 }

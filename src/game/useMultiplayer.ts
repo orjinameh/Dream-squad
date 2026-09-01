@@ -147,6 +147,7 @@ export interface MultiplayerActions {
     predictionAsset?: string;
     amountPerRound?: number;
     marketSymbol?: string;
+    positionId?: string;
   }) => Promise<CreateMatchResult>;
   fetchState: () => Promise<ServerMatchState | null>;
   submitPrediction: (prediction: "UP" | "DOWN") => Promise<PredictionResult | null>;
@@ -291,6 +292,7 @@ export function useMultiplayer(): UseMultiplayerReturn {
     predictionAsset?: string;
     amountPerRound?: number;
     marketSymbol?: string;
+    positionId?: string;
   }): Promise<CreateMatchResult> => {
     setIsLoading(true);
     setLastError(null);

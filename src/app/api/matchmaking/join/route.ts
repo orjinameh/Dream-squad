@@ -1,10 +1,10 @@
 import { connectToDatabase } from "@/db/connect";
 import { MatchQueue } from "@/db/models/MatchQueue";
 import { Match, ROUND_TIMINGS } from "@/db/models/Match";
+import { EcPosition } from "@/db/models/EcPosition";
 import { normalizeAddress } from "@/lib/addresses";
 import { jsonError } from "@/lib/utils";
 import { expireStaleWaitingMatches } from "@/lib/matchExpiry";
-import { openMatchOnchain } from "@/lib/ec/escrow";
 import { randomUUID } from "node:crypto";
 
 export const dynamic = "force-dynamic";
@@ -46,6 +46,16 @@ export async function POST(req: Request): Promise<Response> {
         matchId: activeMatch._id,
         message: "Already in an active match",
       });
+    }
+
+    // Must have an ACTIVE EC POSITION to fight (PvP rides the position, same as
+    // the bot match path in create/route.ts). No position => no queueing.
+    const position = await EcPosition.findOne({ address: addr.toLowerCase(), status: "ACTIVE" }).sort({ createdAt: -1 }).lean();
+    if (!position) {
+      return jsonError(409, "no active EC position — stake one first on the POSITION screen");
+    }
+    if (!position.windowCloseAt || new Date(position.windowCloseAt) <= new Date()) {
+      return jsonError(409, "your EC position window has ended — open a new position to fight");
     }
 
     // Ensure the player has a fresh "searching" queue entry (create if missing,
@@ -139,6 +149,11 @@ export async function POST(req: Request): Promise<Response> {
         player2Char: opponent.charId || "dreamer",
         player1Ready: false,
         player2Ready: false,
+        // Reference the player's active EC position (money lives there, not here).
+        positionId: position._id,
+        positionWindowId: position.windowId,
+        positionDirection: position.direction,
+        positionAmount: position.amount,
       });
 
       // Update both queue entries with matchId
@@ -146,20 +161,9 @@ export async function POST(req: Request): Promise<Response> {
       await MatchQueue.updateOne({ _id: opponent._id }, { $set: { status: "matched", matchId } });
       console.log(`[join] created match=${matchId} cur=${addr.slice(0,6)} opp=${opponent.address.slice(0,6)}`);
 
-      // Open the on-chain escrow so both players can pledge tUSDC (real PvP
-      // money). If this write fails (transient RPC), the settlement worker will
-      // reconcile on match completion — never fabricate a secure state.
-      try {
-        await openMatchOnchain(matchId, addr as `0x${string}`, opponent.address as `0x${string}`);
-        console.log(`[join] escrow opened match=${matchId}`);
-      } catch (escrowErr) {
-        console.error("[join] escrow open failed (will reconcile)", escrowErr);
-      }
-
       return Response.json({
         status: "matched",
         matchId,
-        escrowReady: true,
         opponent: {
           address: opponent.address,
           charId: opponent.charId,

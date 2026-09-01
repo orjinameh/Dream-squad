@@ -8,6 +8,7 @@ import { POST as clearRoute } from "@/app/api/matchmaking/clear/route";
 import { GET as statusRoute } from "@/app/api/matchmaking/status/route";
 import { Match } from "@/db/models/Match";
 import { MatchQueue } from "@/db/models/MatchQueue";
+import { EcPosition } from "@/db/models/EcPosition";
 
 let mongo: MongoMemoryServer;
 
@@ -30,6 +31,23 @@ beforeAll(async () => {
 beforeEach(async () => {
   await Match.deleteMany({});
   await MatchQueue.deleteMany({});
+  await EcPosition.deleteMany({});
+  // Each wallet needs an ACTIVE EC POSITION to queue for a PvP match (the join
+  // route requires it). Seed one for every address used in these tests.
+  for (const addr of [A, B, CA, CB]) {
+    await EcPosition.create({
+      address: addr.toLowerCase(),
+      direction: "UP",
+      market: "BTC",
+      amount: 10,
+      status: "ACTIVE",
+      windowId: `0x${addr.slice(2).toLowerCase()}000000000000000000000000000000000000000000`,
+      windowOpenAt: new Date(),
+      windowCloseAt: new Date(Date.now() + 15 * 60 * 1000),
+      settledOnchain: false,
+      matchCount: 0,
+    });
+  }
 });
 
 afterAll(async () => {

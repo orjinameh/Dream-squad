@@ -1,24 +1,28 @@
 import { createPublicClient, createWalletClient, http, type Hash } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { EC_CHAIN, EC_RPC_URL, ESCROW_ADDRESS } from "./config";
-import { escrowMatchId } from "./matchId";
 import { DREAMDUEL_ESCROW_ABI } from "./escrowAbi";
 
 /**
- * DreamDuel on-chain escrow client.
+ * DreamDuel v2 on-chain escrow client.
  *
- * The escrow holds both players' tUSDC pledges for a PvP match and pays the
- * winner on settlement. This module exposes:
- *   - read helpers (public, no key);
- *   - admin write helpers (openMatch/settle/draw) driven by the operator key
- *     (the escrow's configured `admin`).
+ * The escrow holds the player's EC POSITION (a single tUSDC stake for a DreamDEX
+ * 15-minute window). Model:
+ *   - stake(windowId, amount)  — player deposits/opens their UP or DOWN position.
+ *   - settleWindow(windowId, won) — THE only money decision, reported from the
+ *     REAL on-chain EC settlement (winningOutcome). win → stake returned in full,
+ *     loss → stake forfeited to the house/admin.
+ *   - withdraw(windowId) — player collects a WON position.
+ *   - collectLost(windowId) — admin collects a LOST position.
  *
- * Player-side `stake` is NOT here — it must be signed by the player's own
- * wallet in the browser, so the game UI calls it directly.
+ * Combat MATCHES never touch this escrow — matches are stats/rank only and simply
+ * reference the player's active position.
  *
- * NOTE: Somnia testnet rejects eth_estimateGas for some calls and uses a steep
- * gas schedule, so every write supplies an explicit `gas` limit. Overshooting
- * is safe — only consumed gas is paid.
+ * This module exposes read + admin writes (operator key = escrow `admin`).
+ * Player-side `stake` is signed by the player's wallet in the browser.
+ *
+ * NOTE: Somnia testnet rejects eth_estimateGas for some calls, so every write
+ * supplies an explicit `gas` limit. Overshooting is safe.
  */
 
 let _public: ReturnType<typeof createPublicClient> | null = null;
@@ -43,85 +47,73 @@ function adminWallet() {
 }
 
 const ADMIN_GAS = 3_000_000n;
-const READ_GAS = 500_000n;
 
-export async function matchInfo(id: string) {
-  return publicClient().readContract({
-    address: ESCROW_ADDRESS,
-    abi: DREAMDUEL_ESCROW_ABI,
-    functionName: "matches",
-    args: [escrowMatchId(id)],
-  });
+export interface PositionInfo {
+  owner: `0x${string}`;
+  balance: bigint;
+  windowOpen: bigint;
+  windowClose: bigint;
+  won: bigint; // 0 pending, 1 won, 2 lost
+  open: boolean;
+  settled: boolean;
 }
 
-/** Admin: register both participants for a match before anyone stakes. */
-export async function openMatchOnchain(id: string, playerA: `0x${string}`, playerB: `0x${string}`) {
-  const wc = adminWallet();
-  return wc.writeContract({
+export async function positionInfo(windowId: Hash): Promise<PositionInfo> {
+  const p = await publicClient().readContract({
     address: ESCROW_ADDRESS,
     abi: DREAMDUEL_ESCROW_ABI,
-    functionName: "openMatch",
-    args: [escrowMatchId(id), playerA, playerB],
-    chain: EC_CHAIN,
-    account: wc.account!,
-    gas: ADMIN_GAS,
+    functionName: "position",
+    args: [windowId],
   });
+  return p as unknown as PositionInfo;
 }
 
-/** Admin: pay the winner the full pot. Guards require both players staked. */
-export async function settleOnchain(id: string, winner: `0x${string}`) {
-  const wc = adminWallet();
-  return wc.writeContract({
-    address: ESCROW_ADDRESS,
-    abi: DREAMDUEL_ESCROW_ABI,
-    functionName: "settle",
-    args: [escrowMatchId(id), winner],
-    chain: EC_CHAIN,
-    account: wc.account!,
-    gas: ADMIN_GAS,
-  });
+/** True if an on-chain position slot exists and is open for `windowId`. */
+export async function positionOpen(windowId: Hash): Promise<boolean> {
+  const p = await positionInfo(windowId);
+  return p.open && !p.settled;
 }
 
 /**
- * Admin: settle a SOLO (bot) match. The player is the only staker; the bot
- * never stakes. `playerWon` true refunds the stake to the player; false sends
- * it to the configured `house` treasury. Requires exactly one side staked.
+ * Admin: settle a window after its EC event resolved, from the REAL on-chain EC
+ * result. `won=true` keeps the stake owed to the owner; `won=false` forfeits the
+ * stake to the house/admin.
  */
-export async function settleSoloOnchain(id: string, playerWon: boolean) {
+export async function settleWindowOnchain(windowId: Hash, won: boolean) {
   const wc = adminWallet();
   return wc.writeContract({
     address: ESCROW_ADDRESS,
     abi: DREAMDUEL_ESCROW_ABI,
-    functionName: "settleSolo",
-    args: [escrowMatchId(id), playerWon],
+    functionName: "settleWindow",
+    args: [windowId, won],
     chain: EC_CHAIN,
     account: wc.account!,
     gas: ADMIN_GAS,
   });
 }
 
-/** Admin: point the `house` treasury (solo-loss recipient) at an address. */
-export async function setHouseOnchain(house: `0x${string}`) {
+/** Admin: collect a LOST position's forfeited stake to the house. */
+export async function collectLostOnchain(windowId: Hash) {
   const wc = adminWallet();
   return wc.writeContract({
     address: ESCROW_ADDRESS,
     abi: DREAMDUEL_ESCROW_ABI,
-    functionName: "setHouse",
-    args: [house],
+    functionName: "collectLost",
+    args: [windowId],
     chain: EC_CHAIN,
     account: wc.account!,
     gas: ADMIN_GAS,
   });
 }
 
-/** Admin: refund both players (a draw / void). */
-export async function drawOnchain(id: string) {
+/** Admin: change the window length. */
+export async function setWindowLengthOnchain(length: bigint) {
   const wc = adminWallet();
   return wc.writeContract({
     address: ESCROW_ADDRESS,
     abi: DREAMDUEL_ESCROW_ABI,
-    functionName: "draw",
-    args: [escrowMatchId(id)],
+    functionName: "setWindowLength",
+    args: [length],
     chain: EC_CHAIN,
     account: wc.account!,
     gas: ADMIN_GAS,

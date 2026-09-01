@@ -119,6 +119,12 @@ export interface MatchDoc {
   statsProcessed: StatsProcessedStatus;
   // On-chain escrow settlement state (PvP only)
   escrowStatus?: EscrowStatus;
+  // Reference to the player's active EC POSITION this combat match rides on.
+  // The match is stats/rank only; the position holds the real stake.
+  positionId?: string;
+  positionWindowId?: string;
+  positionDirection?: "UP" | "DOWN";
+  positionAmount?: number;
 }
 
 const ROUND_DURATION_MS = 10_000;
@@ -234,6 +240,10 @@ const MatchSchema = new Schema<MatchDoc>(
     priceModel: { type: Schema.Types.Mixed },
     statsProcessed: { type: String, enum: ["PENDING", "PROCESSING", "COMPLETE", "FAILED"], default: "PENDING" },
     escrowStatus: { type: String, enum: ["PENDING", "SETTLED", "DRAWN", "FAILED"], default: "PENDING" },
+    positionId: { type: String },
+    positionWindowId: { type: String },
+    positionDirection: { type: String, enum: ["UP", "DOWN"] },
+    positionAmount: { type: Number },
   },
   { versionKey: false },
 );

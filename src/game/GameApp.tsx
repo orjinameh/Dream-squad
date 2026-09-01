@@ -23,7 +23,7 @@ export default function GameApp() {
   const { isConnected, address } = useAccount();
   const mm = useMatchmaking(address as `0x${string}` | undefined);
   const dreamDex = useDreamDEX(g.marketSymbol);
-  const escrow = useDreamEscrow(g.matchId ?? undefined);
+  const escrow = useDreamEscrow(g.positionWindowId);
   const startedMatchRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -85,6 +85,8 @@ export default function GameApp() {
 
       {g.phase === "HOME" && <HomeScreen address={address} escrow={escrow} onEnter={g.actions.goToMarketSelect} onLeaderboard={g.actions.goToLeaderboard} onProfile={g.actions.goToProfile} onHistory={g.actions.goToMatchHistory} onRejoin={activeMatchId ? rejoinMatch : undefined} />}
       {g.phase === "MARKET_SELECT" && <TradeSelect onSelect={g.actions.selectMarket} onBack={g.actions.goToHome} />}
+      {g.phase === "POSITION" && <PositionScreen game={g} escrow={escrow} onBack={g.actions.goToMarketSelect} onNext={g.actions.goToMatchType} onOpenPosition={g.actions.openPosition} />}
+      {g.phase === "MATCH_TYPE" && <MatchTypeScreen game={g} onBack={g.actions.changePosition} onPvP={() => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.joinMatchmaking(7); mm.actions.joinQueue(7, g.playerChar?.id ?? "dreamer"); }} onBot={() => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.fightBotInstead(); }} onHome={g.actions.goToHome} />}
       {g.phase === "CHAR_SELECT" && <CharSelect onSelect={g.actions.selectChar} onBack={g.actions.goToMarketSelect} />}
       {g.phase === "DUEL_CONFIRM" && <DuelConfirm mode={g.mode!} char={g.playerChar!} difficulty={g.botDifficulty} amount={g.selectedAmount} onSelectAmount={g.actions.selectAmount} onConfirm={() => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.confirmDuel(); }} onBack={g.actions.goToCharSelect} onQuickMatch={(rounds) => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.joinMatchmaking(rounds); mm.actions.joinQueue(rounds, g.playerChar?.id ?? "dreamer"); }} onSelectDifficulty={g.actions.selectDifficulty} />}
       {g.phase === "PREDICTION_SELECT" && <PredictionSelect asset={(TRADE_MARKETS.find((m) => m.symbol === g.marketSymbol)?.asset) ?? "BTC"} onBack={g.actions.goToCharSelect} onPredict={g.actions.setMatchPrediction} difficulty={g.botDifficulty} onSelectDifficulty={g.actions.selectDifficulty} amount={g.selectedAmount} onSelectAmount={g.actions.selectAmount} char={g.playerChar!} mode={g.mode!} onFightBot={() => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.fightBotInstead(); }} onQuickMatch={() => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.joinMatchmaking(g.mode?.rounds ?? 7); mm.actions.joinQueue(g.mode?.rounds ?? 7, g.playerChar?.id ?? "dreamer"); }} />}
@@ -94,7 +96,7 @@ export default function GameApp() {
       {(g.phase === "MATCH_INTRO" || g.phase === "ROUND_START" || g.phase === "ROUND_ACTIVE" || g.phase === "ROUND_LOCKED" || g.phase === "ROUND_EXECUTING" || g.phase === "ROUND_REVEAL" || g.phase === "ROUND_IMPACT") && (
         <ArenaScreen game={g} escrow={escrow} />
       )}
-      {g.phase === "MATCH_RESULT" && <MatchResult game={g} onRematch={() => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.rematch(); }} />}
+      {g.phase === "MATCH_RESULT" && <MatchResult game={g} onRematch={() => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.rematch(); }} onChangePosition={g.actions.changePosition} onExit={g.actions.goToHome} />}
       {g.phase === "PROFILE" && <ProfileScreen address={address} escrow={escrow} onBack={g.actions.goToHome} onHistory={g.actions.goToMatchHistory} />}
       {g.phase === "MATCH_HISTORY" && <MatchHistoryScreen address={address} onBack={g.actions.goToHome} onSelectMatch={g.actions.goToMatchDetail} />}
       {g.phase === "MATCH_DETAIL" && <MatchDetailScreen matchId={g.selectedMatchId} address={address} onBack={g.actions.goToMatchHistory} />}
@@ -317,6 +319,213 @@ function TradeSelect({ onSelect, onBack }: { onSelect: (m: TradeMarket) => void;
       <button onClick={onBack} style={{ ...ctaButtonStyle, background: "transparent", border: "2px solid #475569", color: "#94a3b8", fontSize: 14, padding: "10px 28px" }}>
         {"\u2190"} BACK
       </button>
+    </div>
+  );
+}
+
+function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
+  game: ReturnType<typeof useGameState>;
+  escrow: ReturnType<typeof useDreamEscrow>;
+  onBack: () => void;
+  onNext: () => void;
+  onOpenPosition: (opts: { direction: "UP" | "DOWN"; market: string; amount: number; positionId: string; windowId: string }) => void;
+}) {
+  const { address } = useAccount();
+  const asset = (TRADE_MARKETS.find((m) => m.symbol === game.marketSymbol)?.asset) ?? "BTC";
+  const [direction, setDirection] = useState<"UP" | "DOWN">("UP");
+  const [amount, setAmount] = useState(10);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [faucetBusy, setFaucetBusy] = useState(false);
+  const presets = [1, 5, 10, 25, 50];
+
+  // A position is already active — show it and let the player proceed to
+  // MATCH TYPE (gated in the parent) or open a fresh one to switch direction.
+  const hasActive = Boolean(game.positionWindowId && game.positionDirection);
+  const activeDirection = game.positionDirection;
+  const activeAmount = game.positionAmount;
+
+  const handleFaucet = async () => {
+    if (!escrow.address) return;
+    setFaucetBusy(true);
+    setError(null);
+    try { await escrow.getFaucet(parseUnits("1000", EC_COLLATERAL_DECIMALS)); escrow.refetch(); }
+    catch (e) { setError(e instanceof Error ? e.message : "Faucet failed"); }
+    finally { setFaucetBusy(false); }
+  };
+
+  // Open the EC position server-side, then stake the real tUSDC on-chain.
+  const handleStake = async () => {
+    if (!escrow.address || !address) { setError("Connect your wallet first"); return; }
+    setBusy(true); setError(null);
+    try {
+      const res = await fetch("/api/position", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ address, direction, market: asset, amount }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      const amountRaw = parseUnits(String(amount), EC_COLLATERAL_DECIMALS);
+      await escrow.approveAndStake(amountRaw);
+      escrow.refetch();
+      onOpenPosition({ direction, market: asset, amount, positionId: data.position?._id ?? data.positionId, windowId: data.windowId });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to open position");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "40px 20px" }}>
+      <div style={{ position: "absolute", inset: 0, background: `radial-gradient(ellipse at 50% 40%, rgba(168,85,247,0.08) 0%, transparent 50%)`, pointerEvents: "none" }} />
+
+      <h2 style={{ fontSize: 28, fontWeight: 900, letterSpacing: "0.1em", color: "#fbbf24", textShadow: "2px 2px 0 #92400e", marginBottom: 8, textAlign: "center" }}>
+        {"\uD83D\uDCC8"} OPEN EC POSITION
+      </h2>
+      <p style={{ fontSize: 13, color: "#64748b", marginBottom: 8, textAlign: "center" }}>
+        The financial layer: stake tUSDC UP/DOWN on {asset} for the ~15 min Event-Contract window.
+      </p>
+      <p style={{ fontSize: 11, color: "#475569", marginBottom: 28, textAlign: "center", maxWidth: 420, lineHeight: 1.6 }}>
+        Your balance is FIXED for the whole window. It settles ONCE on-chain when the EC pays:
+        win {"\u2192"} stake back in full, loss {"\u2192"} forfeited. Combats are bragging/stats only.
+      </p>
+
+      <div style={{ width: "100%", maxWidth: 440, marginBottom: 16, padding: "16px 20px", border: "1px solid #334155", borderRadius: 10, background: "rgba(15,23,42,0.75)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+          <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.12em", color: "#a855f7" }}>YOUR CALL</span>
+          <span style={{ fontSize: 12, color: "#38bdf8", fontFamily: "'Courier New', monospace" }}>tUSDC {escrow.usdcBalanceFormatted ?? "\u2014"}</span>
+        </div>
+
+        {escrow.usdcBalanceFormatted != null && Number(escrow.usdcBalanceFormatted) < 10 && (
+          <button onClick={handleFaucet} disabled={faucetBusy} style={{
+            width: "100%", marginBottom: 10, padding: "6px 10px", borderRadius: 6, cursor: "pointer",
+            border: "1px dashed #f59e0b", background: "rgba(245,158,11,0.08)", color: "#fbbf24", fontWeight: 700, fontSize: 11,
+          }}>
+            {faucetBusy ? "MINTING 1000 tUSDC..." : "+ GET 1000 TEST tUSDC"}
+          </button>
+        )}
+
+        <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
+          <button onClick={() => setDirection("UP")} style={{
+            flex: 1, padding: "10px 0", borderRadius: 8, fontSize: 15, fontWeight: 900, letterSpacing: "0.08em", cursor: "pointer", fontFamily: "'Courier New', monospace",
+            background: direction === "UP" ? "rgba(16,185,129,0.18)" : "rgba(15,23,42,0.8)",
+            border: `2px solid ${direction === "UP" ? "#10b981" : "#334155"}`,
+            color: direction === "UP" ? "#10b981" : "#64748b",
+            boxShadow: direction === "UP" ? "0 0 14px rgba(16,185,129,0.5)" : undefined,
+          }}>
+            {"\u2B06\uFE0F"} UP
+          </button>
+          <button onClick={() => setDirection("DOWN")} style={{
+            flex: 1, padding: "10px 0", borderRadius: 8, fontSize: 15, fontWeight: 900, letterSpacing: "0.08em", cursor: "pointer", fontFamily: "'Courier New', monospace",
+            background: direction === "DOWN" ? "rgba(239,68,68,0.18)" : "rgba(15,23,42,0.8)",
+            border: `2px solid ${direction === "DOWN" ? "#ef4444" : "#334155"}`,
+            color: direction === "DOWN" ? "#ef4444" : "#64748b",
+            boxShadow: direction === "DOWN" ? "0 0 14px rgba(239,68,68,0.5)" : undefined,
+          }}>
+            {"\u2B07\uFE0F"} DOWN
+          </button>
+        </div>
+
+        <div style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.1em", marginBottom: 6 }}>STAKE (tUSDC)</div>
+        <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
+          {presets.map((a) => (
+            <button key={a} onClick={() => setAmount(a)} style={{
+              padding: "6px 12px", borderRadius: 6, cursor: "pointer",
+              border: amount === a ? "2px solid #38bdf8" : "1px solid #334155",
+              background: amount === a ? "rgba(14,165,233,0.15)" : "#0f172a",
+              color: "#e2e8f0", fontWeight: 700, fontSize: 13,
+            }}>
+              {a}
+            </button>
+          ))}
+        </div>
+
+        {hasActive ? (
+          <div style={{ fontSize: 12, color: "#f59e0b", lineHeight: 1.5, marginBottom: 10 }}>
+            You already hold an active position: {"\uD83D\uDCC8"} {activeDirection} {"\u00D7"} {activeAmount} tUSDC.
+            To switch UP {"\u2194"} DOWN you must restake a new position (old one settles on its own).
+          </div>
+        ) : null}
+
+        <button onClick={handleStake} disabled={busy || !escrow.address} style={{
+          width: "100%", padding: "12px 0", borderRadius: 6, cursor: "pointer", fontWeight: 800, fontSize: 14,
+          background: "linear-gradient(135deg, #7c3aed, #a855f7)", border: "none", color: "#fff", letterSpacing: "0.08em", opacity: busy ? 0.6 : 1,
+        }}>
+          {busy ? "STAKING..." : `\u2694 STAKE ${direction} ${amount} tUSDC`}
+        </button>
+
+        {!escrow.address && <div style={{ marginTop: 8, fontSize: 11, color: "#f59e0b" }}>Connect your wallet to stake tUSDC.</div>}
+        {error && <div style={{ marginTop: 8, fontSize: 11, color: "#ef4444", wordBreak: "break-word" }}>{error}</div>}
+      </div>
+
+      <div style={{ display: "flex", gap: 12 }}>
+        <button onClick={onBack} style={{ ...ctaButtonStyle, background: "transparent", border: "2px solid #475569", color: "#94a3b8", fontSize: 13, padding: "10px 24px" }}>
+          {"\u2190"} BACK
+        </button>
+        <button onClick={onNext} disabled={!hasActive} style={{ ...ctaButtonStyle, fontSize: 16, padding: "12px 36px", opacity: hasActive ? 1 : 0.5, cursor: hasActive ? "pointer" : "not-allowed" }}>
+          {"\u2694\uFE0F"} CHOOSE MATCH TYPE
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function MatchTypeScreen({ game, onBack, onPvP, onBot, onHome }: {
+  game: ReturnType<typeof useGameState>;
+  onBack: () => void;
+  onPvP: () => void;
+  onBot: () => void;
+  onHome: () => void;
+}) {
+  return (
+    <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "40px 20px" }}>
+      <div style={{ position: "absolute", inset: 0, background: "radial-gradient(ellipse at 50% 40%, rgba(245,158,11,0.07) 0%, transparent 50%)", pointerEvents: "none" }} />
+
+      <h2 style={{ fontSize: 28, fontWeight: 900, letterSpacing: "0.1em", color: "#fbbf24", textShadow: "2px 2px 0 #92400e", marginBottom: 8, textAlign: "center" }}>
+        CHOOSE YOUR OPPONENT
+      </h2>
+      <p style={{ fontSize: 12, color: "#64748b", letterSpacing: "0.12em", marginBottom: 32 }}>COMBAT IS BRAGGING ONLY \u2014 YOUR EC STAKE DOES THE EARNING</p>
+
+      <div style={{
+        fontSize: 13, color: "#94a3b8", marginBottom: 24, padding: "8px 18px", borderRadius: 6,
+        border: "1px solid #7c3aed", background: "rgba(124,58,237,0.06)", maxWidth: 420, textAlign: "center",
+      }}>
+        Riding EC position: {"\uD83D\uDCC8"} {game.positionDirection} {"\u00D7"} {game.positionAmount} tUSDC
+      </div>
+
+      <div style={{ display: "flex", gap: 20, flexWrap: "wrap", justifyContent: "center" }}>
+        <button onClick={onPvP} style={{
+          ...modeCardStyle, cursor: "pointer", minWidth: 260,
+          borderColor: "#f59e0b", background: "rgba(245,158,11,0.08)",
+        }}>
+          <div style={{ fontSize: 34, marginBottom: 8 }}>{"\u2694\uFE0F"}</div>
+          <div style={{ fontSize: 20, fontWeight: 900, color: "#fbbf24", letterSpacing: "0.08em", marginBottom: 6 }}>PVP {"\u00B7"} MATCHMAKING</div>
+          <div style={{ fontSize: 11, color: "#94a3b8", lineHeight: 1.5 }}>
+            Find a real human opponent. Best of 7 rounds. Winner is bragging rights.
+          </div>
+        </button>
+        <button onClick={onBot} style={{
+          ...modeCardStyle, cursor: "pointer", minWidth: 260,
+          borderColor: "#a855f7", background: "rgba(124,58,237,0.08)",
+        }}>
+          <div style={{ fontSize: 34, marginBottom: 8 }}>{"\uD83E\uDD16"}</div>
+          <div style={{ fontSize: 20, fontWeight: 900, color: "#a855f7", letterSpacing: "0.08em", marginBottom: 6 }}>BOT MATCH</div>
+          <div style={{ fontSize: 11, color: "#94a3b8", lineHeight: 1.5 }}>
+            Instant AI opponent. Best of 7 rounds. Practice your calls.
+          </div>
+        </button>
+      </div>
+
+      <div style={{ display: "flex", gap: 12, marginTop: 28 }}>
+        <button onClick={onBack} style={{ ...ctaButtonStyle, background: "transparent", border: "2px solid #475569", color: "#94a3b8", fontSize: 13, padding: "10px 24px" }}>
+          {"\u21C4"} CHANGE POSITION
+        </button>
+        <button onClick={onHome} style={{ background: "none", border: "none", color: "#64748b", fontSize: 12, cursor: "pointer", letterSpacing: "0.1em" }}>
+          EXIT TO ARENA
+        </button>
+      </div>
     </div>
   );
 }
@@ -751,14 +960,10 @@ function ReadyUpScreen({ game, escrow, onReady, onStartDuel }: {
 }) {
   const [ready, setReady] = useState(false);
   const [opponentReady, setOpponentReady] = useState(false);
-  const [waiting, setWaiting] = useState(false);
-  const [pvpStake, setPvpStake] = useState(game.selectedAmount && game.selectedAmount <= 50 ? game.selectedAmount : 10);
-  const [stakeBusy, setStakeBusy] = useState(false);
-  const [stakeError, setStakeError] = useState<string | null>(null);
-  const [faucetBusy, setFaucetBusy] = useState(false);
-  const stakePresets = [1, 5, 10, 25, 50];
 
-  // Poll for ready state
+  // Poll for ready state (PvP only). The stake already happened on the POSITION
+  // screen — here we just wait for both players to READY UP before the server
+  // opens round 1.
   useEffect(() => {
     if (!game.matchId) return;
     const interval = setInterval(async () => {
@@ -766,9 +971,6 @@ function ReadyUpScreen({ game, escrow, onReady, onStartDuel }: {
         const res = await fetch(`/api/matches/state?matchId=${game.matchId}`);
         const data = await res.json();
         if (data.player1Ready) setOpponentReady(true);
-        if (data.bothReady || (data.player1Ready && data.player2Ready)) {
-          // Both ready — match will auto-start via state polling
-        }
       } catch { /* keep polling */ }
     }, 1000);
     return () => clearInterval(interval);
@@ -779,71 +981,9 @@ function ReadyUpScreen({ game, escrow, onReady, onStartDuel }: {
     onReady();
   };
 
-  const handleStake = async () => {
-    if (!escrow.address) return;
-    setStakeBusy(true);
-    setStakeError(null);
-    try {
-      const amountRaw = parseUnits(String(pvpStake), EC_COLLATERAL_DECIMALS);
-      await escrow.approveAndStake(amountRaw);
-      escrow.refetch();
-    } catch (e) {
-      setStakeError(e instanceof Error ? e.message : "Stake failed");
-    } finally {
-      setStakeBusy(false);
-    }
-  };
-
-  const handleFaucet = async () => {
-    if (!escrow.address) return;
-    setFaucetBusy(true);
-    setStakeError(null);
-    try {
-      await escrow.getFaucet(parseUnits("1000", EC_COLLATERAL_DECIMALS));
-      escrow.refetch();
-    } catch (e) {
-      setStakeError(e instanceof Error ? e.message : "Faucet failed");
-    } finally {
-      setFaucetBusy(false);
-    }
-  };
-
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "40px 20px" }}>
       <div style={{ position: "absolute", inset: 0, background: "radial-gradient(ellipse at 50% 40%, rgba(168,85,247,0.06) 0%, transparent 50%)", pointerEvents: "none" }} />
-
-      {game.isBotMatch ? (
-        <div style={{ width: "100%", maxWidth: 520, textAlign: "center" }}>
-          <div style={{
-            fontSize: 24, fontWeight: 900, letterSpacing: "0.15em",
-            color: "#fbbf24", textShadow: "2px 2px 0 #92400e",
-            marginBottom: 8, textAlign: "center",
-          }}>
-            STAKE TO DUEL
-          </div>
-          <div style={{ fontSize: 13, color: "#94a3b8", marginBottom: 28, textAlign: "center" }}>
-            You vs {game.rivalName || "the bot"}. Pledge tUSDC, or fight with no stake.
-          </div>
-          <div style={{ display: "flex", gap: 40, justifyContent: "center", marginBottom: 24 }}>
-            <div style={{ textAlign: "center" }}>
-              <RetroCharacter char={game.playerChar ?? CHARACTERS[0]} state="idle" size={1.2} />
-              <div style={{ marginTop: 10, fontSize: 13, color: "#94a3b8", letterSpacing: "0.1em" }}>YOU</div>
-            </div>
-            <div style={{ textAlign: "center" }}>
-              <RetroCharacter char={game.rivalChar ?? CHARACTERS[1]} state="idle" size={1.2} flip />
-              <div style={{ marginTop: 10, fontSize: 13, color: "#94a3b8", letterSpacing: "0.1em" }}>{game.rivalName || "BOT"}</div>
-            </div>
-          </div>
-          <BotStakePanel game={game} escrow={escrow} />
-          <button onClick={onStartDuel} style={{ ...ctaButtonStyle, fontSize: 18, padding: "14px 48px" }}>
-            {"\u2694"} START DUEL
-          </button>
-          <div style={{ marginTop: 10, fontSize: 11, color: "#475569" }}>
-            Staking is optional. Win/draw returns your stake; a loss sends it to the house treasury.
-          </div>
-        </div>
-      ) : (
-      <>
 
       <div style={{
         fontSize: 24, fontWeight: 900, letterSpacing: "0.15em",
@@ -853,7 +993,7 @@ function ReadyUpScreen({ game, escrow, onReady, onStartDuel }: {
         GET READY
       </div>
 
-      <div style={{ display: "flex", gap: 48, marginBottom: 40 }}>
+      <div style={{ display: "flex", gap: 48, marginBottom: 32 }}>
         <div style={{ textAlign: "center" }}>
           <RetroCharacter char={game.playerChar ?? CHARACTERS[0]} state="idle" size={1.2} />
           <div style={{ marginTop: 12, fontSize: 13, color: "#94a3b8", letterSpacing: "0.1em" }}>YOU</div>
@@ -871,79 +1011,20 @@ function ReadyUpScreen({ game, escrow, onReady, onStartDuel }: {
       </div>
 
       <div style={{
-        width: "100%", maxWidth: 480, marginBottom: 32, padding: "20px 24px",
-        border: "1px solid #334155", borderRadius: 12, background: "rgba(15,23,42,0.7)",
+        width: "100%", maxWidth: 420, marginBottom: 28, padding: "14px 18px",
+        border: "1px solid #7c3aed", borderRadius: 10, background: "rgba(124,58,237,0.07)",
+        textAlign: "center",
       }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-          <div style={{ fontSize: 13, color: "#94a3b8", letterSpacing: "0.1em", fontWeight: 700 }}>PvP POT {"\u2014"} ONCHAIN ESCROW</div>
-          <div style={{ fontSize: 12, color: "#38bdf8", fontFamily: "'Courier New', monospace" }}>
-            tUSDC {escrow.usdcBalanceFormatted ?? "\u2014"}
-          </div>
+        <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.12em", color: "#a855f7", marginBottom: 6 }}>
+          {"\uD83D\uDCC8"} RIDING EC POSITION {"\u00B7"} {game.positionDirection} {"\u00D7"} {game.positionAmount} tUSDC
         </div>
-
-        {escrow.usdcBalanceFormatted != null && Number(escrow.usdcBalanceFormatted) < 10 && (
-          <button
-            onClick={handleFaucet}
-            disabled={faucetBusy}
-            style={{
-              width: "100%", marginBottom: 10, padding: "8px 12px", borderRadius: 6, cursor: "pointer",
-              border: "1px dashed #f59e0b", background: "rgba(245,158,11,0.08)", color: "#fbbf24",
-              fontWeight: 700, fontSize: 12,
-            }}
-          >
-            {faucetBusy ? "MINTING 1000 tUSDC..." : "+ GET 1000 TEST tUSDC FROM THE TESTNET FAUCET"}
-          </button>
-        )}
-
-        <div style={{ fontSize: 12, color: "#64748b", marginBottom: 12 }}>
-          This is your one-time match escrow stake (separate from your per-round
-          trade size). Real tUSDC is pledged to the DreamDuel escrow; winner takes
-          the pot on-chain. Both players must stake the SAME amount.
+        <div style={{ fontSize: 11, color: "#94a3b8", lineHeight: 1.5 }}>
+          Already staked on the POSITION screen. This match is bragging only — your
+          stake settles once when the EC window closes.
         </div>
-
-        <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
-          {stakePresets.map((a) => (
-            <button
-              key={a}
-              onClick={() => setPvpStake(a)}
-              style={{
-                padding: "6px 12px", borderRadius: 6, cursor: "pointer",
-                border: pvpStake === a ? "2px solid #38bdf8" : "1px solid #334155",
-                background: pvpStake === a ? "rgba(14,165,233,0.15)" : "#0f172a",
-                color: "#e2e8f0", fontWeight: 700, fontSize: 13,
-              }}
-            >
-              {a} tUSDC
-            </button>
-          ))}
-        </div>
-
-        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10, fontSize: 12, color: "#94a3b8" }}>
-          <span>YOU: {escrow.hasStaked ? "\u2713 STAKED" : "NOT STAKED"}</span>
-          <span style={{ color: "#334155" }}>|</span>
-          <span>OPPONENT: {escrow.bothStaked && escrow.hasStaked ? "\u2713" : escrow.bothStaked ? "\u2713 STAKED" : "NOT STAKED"}</span>
-          <span style={{ color: "#334155" }}>|</span>
-          <span>POT: {escrow.stakeAmountFormatted ? (Number(escrow.stakeAmountFormatted) * 2).toString() : "0"} tUSDC</span>
-        </div>
-
-        {escrow.hasStaked ? (
-          <div style={{ fontSize: 12, color: "#10b981", fontWeight: 700 }}>Your tUSDC is locked in escrow for this duel.</div>
-        ) : (
-          <button
-            onClick={handleStake}
-            disabled={stakeBusy || (!escrow.address)}
-            style={{ ...ctaButtonStyle, fontSize: 14, padding: "10px 20px", opacity: stakeBusy ? 0.6 : 1, cursor: stakeBusy ? "wait" : "pointer" }}
-          >
-            {stakeBusy ? "APPROVING + STAKING..." : escrow.allowance == null ? "APPROVE + STAKE" : "\u2694 STAKE " + pvpStake + " tUSDC"}
-          </button>
-        )}
-
-        {!escrow.address && (
-          <div style={{ marginTop: 8, fontSize: 11, color: "#f59e0b" }}>Connect your wallet to pledge tUSDC.</div>
-        )}
-        {stakeError && (
-          <div style={{ marginTop: 8, fontSize: 11, color: "#ef4444", wordBreak: "break-word" }}>{stakeError}</div>
-        )}
+        {escrow.hasStaked
+          ? <div style={{ fontSize: 11, color: "#10b981", fontWeight: 700, marginTop: 6 }}>{"\u2713"} On-chain stake confirmed.</div>
+          : <div style={{ fontSize: 11, color: "#f59e0b", marginTop: 6 }}>Stake not seen on-chain yet.</div>}
       </div>
 
       {!ready ? (
@@ -954,130 +1035,6 @@ function ReadyUpScreen({ game, escrow, onReady, onStartDuel }: {
         <div style={{ fontSize: 14, color: "#a855f7", letterSpacing: "0.1em" }}>
           Waiting for opponent...
         </div>
-      )}
-      </>
-      )}
-    </div>
-  );
-}
-
-// Compact stake panel for BOT matches. The player is the ONLY real staker (the
-// bot / house never stakes). Shows real on-chain escrow state: whether the pot
-// is open, whether the player pledged, and how much. Win/draw returns the
-// stake; a loss sends it to the house treasury. Everything shown is read from
-// the deployed escrow contract — never simulated.
-function BotStakePanel({ game, escrow }: { game: ReturnType<typeof useGameState>; escrow: ReturnType<typeof useDreamEscrow> }) {
-  const [stake, setStake] = useState(10);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [faucetBusy, setFaucetBusy] = useState(false);
-  const presets = [1, 5, 10, 25, 50];
-
-  const handleStake = async () => {
-    if (!escrow.address) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await escrow.approveAndStake(parseUnits(String(stake), EC_COLLATERAL_DECIMALS));
-      escrow.refetch();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Stake failed");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleFaucet = async () => {
-    if (!escrow.address) return;
-    setFaucetBusy(true);
-    setError(null);
-    try {
-      await escrow.getFaucet(parseUnits("1000", EC_COLLATERAL_DECIMALS));
-      escrow.refetch();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Faucet failed");
-    } finally {
-      setFaucetBusy(false);
-    }
-  };
-
-  return (
-    <div style={{
-      width: "100%", maxWidth: 460, margin: "0 auto 16px", padding: "14px 18px",
-      border: "2px solid #7c3aed", borderRadius: 10, background: "rgba(124,58,237,0.08)",
-    }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-        <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.12em", color: "#a855f7" }}>
-          REAL STAKE {"\u2014"} SOLO ESCROW (BOT DOESN'T STAKE)
-        </span>
-        <span style={{ fontSize: 12, color: "#38bdf8", fontFamily: "'Courier New', monospace" }}>
-          tUSDC {escrow.usdcBalanceFormatted ?? "\u2014"}
-        </span>
-      </div>
-
-      {escrow.usdcBalanceFormatted != null && Number(escrow.usdcBalanceFormatted) < 10 && (
-        <button onClick={handleFaucet} disabled={faucetBusy} style={{
-          width: "100%", marginBottom: 8, padding: "6px 10px", borderRadius: 6, cursor: "pointer",
-          border: "1px dashed #f59e0b", background: "rgba(245,158,11,0.08)", color: "#fbbf24",
-          fontWeight: 700, fontSize: 11,
-        }}>
-          {faucetBusy ? "MINTING 1000 tUSDC..." : "+ GET 1000 TEST tUSDC"}
-        </button>
-      )}
-
-      <div style={{ fontSize: 11, color: "#94a3b8", lineHeight: 1.5, marginBottom: 10 }}>
-        Pledge real tUSDC. <span style={{ color: "#4ade80" }}>Win/Draw = stake returned</span>.{" "}
-        <span style={{ color: "#f87171" }}>Loss = stake sent to the house treasury.</span>
-        See it on-chain: call <code>matches(escrowMatchId)</code> on {ESCROW_ADDRESS.slice(0, 8)}...
-      </div>
-
-      <div style={{
-        fontSize: 11, color: "#fbbf24", lineHeight: 1.5, marginBottom: 12,
-        padding: "8px 10px", borderRadius: 8, border: "1px dashed #f59e0b",
-        background: "rgba(245,158,11,0.06)",
-      }}>
-        {"\u23F1"} Your stake is locked for the ~15 min Event-Contract window and settles
-        on-chain. You can't open another stake until this one resolves — WIN/REFUND or
-        LOSS. Want a fresh stake? Wait for this window to settle or play it out first.
-      </div>
-
-      <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
-        {presets.map((a) => (
-          <button key={a} onClick={() => setStake(a)} style={{
-            padding: "5px 10px", borderRadius: 6, cursor: "pointer",
-            border: stake === a ? "2px solid #a855f7" : "1px solid #334155",
-            background: stake === a ? "rgba(168,85,247,0.15)" : "#0f172a",
-            color: "#e2e8f0", fontWeight: 700, fontSize: 12,
-          }}>
-            {a} tUSDC
-          </button>
-        ))}
-      </div>
-
-      <div style={{ fontSize: 11, color: "#94a3b8", marginBottom: 8 }}>
-        YOU: {escrow.hasStaked ? "\u2713 STAKED" : "NOT STAKED"}
-        {"  "}<span style={{ color: "#334155" }}>|</span>{"  "}
-        POT: {escrow.stakeAmountFormatted || "0"} tUSDC
-      </div>
-
-      {escrow.hasStaked ? (
-        <div style={{ fontSize: 11, color: "#10b981", fontWeight: 700 }}>
-          Your tUSDC is locked in the escrow for this bot duel.
-        </div>
-      ) : (
-        <button onClick={handleStake} disabled={busy || !escrow.address} style={{
-          ...ctaButtonStyle, fontSize: 13, padding: "9px 18px", opacity: busy ? 0.6 : 1,
-          cursor: busy ? "wait" : "pointer", background: "linear-gradient(135deg, #7c3aed, #a855f7)",
-        }}>
-          {busy ? "APPROVING + STAKING..." : escrow.allowance == null ? "APPROVE + STAKE" : "\u2694 STAKE " + stake + " tUSDC"}
-        </button>
-      )}
-
-      {!escrow.address && (
-        <div style={{ marginTop: 6, fontSize: 10, color: "#f59e0b" }}>Connect your wallet to pledge real tUSDC.</div>
-      )}
-      {error && (
-        <div style={{ marginTop: 6, fontSize: 10, color: "#ef4444", wordBreak: "break-word" }}>{error}</div>
       )}
     </div>
   );
@@ -1528,7 +1485,7 @@ function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; 
   );
 }
 
-function MatchResult({ game, onRematch }: { game: ReturnType<typeof useGameState>; onRematch: () => void }) {
+function MatchResult({ game, onRematch, onChangePosition, onExit }: { game: ReturnType<typeof useGameState>; onRematch: () => void; onChangePosition: () => void; onExit: () => void }) {
   const { address } = useAccount();
   const won = game.playerScore > game.rivalScore;
   const draw = game.playerScore === game.rivalScore;
@@ -1609,58 +1566,47 @@ function MatchResult({ game, onRematch }: { game: ReturnType<typeof useGameState
         </div>
       </div>
 
-      {/* Trading P&L */}
+      {/* EC POSITION — the single financial layer. Combats are bragging/stats
+          only; this stake rides the whole 15-min window and settles once. */}
       <div style={{
         background: "rgba(15,23,42,0.9)", border: "2px solid #1e293b", borderRadius: 8,
         padding: "12px 20px", marginBottom: 24, textAlign: "center", maxWidth: 340, width: "100%",
       }}>
         <div style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.1em", marginBottom: 6 }}>
-          TRADING P&L {"\u00B7"} {game.playerAmountPerRound ?? 1} tUSDC / round
+          EC POSITION {"\u00B7"} {game.positionDirection ?? "UP"} {"\u00B7"} {game.positionAmount ?? 0} tUSDC
         </div>
-        {(() => {
-          const correct = game.roundHistory.filter((r) => r.playerCorrect && !r.isDraw).length;
-          const wrong = game.roundHistory.filter((r) => !r.playerCorrect && !r.isDraw).length;
-          const flat = game.roundHistory.filter((r) => r.actual === "FLAT").length;
-          // Authoritative P&L from the resolved rounds (per-player stake).
-          const pnl = game.roundHistory.reduce((s, r) => s + (r.playerPnL ?? 0), 0);
-          const startBalance = game.playerStartBalance ?? 100;
-          const endBalance = game.playerBalance ?? startBalance + pnl;
-          return (
-            <>
-              <div style={{ fontSize: 22, fontWeight: 900, color: pnl >= 0 ? "#10b981" : "#ef4444", letterSpacing: "0.05em" }}>
-                {pnl >= 0 ? "+" : ""}{pnl.toFixed(2)} tUSDC
-              </div>
-              <div style={{ fontSize: 10, color: "#64748b", marginTop: 4 }}>
-                {startBalance.toFixed(2)} tUSDC {"\u2192"} {endBalance.toFixed(2)} tUSDC
-              </div>
-              <div style={{ fontSize: 10, color: "#475569", marginTop: 2 }}>
-                {correct} wins / {wrong} losses / {flat} flat / {game.roundHistory.length - correct - wrong - flat} draws
-              </div>
-            </>
-          );
-        })()}
+        <div style={{ fontSize: 22, fontWeight: 900, color: "#fbbf24", letterSpacing: "0.05em" }}>
+          {game.positionAmount ?? 0} tUSDC STAKED
+        </div>
+        <div style={{ fontSize: 10, color: "#64748b", marginTop: 4 }}>
+          Your stake is locked for the ~15 min window and settles ONCE on-chain at
+          resolution. This match was bragging only.
+        </div>
       </div>
 
       <div style={{ marginBottom: 24, width: "100%", maxWidth: 340 }}>
         {game.matchId && <EcPositionPanel matchId={game.matchId} compact />}
         <div style={{ fontSize: 11, color: "#94a3b8", lineHeight: 1.5, textAlign: "center", marginTop: 4 }}>
-          These rounds track the real Event Contract window. P&amp;L here is live; it
-          {"\u201C"}locks in{"\u201D"} when the window settles on-chain. DUEL AGAIN to keep riding
-          the same window &amp; net your moves together.
+          Rounds track the real Event Contract window. Your stake settles on-chain
+          once the window closes. DUEL AGAIN to keep riding the same position, or
+          CHANGE POSITION to restake a new one.
         </div>
       </div>
 
-      <div style={{ display: "flex", gap: 16 }}>
+      <div style={{ display: "flex", gap: 16, flexWrap: "wrap", justifyContent: "center" }}>
         <button onClick={onRematch} style={ctaButtonStyle}>
-          {"\u2694\uFE0F"} DUEL AGAIN
+          {"\u2694\uFE0F"} PLAY AGAIN
+        </button>
+        <button onClick={onChangePosition} style={{ ...ctaButtonStyle, background: "linear-gradient(135deg, #7c3aed, #a855f7)", fontSize: 14, padding: "12px 28px" }}>
+          {"\u21C4"} CHANGE POSITION
         </button>
         {game.matchId && (
           <button onClick={() => game.actions.goToMatchDetail(game.matchId!)} style={{ ...ctaButtonStyle, background: "linear-gradient(135deg, #155e75, #22d3ee)", fontSize: 14, padding: "12px 28px" }}>
             VIEW DETAIL
           </button>
         )}
-        <button onClick={game.actions.goToHome} style={{ ...ctaButtonStyle, background: "transparent", border: "2px solid #475569", color: "#94a3b8", fontSize: 14, padding: "12px 28px" }}>
-          BACK TO ARENA
+        <button onClick={onExit} style={{ ...ctaButtonStyle, background: "transparent", border: "2px solid #475569", color: "#94a3b8", fontSize: 14, padding: "12px 28px" }}>
+          {"\u2716"} EXIT
         </button>
       </div>
     </div>

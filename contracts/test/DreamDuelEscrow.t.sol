@@ -27,144 +27,141 @@ contract DreamDuelEscrowTest is Test {
     DreamDuelEscrow escrow;
     address admin = address(0xAAAA);
     address alice = address(0x1111);
-    address bob = address(0x2222);
-    bytes32 matchId = keccak256("match-1");
+    bytes32 pid = keccak256("UP-BYTE-0x0001"); // one player's UP position
 
     function setUp() public {
         token = new MockTAUSDC();
-        escrow = new DreamDuelEscrow(address(token), admin, 300);
+        escrow = new DreamDuelEscrow(address(token), admin, 900); // 15 min
         token.mint(alice, 1000e6);
-        token.mint(bob, 1000e6);
         vm.prank(alice); token.approve(address(escrow), type(uint256).max);
-        vm.prank(bob); token.approve(address(escrow), type(uint256).max);
     }
 
-    function testFullSettlePaysWinnerPot() public {
-        vm.prank(admin); escrow.openMatch(matchId, alice, bob);
-        vm.prank(alice); escrow.stake(matchId, 100e6);
-        vm.prank(bob); escrow.stake(matchId, 100e6);
+    // ── Position lifecycle ────────────────────────────────────────────────────
+
+    function testStakeOpensPositionLockedForWindow() public {
+        vm.prank(alice); escrow.stake(pid, 100e6);
+        DreamDuelEscrow.Position memory p = escrow.position(pid);
+        assertEq(p.owner, alice);
+        assertEq(p.balance, 100e6);
+        assertEq(p.open, true);
+        assertEq(p.settled, false);
+        assertEq(p.won, 0);
+        assertEq(uint256(p.windowClose - p.windowOpen), 900, "window 15 min");
+        assertEq(token.balanceOf(address(escrow)), 100e6, "tUSDC held");
+        assertEq(escrow.totalOwedToPlayers(), 100e6, "owed to player");
+    }
+
+    function testTopUpAddsFuelDuringWindow() public {
+        vm.prank(alice); escrow.stake(pid, 100e6);
+        vm.warp(block.timestamp + 300);
+        vm.prank(alice); escrow.stake(pid, 50e6);
+        assertEq(escrow.position(pid).balance, 150e6);
+        assertEq(escrow.totalOwedToPlayers(), 150e6);
+    }
+
+    function testStrangerCannotTopUp() public {
+        vm.prank(alice); escrow.stake(pid, 100e6);
+        vm.prank(address(0x1234)); vm.expectRevert(DreamDuelEscrow.NotOwner.selector);
+        escrow.stake(pid, 50e6);
+    }
+
+    // ── Balance does NOT change during the window ─────────────────────────────
+
+    function testBalanceUnchangedMidWindow() public {
+        vm.prank(alice); escrow.stake(pid, 100e6);
+        vm.warp(block.timestamp + 600);
+        // Combat matches/rounds happen here — balance stays fixed until settlement.
+        assertEq(escrow.position(pid).balance, 100e6);
+        assertEq(escrow.totalOwedToPlayers(), 100e6);
+    }
+
+    // ── Settlement is the ONLY money decision ─────────────────────────────────
+
+    function testWinReturnsStakeInFull() public {
+        vm.prank(alice); escrow.stake(pid, 100e6);
         uint256 before = token.balanceOf(alice);
-        vm.prank(admin); escrow.settle(matchId, alice);
-        assertEq(token.balanceOf(alice), before + 200e6, "winner got full pot");
-        assertEq(token.balanceOf(address(escrow)), 0, "escrow emptied");
+        vm.warp(block.timestamp + 901);
+        vm.prank(admin); escrow.settleWindow(pid, true);
+        assertEq(escrow.position(pid).won, 1);
+        assertEq(escrow.position(pid).settled, true);
+        vm.prank(alice); escrow.withdraw(pid);
+        assertEq(token.balanceOf(alice), before + 100e6, "full stake returned");
+        assertEq(escrow.totalOwedToPlayers(), 0);
+        assertEq(token.balanceOf(address(escrow)), 0);
     }
 
-    function testDrawRefundsBoth() public {
-        vm.prank(admin); escrow.openMatch(matchId, alice, bob);
-        vm.prank(alice); escrow.stake(matchId, 50e6);
-        vm.prank(bob); escrow.stake(matchId, 50e6);
-        vm.prank(admin); escrow.draw(matchId);
-        assertEq(token.balanceOf(alice), 1000e6, "alice refunded");
-        assertEq(token.balanceOf(bob), 1000e6, "bob refunded");
+    function testLossForfeitsToAdmin() public {
+        vm.prank(alice); escrow.stake(pid, 100e6);
+        uint256 adminBefore = token.balanceOf(admin);
+        vm.warp(block.timestamp + 901);
+        vm.prank(admin); escrow.settleWindow(pid, false);
+        assertEq(escrow.position(pid).won, 2);
+        // alice cannot withdraw a lost position
+        vm.prank(alice); vm.expectRevert(DreamDuelEscrow.NothingToWithdraw.selector);
+        escrow.withdraw(pid);
+        // admin collects the forfeited stake
+        vm.prank(admin); escrow.collectLost(pid);
+        assertEq(token.balanceOf(admin), adminBefore + 100e6, "admin collected forfeited stake");
+        assertEq(escrow.totalOwedToPlayers(), 0);
+        assertEq(token.balanceOf(address(escrow)), 0);
+    }
+
+    function testCannotSettleBeforeWindowClose() public {
+        vm.prank(alice); escrow.stake(pid, 100e6);
+        vm.prank(admin); vm.expectRevert(DreamDuelEscrow.WindowNotOver.selector);
+        escrow.settleWindow(pid, true);
     }
 
     function testNonAdminCannotSettle() public {
-        vm.prank(admin); escrow.openMatch(matchId, alice, bob);
-        vm.prank(alice); escrow.stake(matchId, 100e6);
-        vm.prank(bob); escrow.stake(matchId, 100e6);
+        vm.prank(alice); escrow.stake(pid, 100e6);
+        vm.warp(block.timestamp + 901);
         vm.prank(alice); vm.expectRevert(DreamDuelEscrow.NotAdmin.selector);
-        escrow.settle(matchId, alice);
+        escrow.settleWindow(pid, true);
     }
 
-    function testWrongStakeReverts() public {
-        vm.prank(admin); escrow.openMatch(matchId, alice, bob);
-        vm.prank(alice); escrow.stake(matchId, 100e6);
-        vm.prank(bob); vm.expectRevert(DreamDuelEscrow.WrongStake.selector);
-        escrow.stake(matchId, 200e6);
+    function testWinConservation() public {
+        vm.prank(alice); escrow.stake(pid, 100e6);
+        vm.warp(block.timestamp + 901);
+        vm.prank(admin); escrow.settleWindow(pid, true);
+        // after settle, still owed 100 until withdrawn; escrow still holds 100
+        assertEq(escrow.totalOwedToPlayers(), 100e6);
+        assertEq(token.balanceOf(address(escrow)), 100e6);
+        vm.prank(alice); escrow.withdraw(pid);
+        assertEq(escrow.totalOwedToPlayers(), 0);
+        assertEq(token.balanceOf(address(escrow)), 0);
     }
 
-    function testStrangerCannotStake() public {
-        vm.prank(admin); escrow.openMatch(matchId, alice, bob);
-        vm.prank(address(0x3333)); vm.expectRevert(DreamDuelEscrow.InvalidPlayer.selector);
-        escrow.stake(matchId, 100e6);
+    function testLossConservation() public {
+        vm.prank(alice); escrow.stake(pid, 100e6);
+        vm.warp(block.timestamp + 901);
+        vm.prank(admin); escrow.settleWindow(pid, false);
+        vm.prank(admin); escrow.collectLost(pid);
+        assertEq(escrow.totalOwedToPlayers(), 0);
+        assertEq(token.balanceOf(address(escrow)), 0);
     }
 
-    function testCannotStakeTwice() public {
-        vm.prank(admin); escrow.openMatch(matchId, alice, bob);
-        vm.prank(alice); escrow.stake(matchId, 100e6);
-        vm.prank(alice); vm.expectRevert(DreamDuelEscrow.AlreadyStaked.selector);
-        escrow.stake(matchId, 100e6);
+    function testZeroStakeReverts() public {
+        vm.prank(alice); vm.expectRevert(DreamDuelEscrow.ZeroAmount.selector);
+        escrow.stake(pid, 0);
     }
 
-    function testCannotSettleBeforeBothStake() public {
-        vm.prank(admin); escrow.openMatch(matchId, alice, bob);
-        vm.prank(alice); escrow.stake(matchId, 100e6);
-        vm.prank(admin); vm.expectRevert(DreamDuelEscrow.WrongStake.selector);
-        escrow.settle(matchId, alice);
+    function testWithdrawNeedsSettlement() public {
+        vm.prank(alice); escrow.stake(pid, 100e6);
+        vm.prank(alice); vm.expectRevert(DreamDuelEscrow.WindowNotOver.selector);
+        escrow.withdraw(pid);
     }
 
-    function testSelfRefundAfterExpiry() public {
-        vm.prank(admin); escrow.openMatch(matchId, alice, bob);
-        vm.prank(alice); escrow.stake(matchId, 100e6);
-        vm.prank(bob); escrow.stake(matchId, 100e6);
-        vm.warp(block.timestamp + 301);
-        vm.prank(alice); escrow.refund(matchId);
-        assertEq(token.balanceOf(alice), 1000e6, "alice refunded");
-        assertEq(token.balanceOf(bob), 1000e6, "bob refunded");
+    function testTopUpAfterCloseReverts() public {
+        vm.prank(alice); escrow.stake(pid, 100e6);
+        vm.warp(block.timestamp + 901);
+        vm.prank(alice); vm.expectRevert(DreamDuelEscrow.WindowNotOver.selector);
+        escrow.stake(pid, 10e6);
     }
 
-    function testRefundTooEarlyReverts() public {
-        vm.prank(admin); escrow.openMatch(matchId, alice, bob);
-        vm.prank(alice); escrow.stake(matchId, 100e6);
-        vm.prank(bob); escrow.stake(matchId, 100e6);
-        vm.prank(alice); vm.expectRevert(DreamDuelEscrow.RefundNotDue.selector);
-        escrow.refund(matchId);
-    }
-
-    // ── Solo (bot) settlement ────────────────────────────────────────────────
-
-    bytes32 soloId = keccak256("solo-1");
-
-    function testSoloWinRefundsPlayerStake() public {
-        vm.prank(admin); escrow.openMatch(soloId, alice, bob); // bot = bob, never stakes
-        vm.prank(alice); escrow.stake(soloId, 100e6);
-        uint256 before = token.balanceOf(alice);
-        vm.prank(admin); escrow.settleSolo(soloId, true);
-        assertEq(token.balanceOf(alice), before + 100e6, "player got stake back on win");
-        assertEq(token.balanceOf(address(escrow)), 0, "escrow emptied");
-    }
-
-    function testSoloLossSendsStakeToHouse() public {
-        vm.prank(admin); escrow.openMatch(soloId, alice, bob);
-        vm.prank(alice); escrow.stake(soloId, 100e6);
-        uint256 houseBefore = token.balanceOf(admin); // house defaults to admin
-        vm.prank(admin); escrow.settleSolo(soloId, false);
-        assertEq(token.balanceOf(admin), houseBefore + 100e6, "house received forfeited stake");
-        assertEq(token.balanceOf(alice), 1000e6 - 100e6, "player did not get stake back on loss");
-    }
-
-    function testSoloRequiresExactlyOneStaker() public {
-        vm.prank(admin); escrow.openMatch(soloId, alice, bob);
-        vm.prank(alice); escrow.stake(soloId, 100e6);
-        vm.prank(bob); escrow.stake(soloId, 100e6);
-        vm.prank(admin); vm.expectRevert(DreamDuelEscrow.WrongStake.selector);
-        escrow.settleSolo(soloId, true);
-    }
-
-    function testSoloCannotSettleWithNoStaker() public {
-        vm.prank(admin); escrow.openMatch(soloId, alice, bob);
-        vm.prank(admin); vm.expectRevert(DreamDuelEscrow.WrongStake.selector);
-        escrow.settleSolo(soloId, true);
-    }
-
-    function testSetHouseOnlyAdmin() public {
-        address house2 = address(0x9999);
-        vm.prank(admin); escrow.setHouse(house2);
-        assertEq(escrow.house(), house2);
+    function testSetWindowLengthOnlyAdmin() public {
+        vm.prank(admin); escrow.setWindowLength(600);
+        assertEq(escrow.windowLength(), 600);
         vm.prank(alice); vm.expectRevert(DreamDuelEscrow.NotAdmin.selector);
-        escrow.setHouse(address(0x8888));
-        vm.prank(admin); vm.expectRevert(DreamDuelEscrow.InvalidPlayer.selector);
-        escrow.setHouse(address(0));
-    }
-
-    function testSoloLossGoesToConfiguredHouse() public {
-        address house2 = address(0x9999);
-        vm.prank(admin); escrow.setHouse(house2);
-        vm.prank(admin); escrow.openMatch(soloId, alice, bob);
-        vm.prank(alice); escrow.stake(soloId, 50e6);
-        vm.prank(admin); escrow.settleSolo(soloId, false);
-        assertEq(token.balanceOf(house2), 50e6, "configured house got stake");
-        assertEq(token.balanceOf(admin), 0, "admin unchanged (no cut)");
-        assertEq(token.balanceOf(address(escrow)), 0, "escrow emptied");
+        escrow.setWindowLength(300);
     }
 }

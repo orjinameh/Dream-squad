@@ -54,6 +54,10 @@ export interface GameActions {
   startDuel: () => void;
   cancelMatchmaking: () => void;
   fightBotInstead: () => void;
+  goToPosition: () => void;
+  goToMatchType: () => void;
+  openPosition: (opts: { direction: "UP" | "DOWN"; market: string; amount: number; positionId: string; windowId: string }) => void;
+  changePosition: () => void;
 }
 
 export interface GameHook {
@@ -117,6 +121,12 @@ export interface GameHook {
   // Per-player independent trade amount (STT) — each player's own stake.
   playerAmountPerRound?: number;
   rivalAmountPerRound?: number;
+  // Active EC POSITION (financial layer). Combat matches ride this window.
+  positionWindowId: string | null;
+  positionDirection: "UP" | "DOWN" | null;
+  positionAmount: number | null;
+  positionMarket: string | null;
+  hasActivePosition: boolean;
   actions: GameActions;
 }
 
@@ -172,6 +182,14 @@ export function useGameState(): GameHook {
   const [isFinalRound, setIsFinalRound] = useState(false);
   const [koOverlay, setKoOverlay] = useState<string | null>(null);
   const [selectedMatchId, setSelectedMatchId] = useState<string | null>(null);
+
+  // Active EC POSITION — the single financial stake the match rides on.
+  const [positionWindowId, setPositionWindowId] = useState<string | null>(null);
+  const [positionDirection, setPositionDirection] = useState<"UP" | "DOWN" | null>(null);
+  const [positionAmount, setPositionAmount] = useState<number | null>(null);
+  const [positionMarket, setPositionMarket] = useState<string | null>(null);
+  const [positionId, setPositionId] = useState<string | null>(null);
+  const hasActivePosition = Boolean(positionWindowId && positionDirection);
 
   const animFrameRef = useRef<number>(0);
   const phaseTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
@@ -768,6 +786,7 @@ export function useGameState(): GameHook {
         marketSymbol,
         predictionAsset: selectedPrediction?.asset,
         amountPerRound: selectedAmount,
+        positionId: positionId ?? undefined,
       });
       if (res?.matchId) {
         // Store matchId — bot matches MUST have real matchIds
@@ -777,12 +796,17 @@ export function useGameState(): GameHook {
       // Continue even if server create fails
     }
 
-    // GENERAL STAKE GATE: stop at READY_UP (same gate PvP uses) and wait for the
-    // player to confirm "START DUEL" before the fight begins. The bot escrow is
-    // already open on-chain (opened at match creation), so the player can pledge
-    // real tUSDC here, unhurried, before round 1.
-    setPhase("READY_UP");
-  }, [playerChar, mode, marketSymbol, scheduleTimer, address, mp.actions]);
+    // The EC POSITION is already staked on the POSITION screen (the financial
+    // layer). No per-match stake gate: advance straight into the fight.
+    scheduleTimer(() => {
+      setPhase("ROUND_START");
+      scheduleTimer(() => {
+        setPhase("ROUND_ACTIVE");
+        setPlayerCharState("thinking");
+        setRivalCharState("thinking");
+      }, ROUND_TRANSITION_DELAY);
+    }, MATCH_INTRO_DURATION);
+  }, [playerChar, mode, marketSymbol, scheduleTimer, address, mp.actions, positionId]);
 
   // Advance from the general stake gate into the fight (bot path only — PvP
   // advances via the server round-open once both players READY UP).
@@ -868,9 +892,27 @@ export function useGameState(): GameHook {
   const goToProfile = useCallback(() => { setPhase("PROFILE"); }, []);
   const goToMatchHistory = useCallback(() => { setPhase("MATCH_HISTORY"); }, []);
   const goToMatchDetail = useCallback((matchId: string) => { setSelectedMatchId(matchId); setPhase("MATCH_DETAIL"); }, []);
-  const selectMarket = useCallback((m: TradeMarket) => { setMarketSymbol(m.symbol); setMode(DEFAULT_MODE); setPhase("CHAR_SELECT"); }, []);
-  const selectChar = useCallback((c: CharacterDef) => { setPlayerChar(c); setPhase("PREDICTION_SELECT"); }, []);
-  const confirmDuel = useCallback(() => { setPhase("PREDICTION_SELECT"); }, []);
+  const selectMarket = useCallback((m: TradeMarket) => { setMarketSymbol(m.symbol); setMode(DEFAULT_MODE); setPhase("POSITION"); }, []);
+  const selectChar = useCallback((c: CharacterDef) => { setPlayerChar(c); setPhase("MATCH_TYPE"); }, []);
+  const confirmDuel = useCallback(() => { setPhase("MATCH_TYPE"); }, []);
+
+  // POSITION screen: the player stakes an EC position (UP/DOWN $X) — the single
+  // financial layer. The screen POSTs /api/position and returns the windowId +
+  // positionId; we store them so combat matches can reference this position.
+  const goToPosition = useCallback(() => { setPhase("POSITION"); }, []);
+  const goToMatchType = useCallback(() => { if (!hasActivePosition) return; setPhase("MATCH_TYPE"); }, [hasActivePosition]);
+  const openPosition = useCallback((opts: { direction: "UP" | "DOWN"; market: string; amount: number; positionId: string; windowId: string }) => {
+    setPositionDirection(opts.direction);
+    setPositionAmount(opts.amount);
+    setPositionMarket(opts.market);
+    setPositionId(opts.positionId);
+    setPositionWindowId(opts.windowId);
+  }, []);
+  const changePosition = useCallback(() => {
+    setPositionDirection(null); setPositionAmount(null); setPositionMarket(null);
+    setPositionId(null); setPositionWindowId(null);
+    setPhase("POSITION");
+  }, []);
   const selectPrediction = useCallback((pred: PredictionConfig) => { setSelectedPrediction(pred); }, []);
   const setMatchPrediction = useCallback((c: "UP" | "DOWN") => {
     setSelectedPrediction((prev) => ({ ...prev, prediction: c }));
@@ -972,11 +1014,17 @@ export function useGameState(): GameHook {
     playerAmountPerRound: mp.state.serverState?.playerAmountPerRound ?? 1,
     rivalAmountPerRound: mp.state.serverState?.rivalAmountPerRound ?? 1,
     selectedMatchId,
+    positionWindowId,
+    positionDirection,
+    positionAmount,
+    positionMarket,
+    hasActivePosition: Boolean(positionWindowId && positionDirection),
     actions: {
       goToHome, goToMarketSelect, goToCharSelect, goToLeaderboard,
       goToProfile, goToMatchHistory, goToMatchDetail,
       selectMarket, selectChar, confirmDuel, selectPrediction, setMatchPrediction, selectDifficulty, selectAmount, makePrediction, rematch,
       joinMatchmaking, startPvPMatch, setReady, startDuel, cancelMatchmaking, fightBotInstead,
+      goToPosition, goToMatchType, openPosition, changePosition,
     },
   };
 }

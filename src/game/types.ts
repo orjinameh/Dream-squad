@@ -23,6 +23,8 @@ export type GamePhase =
   | "CHAR_SELECT"
   | "DUEL_CONFIRM"
   | "PREDICTION_SELECT"
+  | "POSITION"
+  | "MATCH_TYPE"
   | "MATCHMAKING"
   | "MATCH_FOUND"
   | "READY_UP"

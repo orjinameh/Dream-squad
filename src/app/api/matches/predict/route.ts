@@ -3,19 +3,15 @@ import { Match, ROUND_TIMINGS, type RoundPhase, type RoundRecord, type StatsProc
 import { PlayerStats } from "@/db/models/PlayerStats";
 import { normalizeAddress } from "@/lib/addresses";
 import { jsonError } from "@/lib/utils";
-import { executeGameRound, type RoundExecutionResult } from "@/lib/operator";
 import { getPvpWinPoints } from "@/lib/rank";
-import { settlePvpMatchEscrow, settleBotMatchEscrow } from "@/lib/ec/settleMatch";
 import { readArenaPrice } from "@/lib/ec/executor";
 import { ecArenaForMatch } from "@/lib/ec/arena";
 import { z } from "zod";
 import { isAddress } from "viem";
 import { randomBytes } from "node:crypto";
 
-const PAYOUT_MULTIPLIER = 1.8;
-
 // CSPRNG float in [0, 1) — avoid Math.random() for anything influencing the
-// bot's on-chain prediction/order decisions.
+// bot's prediction decisions.
 function randomDouble(): number {
   return randomBytes(6).readUIntLE(0, 6) / 0x1000000000000;
 }
@@ -74,18 +70,15 @@ async function resolveRound(match: any, now: Date): Promise<{
   newRivalStreak: number;
   matchDecided: boolean;
   winner: "player" | "rival" | "draw";
-  playerBalance: number;
-  rivalBalance: number;
 }> {
-  const marketSymbol = match.executionConfig?.marketSymbol ?? "SOMI:tUSDC";
   const roundNumber = match.currentRound;
-  const matchId = match._id;
 
   const isPvP = match.opponentType === "player";
   const isBot = match.opponentType === "bot";
   const playerPred = match.playerPrediction as "UP" | "DOWN" | null;
 
-  // Bot prediction: generate based on difficulty BEFORE execution
+  // Bot prediction: generate based on difficulty BEFORE resolution. Matches do
+  // NOT trade money — the bot prediction only drives bragging/scoring.
   let rivalPred: "UP" | "DOWN" | null = match.rivalPrediction as "UP" | "DOWN" | null;
   if (isBot && !rivalPred) {
     const difficulty = match.botDifficulty ?? "normal";
@@ -97,27 +90,6 @@ async function resolveRound(match: any, now: Date): Promise<{
       : (playerPred === "UP" ? "DOWN" : "UP");  // Opposite of player
     // Ensure bot always has a prediction
     if (!rivalPred) rivalPred = randomDouble() > 0.5 ? "UP" : "DOWN";
-  }
-
-  let playerResult: RoundExecutionResult | null = null;
-  let rivalResult: RoundExecutionResult | null = null;
-
-  // Per-player independent stakes. Each player trades their OWN amount; it
-  // drives their on-chain order size and their P&L only, independent of the
-  // opponent's stake.
-  const playerBet = match.playerAmountPerRound ?? match.executionConfig?.amountPerRound ?? 1;
-  const rivalBet = match.rivalAmountPerRound ?? match.executionConfig?.amountPerRound ?? 1;
-
-  // Execute player's DreamDEX order (always for the human player)
-  if (playerPred) {
-    playerResult = await executeGameRound(marketSymbol, match.playerAddress, playerPred, roundNumber, matchId, playerBet);
-  }
-
-  // Bot matches: bot's DreamDEX order is NOT executed on-chain (no real funds)
-  // Bot just predicts and outcome is derived from player's execution
-
-  if (isPvP && rivalPred && match.player2Address) {
-    rivalResult = await executeGameRound(marketSymbol, match.player2Address, rivalPred, roundNumber, matchId, rivalBet);
   }
 
   // REAL EC ORACLE RESOLUTION — the Event-Contract order book is the only
@@ -163,27 +135,11 @@ async function resolveRound(match: any, now: Date): Promise<{
 
   const isFlat = actual === "FLAT";
 
-  // FLAT = no directional winner. No score, no damage, no P&L change.
+  // FLAT = no directional winner. No score, no damage.
   const playerCorrect = !isFlat && playerPred === actual;
   const rivalCorrect = !isFlat && rivalPred === actual;
   const isDraw = isFlat || playerCorrect === rivalCorrect;
   const roundWinner = isDraw ? "draw" : playerCorrect ? "player" : "rival";
-
-  // Trading P&L (non-zero-sum). Each player trades their OWN stake:
-  // Correct = +bet*(multiplier-1), wrong = -bet. Independent per player.
-  // In a FLAT round neither side is penalized (the trade is void).
-  const playerPnL = !isFlat && playerPred
-    ? (playerCorrect ? playerBet * (PAYOUT_MULTIPLIER - 1) : -playerBet)
-    : 0;
-  const rivalPnL = !isFlat && rivalPred
-    ? (rivalCorrect ? rivalBet * (PAYOUT_MULTIPLIER - 1) : -rivalBet)
-    : 0;
-
-  // Running balance = start balance + cumulative P&L including this round.
-  const playerStartBalance = match.playerStartBalance ?? 100;
-  const rivalStartBalance = match.rivalStartBalance ?? 100;
-  const playerBalance = roundPnl(playerStartBalance + cumulativePnL(match.rounds, "player") + playerPnL);
-  const rivalBalance = roundPnl(rivalStartBalance + cumulativePnL(match.rounds, "rival") + rivalPnL);
 
   // Server-authoritative combat calculation
   let playerDamage = 0;
@@ -229,32 +185,7 @@ async function resolveRound(match: any, now: Date): Promise<{
     endPrice,
     prices: volume,
     asset,
-    // Trading P&L
-    playerPnL,
-    rivalPnL,
-    playerExecution: playerResult ? {
-      status: playerResult.success ? "EXECUTED" : "FAILED",
-      txHash: playerResult.txHash ?? undefined,
-      blockNumber: playerResult.blockNumber ? Number(playerResult.blockNumber) : undefined,
-      blockHash: playerResult.blockHash ?? undefined,
-      gasUsed: playerResult.gasUsed ? Number(playerResult.gasUsed) : undefined,
-      direction: playerResult.direction,
-      amount: playerResult.amount,
-      error: playerResult.error,
-    } : undefined,
-    rivalExecution: rivalResult ? {
-      status: rivalResult.success ? "EXECUTED" : "FAILED",
-      txHash: rivalResult.txHash ?? undefined,
-      blockNumber: rivalResult.blockNumber ? Number(rivalResult.blockNumber) : undefined,
-      blockHash: rivalResult.blockHash ?? undefined,
-      gasUsed: rivalResult.gasUsed ? Number(rivalResult.gasUsed) : undefined,
-      direction: rivalResult.direction,
-      amount: rivalResult.amount,
-      error: rivalResult.error,
-    } : undefined,
     resolvedAt: now,
-    playerBalance,
-    rivalBalance,
   };
 
   // Determine if match is decided
@@ -270,19 +201,10 @@ async function resolveRound(match: any, now: Date): Promise<{
   return {
     roundRecord, newPlayerScore, newRivalScore, newPlayerHP, newRivalHP,
     newPlayerStreak, newRivalStreak, matchDecided, winner,
-    playerBalance, rivalBalance,
   };
 }
 
-/** Sum this player's P&L across already-resolved rounds. */
-function cumulativePnL(rounds: any[], side: "player" | "rival"): number {
-  const key = side === "player" ? "playerPnL" : "rivalPnL";
-  return (rounds as any[]).reduce((sum, r) => sum + (r[key] ?? 0), 0);
-}
-
-function roundPnl(value: number): number {
-  return Math.round(value * 100) / 100;
-}
+/** Remove the per-round P&L helpers — matches are stats/rank only. */
 
 /**
  * IDEMPOTENT PLAYER STATS UPDATE
@@ -379,22 +301,6 @@ async function updatePlayerStatsAtomic(match: any, allRounds: any[], winner: str
     );
     await capProcessedArrays(match.player2Address);
   }
-}
-
-async function creditRoundPnL(matchId: string, roundNum: number, addr: string, pnl: number, now: Date): Promise<void> {
-  const _addr = normalizeAddress(addr);
-  const key = `${matchId}:${roundNum}`;
-  await PlayerStats.findOneAndUpdate(
-    { _id: _addr, processedRounds: { $ne: key } },
-    {
-      $setOnInsert: { address: _addr },
-      $inc: { balance: pnl, totalPnL: pnl },
-      $addToSet: { processedRounds: key },
-      $set: { lastPlayedAt: now },
-    },
-    { upsert: true },
-  );
-  await capProcessedArrays(_addr);
 }
 
 // Cap the idempotency bookkeeping so a long-lived player's stats doc can't grow
@@ -519,8 +425,6 @@ export async function POST(req: Request): Promise<Response> {
             endPrice: cp?.endPrice,
             prices: cp?.prices ?? [],
             asset: claim.priceModel?.asset ?? claim.predictionAsset ?? "BTC",
-            playerPnL: 0,
-            rivalPnL: 0,
             resolvedAt: now,
           };
           const nextDeadline = new Date(now.getTime() + ROUND_TIMINGS.ROUND_DURATION_MS + ROUND_TIMINGS.LOCK_MS);
@@ -545,8 +449,6 @@ export async function POST(req: Request): Promise<Response> {
           const updated = await Match.findById(match._id);
           if (updated && nextStatus === "COMPLETED") {
             await updatePlayerStatsAtomic(updated, updated.rounds, "draw", now);
-            if (updated.opponentType === "player") await settlePvpMatchEscrow(updated);
-            else await settleBotMatchEscrow(updated);
           }
           return Response.json(buildState(updated!, now));
         }
@@ -555,7 +457,7 @@ export async function POST(req: Request): Promise<Response> {
       // Execute and resolve
       try {
         const result = await resolveRound(claim, now);
-        const { roundRecord, newPlayerScore, newRivalScore, newPlayerHP, newRivalHP, newPlayerStreak, newRivalStreak, matchDecided, winner, playerBalance, rivalBalance } = result;
+        const { roundRecord, newPlayerScore, newRivalScore, newPlayerHP, newRivalHP, newPlayerStreak, newRivalStreak, matchDecided, winner } = result;
 
         const nextDeadline = new Date(now.getTime() + ROUND_TIMINGS.ROUND_DURATION_MS + ROUND_TIMINGS.LOCK_MS);
         const nextStatus = matchDecided ? "COMPLETED" : "ACTIVE";
@@ -588,10 +490,6 @@ export async function POST(req: Request): Promise<Response> {
               }],
             },
             ...(matchDecided ? {
-              playerStartBalance: claim.playerStartBalance ?? 100,
-              rivalStartBalance: claim.rivalStartBalance ?? 100,
-              playerFinalBalance: playerBalance,
-              rivalFinalBalance: rivalBalance,
               completedAt: now,
               winner,
               statsProcessed: "PENDING" as StatsProcessedStatus,
@@ -603,23 +501,13 @@ export async function POST(req: Request): Promise<Response> {
           },
         });
 
-        if (roundRecord.playerPnL) {
-          await creditRoundPnL(match._id, roundRecord.roundNum, match.playerAddress, roundRecord.playerPnL, now);
-        }
-        if (match.opponentType === "player" && roundRecord.rivalPnL && match.player2Address) {
-          await creditRoundPnL(match._id, roundRecord.roundNum, match.player2Address, roundRecord.rivalPnL, now);
-        }
-
-        // Idempotent stats update for completed matches
+        // Idempotent stats update for completed matches. Combat matches are
+        // stats/rank/bragging only — money settles once on the EC position, not
+        // here.
         if (matchDecided) {
           const matchForStats = { ...(typeof claim.toObject === "function" ? claim.toObject() : claim), rounds: allRounds };
           await updatePlayerStatsAtomic(matchForStats, allRounds, winner, now);
             await Match.findByIdAndUpdate(match._id, { $set: { statsProcessed: "COMPLETE" as StatsProcessedStatus } });
-          // Real on-chain settlement. PvP: pay the winner the pot / refund both on
-          // draw. Bot: solo — refund the player's stake on win/draw, or send it to
-          // the house treasury on a loss (the bot never stakes).
-          if (match.opponentType === "player") await settlePvpMatchEscrow(matchForStats);
-          else await settleBotMatchEscrow(matchForStats);
         }
 
         const updated = await Match.findById(match._id);
@@ -641,8 +529,6 @@ export async function POST(req: Request): Promise<Response> {
           rivalDamage: 0,
           isCritical: false,
           knockout: false,
-          playerPnL: 0,
-          rivalPnL: 0,
           resolvedAt: now,
         };
 
@@ -660,8 +546,6 @@ export async function POST(req: Request): Promise<Response> {
             playerPrediction: claim.playerPrediction,
             rivalPrediction: claim.rivalPrediction,
             ...(decided ? {
-              playerFinalBalance: match.playerStartBalance ?? 100,
-              rivalFinalBalance: match.rivalStartBalance ?? 100,
               completedAt: now,
               winner: "draw",
               statsProcessed: "PENDING" as StatsProcessedStatus,
@@ -676,12 +560,10 @@ export async function POST(req: Request): Promise<Response> {
         if (decided && updated) {
           await updatePlayerStatsAtomic(updated, updated.rounds ?? [], "draw", now);
           await Match.findByIdAndUpdate(match._id, { $set: { statsProcessed: "COMPLETE" as StatsProcessedStatus } });
-          if (updated.opponentType === "player") await settlePvpMatchEscrow(updated);
-          else await settleBotMatchEscrow(updated);
           const finalized = await Match.findById(match._id);
-          return Response.json({ ...buildState(finalized!, now), executionFailed: true, error: "DreamDEX execution failed, round recorded as no-op" });
+          return Response.json({ ...buildState(finalized!, now), executionFailed: true, error: "round resolution failed, round recorded as no-op" });
         }
-        return Response.json({ ...buildState(updated!, now), executionFailed: true, error: "DreamDEX execution failed, round recorded as no-op" });
+        return Response.json({ ...buildState(updated!, now), executionFailed: true, error: "round resolution failed, round recorded as no-op" });
       }
     }
 
@@ -764,11 +646,11 @@ function buildState(match: any, serverTime: Date): MatchStateResponse {
       }
     : undefined;
 
-  // Running balance on the latest resolved round (or start balance).
-  const lastPlayerPnl = rounds.reduce((s: number, r: any) => s + (r.playerPnL ?? 0), 0);
-  const lastRivalPnl = rounds.reduce((s: number, r: any) => s + (r.rivalPnL ?? 0), 0);
-  const playerStartBalance = match.playerStartBalance ?? 100;
-  const rivalStartBalance = match.rivalStartBalance ?? 100;
+  // The EC position is the financial layer — its amount is FIXED for the whole
+  // 15-minute window and does not change between rounds. Report it as a
+  // constant so the client never shows per-round P&L moving (money settles once
+  // on the position, never per round).
+  const fixedBalance = match.positionAmount ?? 0;
 
   return {
     matchId: match._id,
@@ -805,14 +687,10 @@ function buildState(match: any, serverTime: Date): MatchStateResponse {
       prices: currentCheckpoint.prices,
       actual: currentCheckpoint.actual,
     } : undefined,
-    playerBalance: round2(playerStartBalance + lastPlayerPnl),
-    rivalBalance: round2(rivalStartBalance + lastRivalPnl),
-    playerStartBalance,
-    rivalStartBalance,
+    playerBalance: fixedBalance,
+    rivalBalance: fixedBalance,
+    playerStartBalance: fixedBalance,
+    rivalStartBalance: fixedBalance,
     lastRound,
   };
-}
-
-function round2(value: number): number {
-  return Math.round(value * 100) / 100;
 }

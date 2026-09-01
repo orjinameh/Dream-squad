@@ -1,123 +1,26 @@
 import { connectToDatabase } from "@/db/connect";
-import { Match, type EscrowStatus } from "@/db/models/Match";
-import { matchInfo } from "@/lib/ec/escrow";
-import { settlePvpMatchEscrow, settleBotMatchEscrow } from "@/lib/ec/settleMatch";
+import { reconcilePositions } from "@/lib/ec/position";
 
 /**
  * DreamDuel settlement worker.
  *
- * The match game-loop itself resolves live inside the API (predict route reads
- * the real EC order-book oracle and completes matches). This worker owns the
- * on-chain reconciliation that the request path must never block on:
+ * The match game-loop resolves live inside the API (predict route reads the real
+ * EC order-book oracle and completes matches). Combat matches are stats/rank
+ * only — they never move money. The ONLY financial layer is the EC POSITION,
+ * and this worker owns its on-chain reconciliation:
  *
- *   - Sweep completed PvP matches whose pot hasn't been paid and settle the
- *     DreamDuel escrow to the real winner.
- *   - Sync escrow state (settled/drawn) back onto the match so retries are
- *     idempotent.
- *   - Leave under-funded lobbies (not both stakes) untouched for the players'
- *     self-serve refund path — the contract guards prevent any payout unless
- *     both players actually staked.
+ *   - `reconcilePositions()` settles each active/expired EC position once from
+ *     the real on-chain EC resolution (win → stake back in full, loss →
+ *     forfeited to admin) and marks it in the DB.
  *
  * Runs as: npm run worker
  */
 
 const SWEEP_INTERVAL_MS = 15_000;
 
-async function setEscrowStatus(id: string, status: EscrowStatus): Promise<void> {
-  try {
-    await Match.updateOne({ _id: id }, { $set: { escrowStatus: status } });
-  } catch (err) {
-    console.error(`[worker] failed to mark escrowStatus=${status} for ${id}`, err);
-  }
-}
-
-interface OnchainMatch {
-  settled?: boolean;
-  drawn?: boolean;
-  stakedA?: boolean;
-  stakedB?: boolean;
-}
-
-async function sweepCompletedMatches(): Promise<void> {
-  const pending = await Match.find({
-    opponentType: "player",
-    status: "COMPLETED",
-    escrowStatus: { $nin: ["SETTLED", "DRAWN"] },
-  });
-
-  for (const match of pending) {
-    const id = match._id;
-    try {
-      let onchain: OnchainMatch | null = null;
-      try {
-        onchain = (await matchInfo(id)) as OnchainMatch;
-      } catch {
-        onchain = null;
-      }
-
-      if (onchain?.settled) {
-        await setEscrowStatus(id, "SETTLED");
-        continue;
-      }
-      if (onchain?.drawn) {
-        await setEscrowStatus(id, "DRAWN");
-        continue;
-      }
-
-      // Both players must have staked on-chain before the escrow will pay out.
-      // If not fully funded, leave it for the participants' self-serve refund.
-      if (!onchain?.stakedA || !onchain?.stakedB) {
-        continue;
-      }
-
-      const result = await settlePvpMatchEscrow(match.toObject());
-      if (result === "skipped") {
-        console.warn(`[worker] settle skipped (maybe not real PvP / no winner) match=${id}`);
-      }
-    } catch (err) {
-      console.error(`[worker] sweep failed for match=${id}`, err);
-    }
-  }
-}
-
-/**
- * Sweep completed BOT matches. The player is the only possible real staker (the
- * bot / house never stakes). Only run solo settlement when the player actually
- * staked on-chain — otherwise there's no money and nothing to settle.
- */
-async function sweepCompletedBotMatches(): Promise<void> {
-  const pending = await Match.find({
-    opponentType: "bot",
-    status: "COMPLETED",
-    escrowStatus: { $nin: ["SETTLED", "DRAWN"] },
-  });
-
-  for (const match of pending) {
-    const id = match._id;
-    try {
-      let staked: boolean | null = null;
-      try {
-        const onchain = (await matchInfo(id)) as OnchainMatch | null;
-        staked = Boolean(onchain && (onchain.stakedA || onchain.stakedB));
-      } catch {
-        staked = null; // read failed — leave for a later sweep
-      }
-      if (staked === false) continue; // no real money staked — nothing to settle
-
-      const result = await settleBotMatchEscrow(match.toObject());
-      if (result === "skipped") {
-        console.warn(`[worker] bot settle skipped match=${id}`);
-      }
-    } catch (err) {
-      console.error(`[worker] bot sweep failed for match=${id}`, err);
-    }
-  }
-}
-
 async function runOnce(): Promise<void> {
   await connectToDatabase();
-  await sweepCompletedMatches();
-  await sweepCompletedBotMatches();
+  await reconcilePositions();
   console.log(`[worker] sweep complete @ ${new Date().toISOString()}`);
 }
 
