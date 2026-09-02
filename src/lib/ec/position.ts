@@ -226,7 +226,7 @@ export async function reconcilePositions(
           { _id: pos._id },
           {
             status: "SETTLED",
-            settledWon: onchain.won === 1n,
+            settledWon: Number(onchain.won) === 1,
             settledAt: new Date(),
             settledOnchain: true,
           },

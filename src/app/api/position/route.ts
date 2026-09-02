@@ -58,9 +58,9 @@ export async function GET(req: Request) {
           status: position.status,
           createdAt: position.createdAt?.toISOString() ?? null,
           outcome: info?.settled
-            ? info.won === 1n ? "WON" : info.won === 2n ? "LOST" : null
+            ? Number(info.won) === 1 ? "WON" : Number(info.won) === 2 ? "LOST" : null
             : outcomeRaw == null ? null : outcomeRaw ? "WON" : "LOST",
-          claimable: info?.settled === true && info.won === 1n && info.balance > 0n,
+          claimable: info?.settled === true && Number(info.won) === 1 && info.balance > 0n,
           stakeAmountFormatted: info && info.balance > 0n ? formatUnits(info.balance, EC_COLLATERAL_DECIMALS) : null,
           escrowAddress: esc,
           windowId: position.windowId,
@@ -128,7 +128,7 @@ export async function GET(req: Request) {
       if (!w.windowId || String(w._id) === mainId) continue;
       const esc = await resolvePositionEscrow(w.windowId as string, w);
       const info = await positionInfo(w.windowId as `0x${string}`, esc).catch(() => null);
-      if (!info || !info.settled || info.won !== 1n) continue;
+      if (!info || !info.settled || Number(info.won) !== 1) continue;
       wonPositions.push({
         id: String(w._id),
         direction: w.direction,
