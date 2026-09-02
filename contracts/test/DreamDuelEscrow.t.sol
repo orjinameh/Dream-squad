@@ -38,10 +38,14 @@ contract DreamDuelEscrowTest is Test {
         vm.prank(alice); token.approve(address(escrow), type(uint256).max);
     }
 
+    // v4: stake carries the position's own windowClose (venue expiry). Most tests
+    // keep the legacy +900s behaviour via this helper.
+    function winClose() internal view returns (uint256) { return block.timestamp + 900; }
+
     // ── Position lifecycle ────────────────────────────────────────────────────
 
     function testStakeOpensPositionLockedForWindow() public {
-        vm.prank(alice); escrow.stake(pid, 100e6, PRICE_HALF);
+        vm.prank(alice); escrow.stake(pid, 100e6, PRICE_HALF, winClose());
         DreamDuelEscrow.Position memory p = escrow.position(pid);
         assertEq(p.owner, alice);
         assertEq(p.balance, 100e6);
@@ -55,33 +59,51 @@ contract DreamDuelEscrowTest is Test {
     }
 
     function testTopUpAddsFuelDuringWindow() public {
-        vm.prank(alice); escrow.stake(pid, 100e6, PRICE_HALF);
+        vm.prank(alice); escrow.stake(pid, 100e6, PRICE_HALF, winClose());
         vm.warp(block.timestamp + 300);
-        vm.prank(alice); escrow.stake(pid, 50e6, PRICE_HALF);
+        vm.prank(alice); escrow.stake(pid, 50e6, PRICE_HALF, winClose());
         assertEq(escrow.position(pid).balance, 150e6);
         assertEq(escrow.totalOwedToPlayers(), 150e6);
     }
 
     function testStrangerCannotTopUp() public {
-        vm.prank(alice); escrow.stake(pid, 100e6, PRICE_HALF);
+        vm.prank(alice); escrow.stake(pid, 100e6, PRICE_HALF, winClose());
         vm.prank(address(0x1234)); vm.expectRevert(DreamDuelEscrow.NotOwner.selector);
-        escrow.stake(pid, 50e6, PRICE_HALF);
+        escrow.stake(pid, 50e6, PRICE_HALF, winClose());
     }
 
     function testZeroStakeReverts() public {
         vm.prank(alice); vm.expectRevert(DreamDuelEscrow.ZeroAmount.selector);
-        escrow.stake(pid, 0, PRICE_HALF);
+        escrow.stake(pid, 0, PRICE_HALF, winClose());
     }
 
     function testBadEntryPriceReverts() public {
         vm.prank(alice); vm.expectRevert(DreamDuelEscrow.BadEntryPrice.selector);
-        escrow.stake(pid, 100e6, 0);
+        escrow.stake(pid, 100e6, 0, winClose());
         vm.prank(alice); vm.expectRevert(DreamDuelEscrow.BadEntryPrice.selector);
-        escrow.stake(pid, 100e6, 1e6 + 1);
+        escrow.stake(pid, 100e6, 1e6 + 1, winClose());
+    }
+
+    function testBadWindowCloseReverts() public {
+        vm.prank(alice); vm.expectRevert(DreamDuelEscrow.BadWindowClose.selector);
+        escrow.stake(pid, 100e6, PRICE_HALF, uint256(block.timestamp));
+    }
+
+    function testVenueBackedCloseSettlesSoonAfterExpiry() public {
+        // v4: windowClose = venue expiry (~60s out), not the global 900s — so
+        // settlement unlocks the moment the venue's result is final.
+        vm.prank(alice); escrow.stake(pid, 100e6, PRICE_HALF, uint256(block.timestamp + 60));
+        assertEq(uint256(escrow.position(pid).windowClose - block.timestamp), 60, "venue expiry backed");
+        vm.prank(admin); vm.expectRevert(DreamDuelEscrow.WindowNotOver.selector);
+        escrow.settleWindow(pid, true);
+        vm.warp(block.timestamp + 61);
+        vm.prank(admin); escrow.settleWindow(pid, true);
+        assertEq(escrow.position(pid).settled, true);
+        assertEq(escrow.position(pid).won, 1);
     }
 
     function testBalanceUnchangedMidWindow() public {
-        vm.prank(alice); escrow.stake(pid, 100e6, PRICE_HALF);
+        vm.prank(alice); escrow.stake(pid, 100e6, PRICE_HALF, winClose());
         vm.warp(block.timestamp + 600);
         // Combat matches/rounds happen here — balance stays fixed until settlement.
         assertEq(escrow.position(pid).balance, 100e6);
@@ -97,7 +119,7 @@ contract DreamDuelEscrowTest is Test {
     }
 
     function testWinPaysDexPayoutAt50_50() public {
-        vm.prank(alice); escrow.stake(pid, 100e6, PRICE_HALF);
+        vm.prank(alice); escrow.stake(pid, 100e6, PRICE_HALF, winClose());
         _fundPool(100e6);
         uint256 before = token.balanceOf(alice);
         vm.warp(block.timestamp + 901);
@@ -111,7 +133,7 @@ contract DreamDuelEscrowTest is Test {
 
     function testWinPaysDexPayoutForFavorite() public {
         // Entry at 0.824 (strong favorite) => 100/0.824 = 121.36 => +21.4% profit
-        vm.prank(alice); escrow.stake(pid, 100e6, PRICE_FAV);
+        vm.prank(alice); escrow.stake(pid, 100e6, PRICE_FAV, winClose());
         _fundPool(50e6);
         uint256 before = token.balanceOf(alice);
         vm.warp(block.timestamp + 901);
@@ -124,7 +146,7 @@ contract DreamDuelEscrowTest is Test {
     function testWithdrawCappedByEscrowBalance() public {
         // Only the stake was funded (no profit pool): a win at 0.5 wants 200 but
         // the escrow only holds 100 — it pays what it holds, no insolvency.
-        vm.prank(alice); escrow.stake(pid, 100e6, PRICE_HALF);
+        vm.prank(alice); escrow.stake(pid, 100e6, PRICE_HALF, winClose());
         uint256 before = token.balanceOf(alice);
         vm.warp(block.timestamp + 901);
         vm.prank(admin); escrow.settleWindow(pid, true);
@@ -136,7 +158,7 @@ contract DreamDuelEscrowTest is Test {
 
     function testProfitPoolCoversFullPayout() public {
         _fundPool(200e6);
-        vm.prank(alice); escrow.stake(pid, 100e6, PRICE_HALF);
+        vm.prank(alice); escrow.stake(pid, 100e6, PRICE_HALF, winClose());
         vm.warp(block.timestamp + 901);
         vm.prank(admin); escrow.settleWindow(pid, true);
         uint256 aliceBefore = token.balanceOf(alice);
@@ -146,7 +168,7 @@ contract DreamDuelEscrowTest is Test {
     }
 
     function testLossForfeitsToAdmin() public {
-        vm.prank(alice); escrow.stake(pid, 100e6, PRICE_HALF);
+        vm.prank(alice); escrow.stake(pid, 100e6, PRICE_HALF, winClose());
         uint256 adminBefore = token.balanceOf(admin);
         vm.warp(block.timestamp + 901);
         vm.prank(admin); escrow.settleWindow(pid, false);
@@ -162,23 +184,23 @@ contract DreamDuelEscrowTest is Test {
     }
 
     function testCannotSettleBeforeWindowClose() public {
-        vm.prank(alice); escrow.stake(pid, 100e6, PRICE_HALF);
+        vm.prank(alice); escrow.stake(pid, 100e6, PRICE_HALF, winClose());
         vm.prank(admin); vm.expectRevert(DreamDuelEscrow.WindowNotOver.selector);
         escrow.settleWindow(pid, true);
     }
 
     function testNonAdminCannotSettle() public {
-        vm.prank(alice); escrow.stake(pid, 100e6, PRICE_HALF);
+        vm.prank(alice); escrow.stake(pid, 100e6, PRICE_HALF, winClose());
         vm.warp(block.timestamp + 901);
         vm.prank(alice); vm.expectRevert(DreamDuelEscrow.NotAdmin.selector);
         escrow.settleWindow(pid, true);
     }
 
     function testTopUpAfterCloseReverts() public {
-        vm.prank(alice); escrow.stake(pid, 100e6, PRICE_HALF);
+        vm.prank(alice); escrow.stake(pid, 100e6, PRICE_HALF, winClose());
         vm.warp(block.timestamp + 901);
         vm.prank(alice); vm.expectRevert(DreamDuelEscrow.WindowNotOver.selector);
-        escrow.stake(pid, 10e6, PRICE_HALF);
+        escrow.stake(pid, 10e6, PRICE_HALF, winClose());
     }
 
     function testTopUpProfitPoolOnlyAdmin() public {

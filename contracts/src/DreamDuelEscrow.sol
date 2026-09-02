@@ -45,6 +45,7 @@ contract DreamDuelEscrow {
     error PositionClosedErr();
     error ZeroAmount();
     error BadEntryPrice();
+    error BadWindowClose();
     error NotOwner();
     error WindowNotOver();
     error NothingToWithdraw();
@@ -94,17 +95,23 @@ contract DreamDuelEscrow {
      *         top up fuel into an open one.
      * @param entryPrice The player's side (YES for UP / NO for DOWN) entry price
      *                   scaled 1e6 — the DEX implied probability they bought at.
+     * @param windowClose The position's payout window close (unix seconds). This
+     *                    is the arena window's expiry, so settlement unlocks the
+     *                    moment the venue's outcome is final — not the global
+     *                    (longer) windowLength. Only new stakes migrate to the
+     *                    venue-backed close; legacy stakes keep stake+windowLength.
      */
-    function stake(bytes32 windowId, uint256 amount, uint256 entryPrice) external {
+    function stake(bytes32 windowId, uint256 amount, uint256 entryPrice, uint256 windowClose) external {
         if (amount == 0) revert ZeroAmount();
         if (entryPrice < MIN_ENTRY_PRICE || entryPrice > ENTRY_PRICE_SCALE) revert BadEntryPrice();
+        if (windowClose <= block.timestamp) revert BadWindowClose();
         Position storage p = positions[windowId];
         if (!p.open) {
             p.owner = msg.sender;
             p.open = true;
             p.entryPrice = entryPrice;
             p.windowOpen = uint64(block.timestamp);
-            p.windowClose = uint64(block.timestamp + windowLength);
+            p.windowClose = uint64(windowClose);
         } else {
             if (p.settled) revert PositionClosedErr();
             if (msg.sender != p.owner) revert NotOwner();
@@ -142,16 +149,16 @@ contract DreamDuelEscrow {
         Position storage p = positions[windowId];
         if (!p.settled) revert WindowNotOver();
         if (p.won != 1) revert NothingToWithdraw(); // lost positions are not withdrawn by owner
-        uint256 stake = p.balance;
-        if (stake == 0) revert NothingToWithdraw();
-        uint256 payout = (stake * ENTRY_PRICE_SCALE) / p.entryPrice;
+        uint256 stake_ = p.balance;
+        if (stake_ == 0) revert NothingToWithdraw();
+        uint256 payout = (stake_ * ENTRY_PRICE_SCALE) / p.entryPrice;
         uint256 held = collateral.balanceOf(address(this));
         if (payout > held) payout = held;
         if (payout == 0) revert NothingToWithdraw();
         p.balance = 0;
         // totalOwedToPlayers tracks base stakes; a partial pool only under-credits
         // this contract's own view, never risks insolvency.
-        if (totalOwedToPlayers >= stake) totalOwedToPlayers -= stake;
+        if (totalOwedToPlayers >= stake_) totalOwedToPlayers -= stake_;
         bool ok = collateral.transfer(p.owner, payout);
         if (!ok) revert TransferFailed();
         emit Withdrawn(windowId, p.owner, payout);

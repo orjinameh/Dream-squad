@@ -137,9 +137,10 @@ export function useDreamEscrow(windowId?: string | null, escrowAddress: `0x${str
   // `windowId` is the position the player just opened (returned by POST
   // /api/position) — the hook's own key is only set AFTER onOpenPosition runs,
   // so callers must pass the explicit windowId here. `entryPrice` is the player's
-  // side entry price scaled 1e6 (server-computed from the live DEX YES price).
+  // side entry price scaled 1e6 (server-computed from the live DEX YES price);
+  // `windowClose` is the venue expiry (unix sec) that unlocks settlement.
   const approveAndStake = useCallback(
-    async (windowId: Hash | string | null | undefined, amountRaw: bigint, entryPrice?: bigint) => {
+    async (windowId: Hash | string | null | undefined, amountRaw: bigint, entryPrice?: bigint, windowClose?: number) => {
       const wid = (windowId ?? key) as Hash | undefined;
       if (!wid || !address) throw new Error("Wallet not connected");
       const currentAllowance = allowance.data as bigint | undefined;
@@ -158,7 +159,7 @@ export function useDreamEscrow(windowId?: string | null, escrowAddress: `0x${str
         abi: DREAMDUEL_ESCROW_ABI,
         address: escrow,
         functionName: "stake",
-        args: [wid, amountRaw, entryPrice ? (entryPrice as bigint) : 500_000n],
+        args: [wid, amountRaw, entryPrice ? (entryPrice as bigint) : 500_000n, windowClose ? BigInt(windowClose) : 0n],
         chainId: EC_CHAIN.id,
       });
       setLastHash(stakeHash as `0x${string}`);

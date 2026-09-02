@@ -369,7 +369,8 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       const amountRaw = parseUnits(String(amount), EC_COLLATERAL_DECIMALS);
       const entryPrice = typeof data.entryPrice === "string" && data.entryPrice ? BigInt(data.entryPrice) : undefined;
-      const stakeTxHash = (await escrow.approveAndStake(data.windowId, amountRaw, entryPrice)) ?? null;
+      const windowClose = typeof data.windowClose === "number" ? data.windowClose : undefined;
+      const stakeTxHash = (await escrow.approveAndStake(data.windowId, amountRaw, entryPrice, windowClose)) ?? null;
       if (stakeTxHash && data.position?._id) {
         fetch("/api/position", {
           method: "PATCH",
@@ -479,6 +480,40 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
             {"\n"}To switch UP {"\u2194"} DOWN, open a new position below (a fresh one for this window). The old one settles on its own.
           </div>
         ) : null}
+
+        {escrow.onchain && !escrow.settled ? (() => {
+          const o = escrow.onchain;
+          if (!o.open) return null;
+          const stakeRaw = o.balance ?? 0n;
+          const price = escrow.entryPrice;
+          const unlockAt = o.windowClose != null ? Number(o.windowClose) : null;
+          const outcome = game.positionSettlementOutcome;
+          const payout = price && price > 0n && price <= 1_000_000n ? (Number(stakeRaw) * 1_000_000) / Number(price) : null;
+          const profit = payout != null ? payout - Number(stakeRaw) : null;
+          return (
+            <div style={{ marginBottom: 12, padding: "12px 14px", borderRadius: 8, border: "1px solid #7c3aed", background: "rgba(124,58,237,0.08)" }}>
+              <div style={{ fontSize: 11, fontWeight: 900, letterSpacing: "0.1em", color: "#a855f7", marginBottom: 6 }}>
+                {"\u23F1"} EC STAKE STATUS — {escrow.stakeAmountFormatted ?? "?"} tUSDC LOCKED
+              </div>
+              <div style={{ fontSize: 12, color: "#c4b5fd", lineHeight: 1.6 }}>
+                {outcome == null ? (
+                  <>Market still deciding your {game.positionDirection} call. The payout window unlocks{" "}
+                    {unlockAt ? <>at <b style={{ color: "#e2e8f0" }}>{new Date(unlockAt * 1000).toLocaleTimeString()}</b></> : "soon"}
+                    , then your position settles on-chain automatically (come back after that or open a new position).</>
+                ) : (
+                  <>{game.positionDirection} {outcome === "WON" ? "beat the market" : "lost"} — the outcome is final. Settlement is being applied on-chain{" "}
+                    {unlockAt ? <>at <b style={{ color: "#e2e8f0" }}>{new Date(unlockAt * 1000).toLocaleTimeString()}</b></> : ""}.</>
+                )}
+              </div>
+              {payout != null && (
+                <div style={{ fontSize: 12, color: "#a7f3d0", marginTop: 6, lineHeight: 1.6 }}>
+                  If {"\u2705"} WON {"\u2192"} you receive {"\u2248"}{(payout / 1e6).toFixed(2)} tUSDC (stake back + {"\u2248"}{((profit as number) / 1e6).toFixed(2)} profit)
+                  {"\u274C"} LOST {"\u2192"} stake forfeited to the pool
+                </div>
+              )}
+            </div>
+          );
+        })() : null}
 
         {escrow.windowId && settled ? (
           wonFlag === 1 ? (

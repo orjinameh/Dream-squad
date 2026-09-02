@@ -129,6 +129,7 @@ export interface GameHook {
   positionStakeTxHash: string | null;
   positionEscrowAddress: string | null;
   positionEntryPrice: string | null;
+  positionSettlementOutcome: "WON" | "LOST" | null;
   hasActivePosition: boolean;
   actions: GameActions;
 }
@@ -195,6 +196,7 @@ export function useGameState(): GameHook {
   const [positionId, setPositionId] = useState<string | null>(null);
   const [positionEscrowAddress, setPositionEscrowAddress] = useState<string | null>(null);
   const [positionEntryPrice, setPositionEntryPrice] = useState<string | null>(null);
+  const [positionSettlementOutcome, setPositionSettlementOutcome] = useState<"WON" | "LOST" | null>(null);
   const hasActivePosition = Boolean(positionWindowId && positionDirection);
 
   // Load the wallet's EC POSITION (active, else latest settled) so a WON stake
@@ -217,6 +219,8 @@ export function useGameState(): GameHook {
             status?: string | null;
             escrowAddress?: string | null;
             entryPrice?: string | null;
+            winPayout?: string | null;
+            settlement?: { outcome?: "WON" | "LOST" | null } | null;
             onchain?: { settled?: boolean; won?: number | string } | null;
           } | null;
         };
@@ -230,6 +234,7 @@ export function useGameState(): GameHook {
           setPositionStakeTxHash(p.stakeTxHash ?? null);
           setPositionEscrowAddress(p.escrowAddress ?? null);
           setPositionEntryPrice(p.entryPrice ?? null);
+          setPositionSettlementOutcome(p.settlement?.outcome ?? null);
         }
       } catch {
         /* position load is best-effort */
@@ -961,7 +966,7 @@ export function useGameState(): GameHook {
   const changePosition = useCallback(() => {
     setPositionDirection(null); setPositionAmount(null); setPositionMarket(null);
     setPositionId(null); setPositionWindowId(null); setPositionStakeTxHash(null);
-    setPositionEscrowAddress(null); setPositionEntryPrice(null);
+    setPositionEscrowAddress(null); setPositionEntryPrice(null); setPositionSettlementOutcome(null);
     setPhase("POSITION");
   }, []);
   const selectPrediction = useCallback((pred: PredictionConfig) => { setSelectedPrediction(pred); }, []);
@@ -1072,6 +1077,7 @@ export function useGameState(): GameHook {
     positionStakeTxHash,
     positionEscrowAddress,
     positionEntryPrice,
+    positionSettlementOutcome,
     hasActivePosition: Boolean(positionWindowId && positionDirection),
     actions: {
       goToHome, goToMarketSelect, goToCharSelect, goToLeaderboard,

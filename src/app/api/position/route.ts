@@ -1,7 +1,7 @@
 import { connectToDatabase } from "@/db/connect";
 import { normalizeAddress } from "@/lib/addresses";
 import { jsonError } from "@/lib/utils";
-import { findActivePosition, openPosition, reconcilePositions, resolvePositionEscrow, PositionError } from "@/lib/ec/position";
+import { findActivePosition, openPosition, reconcilePositions, resolvePositionEscrow, resolvePositionOutcome, PositionError } from "@/lib/ec/position";
 import { positionInfo } from "@/lib/ec/escrow";
 import { EcPosition } from "@/db/models/EcPosition";
 import { z } from "zod";
@@ -37,6 +37,9 @@ export async function GET(req: Request) {
   try {
     await connectToDatabase();
     const lower = address.toLowerCase();
+    // Lazy-settle: the external scheduler is unreliable, so every visit to this
+    // endpoint also settles the wallet's own past-close positions (idempotent).
+    await reconcilePositions({ address: lower }).catch(() => {});
     const pos =
       (await findActivePosition(lower)) ??
       (await EcPosition.findOne({ address: lower }).sort({ createdAt: -1 }).lean());
@@ -56,12 +59,28 @@ export async function GET(req: Request) {
           won: info.won, // 0 pending / 1 won / 2 lost
           balanceRaw: info.balance.toString(),
           entryPrice: info.entryPrice.toString(),
+          escrowWindowClose: Number(info.windowClose),
           balance: formatUnits(info.balance, EC_COLLATERAL_DECIMALS),
           windowOpen: Number(info.windowOpen),
           windowClose: Number(info.windowClose),
         };
       }
     }
+
+    const entryPrice = pos.entryPrice ? BigInt(pos.entryPrice) : null;
+    const stakeRaw = onchain?.balanceRaw
+      ? BigInt(onchain.balanceRaw)
+      : typeof pos.amount === "number"
+        ? BigInt(Math.round(pos.amount * 1_000_000))
+        : null;
+    const winPayoutRaw =
+      entryPrice && entryPrice > 0n && entryPrice <= 1_000_000n && stakeRaw != null
+        ? (stakeRaw * 1_000_000n) / entryPrice
+        : null;
+
+    // Is the venue's outcome final? (null while the EC window is unresolved.)
+    const outcomeRaw = await resolvePositionOutcome(pos).catch(() => null);
+    const outcome = outcomeRaw == null ? null : outcomeRaw ? "WON" : "LOST";
 
     return Response.json({
       position: {
@@ -72,6 +91,8 @@ export async function GET(req: Request) {
         status: pos.status,
         arenaOpen: pos.arenaOpen ?? null,
         entryPrice: pos.entryPrice ? pos.entryPrice.toString() : null,
+        winPayout: winPayoutRaw?.toString() ?? null, // stake / entryPrice (scaled 1e6)
+        settlement: { outcome }, // "WON" | "LOST" once the market knows
         windowOpenAt: pos.windowOpenAt?.toISOString() ?? null,
         windowCloseAt: pos.windowCloseAt?.toISOString() ?? null,
         matchCount: pos.matchCount,
@@ -121,6 +142,7 @@ export async function POST(req: Request) {
         windowId: result.windowId,
         escrowAddress: result.escrow,
         entryPrice: result.entryPrice.toString(),
+        windowClose: result.windowClose,
       },
       { status: 201 },
     );

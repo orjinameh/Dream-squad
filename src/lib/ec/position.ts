@@ -1,11 +1,10 @@
 import { connectToDatabase } from "@/db/connect";
 import { EcPosition } from "@/db/models/EcPosition";
+import { createPublicClient, http, type Hash } from "viem";
 import { findArenaFloor, readArenaPrice, readArenaSettlement } from "./executor";
 import { positionWindowId } from "./matchId";
 import { positionInfo, settleWindowOnchain, collectLostOnchain, positionOpen } from "./escrow";
-import { ESCROW_ADDRESS, ESCROW_LEGACY_BY_AGE } from "./config";
-
-const POSITION_WINDOW_MS = 15 * 60 * 1000; // ~15 minute DreamDEX window
+import { EC_CHAIN, EC_RPC_URL, ESCROW_ADDRESS, ESCROW_LEGACY_BY_AGE } from "./config";
 
 /** Entry-price scale shared with the v3 escrow (1e6 = $1.00). */
 export const ENTRY_PRICE_SCALE = 1_000_000n;
@@ -102,7 +101,11 @@ export async function openPosition(input: OpenPositionInput) {
 
   const now = new Date();
   const windowOpen = Math.floor(now.getTime() / 1000);
-  const windowCloseMs = Math.min(now.getTime() + POSITION_WINDOW_MS, arena.expiry * 1000);
+  // The position locks until the VENUE window expires (its result is final then),
+  // not stake+15min. The v4 stake arg `windowClose` is this timestamp, so the
+  // escrow unlocks settlement the moment the market knows the outcome.
+  const windowCloseSec = Math.max(arena.expiry, windowOpen + 60);
+  const windowCloseMs = windowCloseSec * 1000;
   const nonce = `${windowOpen}-${now.getTime().toString(36)}`;
   const windowId = positionWindowId({
     address: addr as `0x${string}`,
@@ -130,7 +133,13 @@ export async function openPosition(input: OpenPositionInput) {
     createdAt: now,
   });
 
-  return { position: doc.toObject(), windowId: windowId as unknown as string, escrow: ESCROW_ADDRESS, entryPrice };
+  return {
+    position: doc.toObject(),
+    windowId: windowId as unknown as string,
+    escrow: ESCROW_ADDRESS,
+    entryPrice,
+    windowClose: windowCloseSec,
+  };
 }
 
 /**
@@ -174,13 +183,20 @@ export interface ReconcileDebugEntry {
 export const reconcileDebug: ReconcileDebugEntry[] = [];
 
 export async function reconcilePositions(
-  { inWindow = true, debug = false } = {},
+  { inWindow = true, debug = false, address }: { inWindow?: boolean; debug?: boolean; address?: string } = {},
 ): Promise<number> {
   await connectToDatabase();
   reconcileDebug.length = 0;
-  const query: Record<string, unknown> = { status: "ACTIVE" };
+  const query: Record<string, unknown> = {};
+  if (address) {
+    query["address"] = address.toLowerCase();
+    query["status"] = { $in: ["ACTIVE", "SETTLED"] };
+  } else {
+    query["status"] = "ACTIVE";
+  }
   if (inWindow) query["windowCloseAt"] = { $lte: new Date() };
 
+  const nowSec = Math.floor(Date.now() / 1000);
   const active = await EcPosition.find(query).lean();
   let settled = 0;
 
@@ -198,11 +214,13 @@ export async function reconcilePositions(
     try {
       if (!pos.windowId) { entry.error = "no windowId"; continue; }
       const escrow = await resolvePositionEscrow(pos.windowId as string, pos);
-      // If already settled on-chain, just mark it.
       const onchain = await positionInfo(pos.windowId as `0x${string}`, escrow).catch(() => null);
       entry.onchain = onchain
         ? `open=${onchain.open} settled=${onchain.settled} won=${Number(onchain.won)} escrow=${escrow}`
         : "null(readFailed)";
+
+      // Already settled on-chain → sync the doc (covers rows marked SETTLED by a
+      // relayer whose settle was later confirmed, and clean win/loss states).
       if (onchain?.settled) {
         await EcPosition.updateOne(
           { _id: pos._id },
@@ -214,12 +232,18 @@ export async function reconcilePositions(
           },
         );
         settled += 1;
-        entry.outcome = "already-settled-onchain";
+        entry.outcome = "settled-onchain";
         entry.settledAt = new Date().toISOString();
         continue;
       }
+      // Not settled on-chain AND window closed → the real settle may not have
+      // happened yet (relayer skipped/reverted). Re-drive it below.
+      const windowOver = onchain ? nowSec >= Number(onchain.windowClose) : true;
+      if (onchain && !windowOver) {
+        entry.outcome = `escrow-locked-until-${Number(onchain.windowClose)}`;
+        continue; // venue result may already be final; escrow unlock hasn't come
+      }
       // A doc that was never funded on-chain (browser stake failed) is a phantom.
-      // There's nothing to settle or collect — drop it so it never blocks.
       if (onchain && !onchain.open) {
         await EcPosition.deleteOne({ _id: pos._id });
         entry.outcome = "phantom-deleted";
@@ -232,6 +256,18 @@ export async function reconcilePositions(
       const win = won as boolean;
       const tx = await settleWindowOnchain(pos.windowId as `0x${string}`, win, escrow);
       entry.settledAt = tx as unknown as string;
+      // Verify the settle actually mined — a reverted tx must NOT mark the doc
+      // SETTLED (that strandles the stake as "done" while on-chain it's locked).
+      try {
+        const receipt = await waitForReceipt(tx as `0x${string}`);
+        if (receipt.status !== "success") {
+          entry.error = `settle tx rejected on-chain (status=${receipt.status})`;
+          continue;
+        }
+      } catch (err) {
+        entry.error = `settle tx not mined: ${err instanceof Error ? err.message : String(err)}`;
+        continue;
+      }
       if (!win) {
         await collectLostOnchain(pos.windowId as `0x${string}`, escrow).catch(() => {});
       }
@@ -254,6 +290,20 @@ export async function reconcilePositions(
     }
   }
   return settled;
+}
+
+async function waitForReceipt(hash: `0x${string}`) {
+  const pc = createPublicClient({ chain: EC_CHAIN, transport: http(EC_RPC_URL) });
+  for (let i = 0; i < 30; i++) {
+    try {
+      const r = await pc.getTransactionReceipt({ hash });
+      if (r) return r;
+    } catch {
+      /* not mined yet */
+    }
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  throw new Error("settle tx did not confirm in time");
 }
 
 export class PositionError extends Error {

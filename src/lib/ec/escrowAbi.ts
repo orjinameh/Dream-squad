@@ -236,6 +236,11 @@ export const DREAMDUEL_ESCROW_ABI = [
         "name": "entryPrice",
         "type": "uint256",
         "internalType": "uint256"
+      },
+      {
+        "name": "windowClose",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "outputs": [],
