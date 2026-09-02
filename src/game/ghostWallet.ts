@@ -4,6 +4,7 @@ import { createWalletClient, createPublicClient, http, type Hash } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { EC_CHAIN, EC_RPC_URL, ROUND_ESCROW_ADDRESS, EC_ADDRESSES } from "@/lib/ec/config";
 import { DREAMDUEL_ROUND_ESCROW_ABI } from "@/lib/ec/escrowAbi";
+import { matchKey } from "@/lib/ec/matchKey";
 
 /** tUSDC address (testnet collateral). */
 const TUSDC_ADDRESS: `0x${string}` = (EC_ADDRESSES.testUsdc ?? EC_ADDRESSES.collateral)!;
@@ -136,7 +137,7 @@ function buildGhost(pk: `0x${string}`, onDestroy: () => void): GhostWallet {
         abi: DREAMDUEL_ROUND_ESCROW_ABI,
         address: ROUND_ESCROW_ADDRESS,
         functionName: "stakeRound",
-        args: [matchId as Hash, BigInt(round), amount, entryPrice],
+        args: [matchKey(matchId), BigInt(round), amount, entryPrice],
         account: account,
         chain: EC_CHAIN,
         gas: 3_000_000n,
@@ -162,7 +163,7 @@ function buildGhost(pk: `0x${string}`, onDestroy: () => void): GhostWallet {
         abi: DREAMDUEL_ROUND_ESCROW_ABI,
         address: ROUND_ESCROW_ADDRESS,
         functionName: "withdraw",
-        args: [matchId as Hash],
+        args: [matchKey(matchId)],
         account: account,
         chain: EC_CHAIN,
         gas: 1_000_000n,

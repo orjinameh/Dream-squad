@@ -10,6 +10,7 @@ import {
 import { parseUnits, formatUnits, createPublicClient, http, type Hash } from "viem";
 import { EC_CHAIN, EC_RPC_URL, ESCROW_ADDRESS, ROUND_ESCROW_ADDRESS, EC_ADDRESSES, EC_COLLATERAL_DECIMALS } from "@/lib/ec/config";
 import { DREAMDUEL_ESCROW_ABI, LEGACY_POSITION_ABI, DREAMDUEL_ROUND_ESCROW_ABI } from "@/lib/ec/escrowAbi";
+import { matchKey } from "@/lib/ec/matchKey";
 
 export const TUSDC_ADDRESS: `0x${string}` =
   (EC_ADDRESSES.testUsdc ?? EC_ADDRESSES.collateral)!;
@@ -213,7 +214,7 @@ export function useDreamEscrow(windowId?: string | null, escrowAddress: `0x${str
 
   const stakeRound = useCallback(
     async (matchId: Hash | string | null | undefined, round: number, amountRaw: bigint, entryPrice?: bigint) => {
-      const mid = matchId as Hash | undefined;
+      const mid = matchId == null ? undefined : matchKey(String(matchId));
       if (!mid || !address) throw new Error("Wallet not connected");
       const curAllowance = allowance.data as bigint | undefined;
       if ((curAllowance ?? 0n) < amountRaw) {
@@ -243,7 +244,7 @@ export function useDreamEscrow(windowId?: string | null, escrowAddress: `0x${str
 
   const roundWithdraw = useCallback(
     async (matchId: Hash | string | null | undefined) => {
-      const mid = matchId as Hash | undefined;
+      const mid = matchId == null ? undefined : matchKey(String(matchId));
       if (!mid || !address) throw new Error("No position");
       const hash = await writeWithTimeout({
         abi: DREAMDUEL_ROUND_ESCROW_ABI,
@@ -329,7 +330,7 @@ async function waitForReceipt(hash: `0x${string}`) {
  */
 export function useRoundEscrow(matchId?: string | null) {
   const { address } = useAccount();
-  const key = (matchId ?? undefined) as Hash | undefined;
+  const key = matchId ? matchKey(matchId) : undefined;
   const escrow: `0x${string}` = ROUND_ESCROW_ADDRESS ?? ESCROW_ADDRESS;
 
   const withdrawable = useReadContract({

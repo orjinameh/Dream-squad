@@ -7,6 +7,7 @@ import { getPvpWinPoints } from "@/lib/rank";
 import { readArenaPrice } from "@/lib/ec/executor";
 import { ecArenaForMatch } from "@/lib/ec/arena";
 import { settleRoundOnEscrowGuarded } from "@/lib/ec/escrow";
+import { matchKey } from "@/lib/ec/matchKey";
 import { z } from "zod";
 import { isAddress } from "viem";
 import { randomBytes } from "node:crypto";
@@ -473,8 +474,8 @@ export async function POST(req: Request): Promise<Response> {
         // outcome (playerCorrect drives won/lost). Guarded + no-throw: a match must
         // never fail because a round wasn't staked or was already settled.
         if (roundRecord.playerPrediction) {
-          const matchKey = match._id as unknown as `0x${string}`;
-          settleRoundOnEscrowGuarded(matchKey, roundRecord.roundNum, roundRecord.playerCorrect, claim.playerAddress).catch(() => {});
+          const onchainMatchId = matchKey(String(match._id));
+          settleRoundOnEscrowGuarded(onchainMatchId, roundRecord.roundNum, roundRecord.playerCorrect, claim.playerAddress).catch(() => {});
         }
 
         const nextDeadline = new Date(now.getTime() + ROUND_TIMINGS.ROUND_DURATION_MS + ROUND_TIMINGS.LOCK_MS);
