@@ -82,6 +82,31 @@ export async function GET(req: Request) {
     const outcomeRaw = await resolvePositionOutcome(pos).catch(() => null);
     const outcome = outcomeRaw == null ? null : outcomeRaw ? "WON" : "LOST";
 
+    // Other settled positions this wallet hasn't collected from the escrow yet —
+    // e.g. an older WON staked on a legacy escrow while the newest position lost.
+    const mainId = String(pos._id);
+    const wonDocs = await EcPosition.find({ address: lower, status: "SETTLED", settledWon: true })
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .lean();
+    const wonPositions = [];
+    for (const w of wonDocs) {
+      if (!w.windowId || String(w._id) === mainId) continue;
+      const esc = await resolvePositionEscrow(w.windowId as string, w);
+      const info = await positionInfo(w.windowId as `0x${string}`, esc).catch(() => null);
+      if (!info || !info.settled || info.won !== 1n) continue;
+      wonPositions.push({
+        id: String(w._id),
+        direction: w.direction,
+        market: w.market,
+        amount: w.amount,
+        windowId: w.windowId,
+        escrowAddress: esc,
+        stakeAmountFormatted: info.balance > 0n ? formatUnits(info.balance, EC_COLLATERAL_DECIMALS) : null,
+        claimable: info.balance > 0n,
+      });
+    }
+
     return Response.json({
       position: {
         id: pos._id,
@@ -109,6 +134,7 @@ export async function GET(req: Request) {
           : null,
         onchain,
       },
+      wonPositions,
     });
   } catch (err) {
     console.error("get position failed", err);

@@ -130,6 +130,11 @@ export interface GameHook {
   positionEscrowAddress: string | null;
   positionEntryPrice: string | null;
   positionSettlementOutcome: "WON" | "LOST" | null;
+  positionWonPositions: {
+    id: string; direction: "UP" | "DOWN"; market: string; amount: number;
+    windowId: string; escrowAddress: string; stakeAmountFormatted: string | null; claimable: boolean;
+  }[];
+  reloadPosition: () => void;
   hasActivePosition: boolean;
   actions: GameActions;
 }
@@ -197,6 +202,12 @@ export function useGameState(): GameHook {
   const [positionEscrowAddress, setPositionEscrowAddress] = useState<string | null>(null);
   const [positionEntryPrice, setPositionEntryPrice] = useState<string | null>(null);
   const [positionSettlementOutcome, setPositionSettlementOutcome] = useState<"WON" | "LOST" | null>(null);
+  const [positionWonPositions, setPositionWonPositions] = useState<{
+    id: string; direction: "UP" | "DOWN"; market: string; amount: number;
+    windowId: string; escrowAddress: string; stakeAmountFormatted: string | null; claimable: boolean;
+  }[]>([]);
+  const [positionReloadTick, setPositionReloadTick] = useState(0);
+  const reloadPosition = useCallback(() => setPositionReloadTick((t) => t + 1), []);
   const hasActivePosition = Boolean(positionWindowId && positionDirection);
 
   // Load the wallet's EC POSITION (active, else latest settled) so a WON stake
@@ -223,7 +234,12 @@ export function useGameState(): GameHook {
             settlement?: { outcome?: "WON" | "LOST" | null } | null;
             onchain?: { settled?: boolean; won?: number | string } | null;
           } | null;
-        };
+          wonPositions?: {
+            id: string; direction: "UP" | "DOWN"; market: string; amount: number;
+            windowId: string; escrowAddress: string; stakeAmountFormatted: string | null; claimable: boolean;
+          }[];
+        } | null;
+        if (!data) return;
         const p = data.position;
         if (!p || cancelled || positionWindowId) return;
         if (p.windowId && p.direction) {
@@ -235,13 +251,14 @@ export function useGameState(): GameHook {
           setPositionEscrowAddress(p.escrowAddress ?? null);
           setPositionEntryPrice(p.entryPrice ?? null);
           setPositionSettlementOutcome(p.settlement?.outcome ?? null);
+          setPositionWonPositions(data.wonPositions ?? []);
         }
       } catch {
         /* position load is best-effort */
       }
     })();
     return () => { cancelled = true; };
-  }, [address, positionWindowId]);
+  }, [address, positionWindowId, positionReloadTick]);
 
   const animFrameRef = useRef<number>(0);
   const phaseTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
@@ -967,6 +984,7 @@ export function useGameState(): GameHook {
     setPositionDirection(null); setPositionAmount(null); setPositionMarket(null);
     setPositionId(null); setPositionWindowId(null); setPositionStakeTxHash(null);
     setPositionEscrowAddress(null); setPositionEntryPrice(null); setPositionSettlementOutcome(null);
+    setPositionWonPositions([]);
     setPhase("POSITION");
   }, []);
   const selectPrediction = useCallback((pred: PredictionConfig) => { setSelectedPrediction(pred); }, []);
@@ -1078,6 +1096,8 @@ export function useGameState(): GameHook {
     positionEscrowAddress,
     positionEntryPrice,
     positionSettlementOutcome,
+    positionWonPositions,
+    reloadPosition,
     hasActivePosition: Boolean(positionWindowId && positionDirection),
     actions: {
       goToHome, goToMarketSelect, goToCharSelect, goToLeaderboard,

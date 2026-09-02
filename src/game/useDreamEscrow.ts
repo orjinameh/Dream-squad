@@ -9,7 +9,7 @@ import {
 } from "wagmi";
 import { parseUnits, formatUnits, createPublicClient, http, type Hash } from "viem";
 import { EC_CHAIN, EC_RPC_URL, ESCROW_ADDRESS, EC_ADDRESSES, EC_COLLATERAL_DECIMALS } from "@/lib/ec/config";
-import { DREAMDUEL_ESCROW_ABI } from "@/lib/ec/escrowAbi";
+import { DREAMDUEL_ESCROW_ABI, LEGACY_POSITION_ABI } from "@/lib/ec/escrowAbi";
 
 export const TUSDC_ADDRESS: `0x${string}` =
   (EC_ADDRESSES.testUsdc ?? EC_ADDRESSES.collateral)!;
@@ -94,7 +94,28 @@ export function useDreamEscrow(windowId?: string | null, escrowAddress: `0x${str
     chainId: EC_CHAIN.id,
   });
 
-  const raw = pos.data as
+  // Legacy (pre-v3) escrows return a 6-field struct that throws the current ABI
+  // decoder. Probe with the legacy shape and normalize when the primary failed.
+  const legacyPos = useReadContract({
+    abi: LEGACY_POSITION_ABI,
+    address: escrow,
+    functionName: "position",
+    args: key ? [key] : undefined,
+    chainId: EC_CHAIN.id,
+  });
+
+  const raw = (pos.isError && legacyPos.data
+    ? {
+        owner: (legacyPos.data as any)[0] as `0x${string}`,
+        balance: (legacyPos.data as any)[1] as bigint,
+        entryPrice: 0n,
+        windowOpen: (legacyPos.data as any)[2] as bigint,
+        windowClose: (legacyPos.data as any)[3] as bigint,
+        won: (legacyPos.data as any)[4] as bigint,
+        open: (legacyPos.data as any)[5] as boolean,
+        settled: (legacyPos.data as any)[6] as boolean,
+      }
+    : pos.data) as
     | {
         owner: `0x${string}`;
         balance: bigint;
@@ -224,6 +245,7 @@ export function useDreamEscrow(windowId?: string | null, escrowAddress: `0x${str
       usdc.refetch();
       allowance.refetch();
       pos.refetch();
+      legacyPos.refetch();
     },
   };
 }

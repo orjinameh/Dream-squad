@@ -447,3 +447,22 @@ export const DREAMDUEL_ESCROW_ABI = [
     "inputs": []
   }
 ] as const;
+
+/** Pre-v3 deployments return the 6-field position struct (no `entryPrice`). */
+export const LEGACY_POSITION_ABI = [
+  {
+    type: "function",
+    name: "position",
+    stateMutability: "view",
+    inputs: [{ name: "windowId", type: "bytes32" }],
+    outputs: [
+      { name: "owner", type: "address" },
+      { name: "balance", type: "uint256" },
+      { name: "windowOpen", type: "uint64" },
+      { name: "windowClose", type: "uint64" },
+      { name: "won", type: "uint8" },
+      { name: "open", type: "bool" },
+      { name: "settled", type: "bool" },
+    ],
+  },
+] as const;

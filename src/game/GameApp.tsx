@@ -323,6 +323,60 @@ function TradeSelect({ onSelect, onBack }: { onSelect: (m: TradeMarket) => void;
   );
 }
 
+/** A settled WON position (possibly on an older escrow deployment) the wallet
+ *  hasn't collected yet. Rendered as its own escrow binding so the DEX payout
+ *  (stake / entryPrice) stays withdrawable even when the newest position lost. */
+function WonPayoutCard({ won, onClaimed }: {
+  won: { id: string; direction: "UP" | "DOWN"; market: string; amount: number; windowId: string; escrowAddress: string; stakeAmountFormatted: string | null; claimable: boolean };
+  onClaimed: () => void;
+}) {
+  const escrow = useDreamEscrow(won.windowId, won.escrowAddress as `0x${string}`);
+  const [busy, setBusy] = useState(false);
+  const [claimed, setClaimed] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const doWithdraw = async () => {
+    if (!escrow.windowId) return;
+    setBusy(true); setError(null);
+    try {
+      await escrow.withdraw();
+      escrow.refetch();
+      setClaimed(true);
+      onClaimed();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Withdraw failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const due = escrow.entryPrice && escrow.onchain?.balance != null && escrow.entryPrice > 0n && escrow.entryPrice <= 1_000_000n
+    ? (Number(escrow.onchain.balance) * 1_000_000) / Number(escrow.entryPrice)
+    : null;
+  const collected = claimed || !won.claimable;
+  return (
+    <div style={{ marginBottom: 10, padding: "10px 12px", borderRadius: 8, border: "1px solid #10b981", background: "rgba(16,185,129,0.08)" }}>
+      <div style={{ fontSize: 11, fontWeight: 900, letterSpacing: "0.1em", color: "#34d399", marginBottom: 4 }}>
+        {"\uD83C\uDFC6"} OLD WON STAKE — {won.direction} {"\u00D7"} {won.amount} tUSDC ({won.market})
+      </div>
+      {collected ? (
+        <div style={{ fontSize: 12, color: "#a7f3d0" }}>Already collected — payout sent to your wallet. {"\u2713"}</div>
+      ) : (
+        <>
+          <div style={{ fontSize: 12, color: "#a7f3d0", marginBottom: 6 }}>
+            {due != null ? <>DEX payout {"\u2248"} {(due / 1e6).toFixed(2)} tUSDC is sitting in the escrow on-chain — collect it below.</> : <>Your WON payout is sitting in the escrow on-chain — collect it below.</>}
+          </div>
+          {error != null && <div style={{ fontSize: 11, color: "#f87171", marginBottom: 6 }}>{error}</div>}
+          <button onClick={doWithdraw} disabled={busy} style={{
+            width: "100%", padding: "10px 0", borderRadius: 6, cursor: "pointer", fontWeight: 800, fontSize: 13, fontFamily: "'Courier New', monospace",
+            background: "linear-gradient(135deg, #059669, #10b981)", border: "none", color: "#023020", letterSpacing: "0.08em", opacity: busy ? 0.6 : 1,
+          }}>
+            {busy ? "WITHDRAWING..." : `\u2192 WITHDRAW ${won.stakeAmountFormatted ?? ""} + PROFIT tUSDC`}
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
 function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
   game: ReturnType<typeof useGameState>;
   escrow: ReturnType<typeof useDreamEscrow>;
@@ -568,6 +622,14 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
         }}>
           {busy ? "STAKING..." : hasActive ? `\u21BB RE-STAKE \u2192 OPEN ${direction} ${amount} tUSDC` : `\u2694 STAKE ${direction} ${amount} tUSDC`}
         </button>
+
+        {game.positionWonPositions.length > 0 && (
+          <div style={{ marginTop: 14 }}>
+            {game.positionWonPositions.map((won) => (
+              <WonPayoutCard key={won.id} won={won} onClaimed={game.reloadPosition} />
+            ))}
+          </div>
+        )}
 
         {!escrow.address && <div style={{ marginTop: 8, fontSize: 11, color: "#f59e0b" }}>Connect your wallet to stake tUSDC.</div>}
         {error && <div style={{ marginTop: 8, fontSize: 11, color: "#ef4444", wordBreak: "break-word" }}>{error}</div>}

@@ -1,7 +1,7 @@
 import { createPublicClient, createWalletClient, http, type Hash } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { EC_CHAIN, EC_RPC_URL, ESCROW_ADDRESS } from "./config";
-import { DREAMDUEL_ESCROW_ABI } from "./escrowAbi";
+import { DREAMDUEL_ESCROW_ABI, LEGACY_POSITION_ABI } from "./escrowAbi";
 
 /**
  * DreamDuel v2 on-chain escrow client.
@@ -59,15 +59,42 @@ export interface PositionInfo {
   settled: boolean;
 }
 
-/** Reads a position slot on `escrow` (defaults to the current deployment). */
+/** Reads a position slot on `escrow` (defaults to the current deployment).
+ *  Legacy deployments (pre-v3) return the 6-field struct (no `entryPrice`), so
+ *  the current ABI can't decode them — probe again with the legacy shape and
+ *  synthesize entryPrice: 0 when that hits. */
 export async function positionInfo(windowId: Hash, escrow: `0x${string}` = ESCROW_ADDRESS): Promise<PositionInfo> {
-  const p = await publicClient().readContract({
+  const p = (await publicClient().readContract({
     address: escrow,
     abi: DREAMDUEL_ESCROW_ABI,
     functionName: "position",
     args: [windowId],
-  });
-  return p as unknown as PositionInfo;
+  }).catch(() => null)) as PositionInfo | null;
+  if (p) return p;
+  const legacy = (await publicClient().readContract({
+    address: escrow,
+    abi: LEGACY_POSITION_ABI,
+    functionName: "position",
+    args: [windowId],
+  })) as unknown as {
+    owner: `0x${string}`;
+    balance: bigint;
+    windowOpen: bigint;
+    windowClose: bigint;
+    won: bigint;
+    open: boolean;
+    settled: boolean;
+  };
+  return {
+    owner: legacy.owner,
+    balance: legacy.balance,
+    entryPrice: 0n,
+    windowOpen: legacy.windowOpen,
+    windowClose: legacy.windowClose,
+    won: legacy.won,
+    open: legacy.open,
+    settled: legacy.settled,
+  };
 }
 
 /** True if an on-chain position slot exists and is open for `windowId`. */
