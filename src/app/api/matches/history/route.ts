@@ -26,7 +26,9 @@ export async function GET(req: Request): Promise<Response> {
 
     return Response.json({
       matches: matches.map((m) => {
-        const isPlayer2 = normalizeAddress(m.player2Address || "") === addr;
+        // Bot matches have no player2Address — guard before normalizing, since
+        // normalizeAddress("") throws and would 500 the whole history fetch.
+        const isPlayer2 = !!m.player2Address && normalizeAddress(m.player2Address) === addr;
         const isBot = m.opponentType === "bot";
 
         return {

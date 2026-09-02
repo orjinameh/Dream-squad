@@ -244,7 +244,11 @@ export async function reconcilePositions(
         continue; // venue result may already be final; escrow unlock hasn't come
       }
       // A doc that was never funded on-chain (browser stake failed) is a phantom.
-      if (onchain && !onchain.open) {
+      // Only clean ACTIVE phantoms — NEVER delete a SETTLED row from history: a
+      // settled position whose on-chain slot now reads empty (legacy escrow/ABI
+      // mismatch, mis-resolved deployment, or already-collected) must stay in
+      // the player's stake history. Removing it here is why old stakes vanished.
+      if (onchain && !onchain.open && pos.status === "ACTIVE") {
         await EcPosition.deleteOne({ _id: pos._id });
         entry.outcome = "phantom-deleted";
         continue;
