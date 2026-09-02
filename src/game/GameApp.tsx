@@ -414,7 +414,11 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
 
   // A position is already active — show it and let the player proceed to
   // MATCH TYPE (gated in the parent) or open a fresh one to switch direction.
-  const hasActive = Boolean(game.positionWindowId && game.positionDirection);
+  // `escrow.settled` is on-chain truth: once the venue resolved the window the
+  // position is done (won/lost), so it no longer counts as a live hold — no
+  // "you already hold" banner, no RE-STAKE label, no MATCH TYPE (a settled
+  // position can't back a match). The WON withdraw card below still collects it.
+  const hasActive = Boolean(game.positionWindowId && game.positionDirection) && !escrow.settled;
   const activeDirection = game.positionDirection;
   const activeAmount = game.positionAmount;
 

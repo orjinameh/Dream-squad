@@ -45,6 +45,13 @@ function computeLongestStreak(rounds: Array<{ playerCorrect: boolean }>): number
 // Flat band for the EC YES-price oracle (probability scale 0..1). Any round
 // whose YES mid moves by less than this is judged FLAT.
 const EC_ORACLE_FLAT_BAND = 0.0008;
+// A round must move past HALF the live bid-ask spread (in addition to the flat
+// band) to count as UP/DOWN. The venue books are thin with ~2-3% spreads and the
+// mid-of-book is stable within a 10s round, so a tiny absolute mid-delta is not a
+// real directional signal — but a move that crosses/reshapes the spread is. This
+// makes rounds resolve against genuine flow instead of a frozen mid. (A move
+// wider than half the ask<=>bid spread is an unambiguous directional print.)
+const EC_ORACLE_SPREAD_FACTOR = 0.5;
 
 /**
  * AUTHORITATIVE ROUND RESOLUTION
@@ -110,26 +117,26 @@ async function resolveRound(match: any, now: Date): Promise<{
     throw new Error(`EC YES price unavailable for ${arena.marketId}`);
   }
 
-  // ── WINDOW-OPEN ANCHOR ──────────────────────────────────────────────────────
-  // The match's ONE position reference: the EC window's opening YES price, pinned
-  // once when the arena is first observed (or when the match re-anchors to a new
-  // window). Every round in a match AND any rematch inside the same window resolves
-  // against THIS same seed — so a single directional call / single stake is reused
-  // across matches until the window settles, and the real cumulative movement of
-  // the 15-min EC window drives the outcome (never a previous-round micro-delta).
-  // The spot `priceModel.entryPrice` is a USD price on a different scale and must
-  // NOT be used here — it would misclassify every round.
-  const prevArenaOpen = match.priceModel?.arenaOpen;
-  const arenaOpen = prevArenaOpen && prevArenaOpen > 0 ? prevArenaOpen : quote.yesPrice;
-  if (prevArenaOpen !== arenaOpen && !(prevArenaOpen > 0)) {
-    await import("@/db/models/Match").then(({ Match }) =>
-      Match.updateOne({ _id: match._id }, { $set: { "priceModel.arenaOpen": arenaOpen } }),
-    ).catch(() => {});
-  }
+  // ── ROLLING PER-ROUND ANCHOR ───────────────────────────────...
+  // Each round is its OWN position (flippable UP/DOWN, settled per round), so a
+  // round's outcome reflects the live YES mid's movement since the PREVIOUS
+  // round's close — not the frozen window-open seed. The first round anchors to
+  // the window-open price. The spot `priceModel.entryPrice` is a USD price on a
+  // different scale and must NOT be used here — it would misclassify every round.
+  const arenaOpen = match.priceModel?.arenaOpen;
+  const anchor = prevRound?.endPrice != null && prevRound.endPrice > 0 ? prevRound.endPrice : (arenaOpen && arenaOpen > 0 ? arenaOpen : quote.yesPrice);
 
-  const diff = quote.yesPrice - arenaOpen;
-  const actual: "UP" | "DOWN" | "FLAT" = diff > EC_ORACLE_FLAT_BAND ? "UP" : diff < -EC_ORACLE_FLAT_BAND ? "DOWN" : "FLAT";
-  const startPrice = prevRound?.endPrice ?? arenaOpen;
+  // Spread/tick-aware FLAT band. The venue books are thin with ~2-3% spreads and
+  // the mid-of-book is stable within a 10s round, so a tiny absolute mid-delta is
+  // not a real directional signal. A move must exceed BOTH the flat band AND half
+  // the live bid-ask spread to count as UP/DOWN — i.e. the market had to actually
+  // cross/reshape the spread in that round (genuine flow), not just tick in place.
+  const spreadWidth = quote.bestAsk != null && quote.bestBid != null ? quote.bestAsk - quote.bestBid : 0;
+  const band = Math.max(EC_ORACLE_FLAT_BAND, spreadWidth * EC_ORACLE_SPREAD_FACTOR);
+
+  const diff = quote.yesPrice - anchor;
+  const actual: "UP" | "DOWN" | "FLAT" = diff > band ? "UP" : diff < -band ? "DOWN" : "FLAT";
+  const startPrice = anchor;
   const endPrice = quote.yesPrice;
   const volume = [startPrice, endPrice];
 

@@ -69,6 +69,15 @@ export const EC_LOT = 1;
 export const ESCROW_ADDRESS = "0xd068e4b26357239d3ea0fd960c781fcb2512c5c9" as `0x${string}`;
 
 /**
+ * DreamDuel per-round escrow — on-chain tUSDC settlement for fights that stake
+ * and settle PER ROUND (flippable UP/DOWN each round, same stake per round,
+ * auto-settled at each round's close). Deployed via scripts/deploy-round-escrow.ts
+ * (chain 50312, tx redacted). Clone of the v4 window escrow but keyed by
+ * (matchId, round) so each round realizes its own PnL against the live YES-mid.
+ */
+export const ROUND_ESCROW_ADDRESS = "0x4b5c9d4dec4542a2df02314952cbcc7dae665bdc" as `0x${string}`;
+
+/**
  * Prior escrow deployments. Positions created before a redeploy carry no
  * `escrowAddress`; the app falls back through these so a WON stake on a legacy
  * contract stays withdrawable. Order newest-first by age.
