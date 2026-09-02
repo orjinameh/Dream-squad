@@ -11,9 +11,11 @@ import { EcPositionPanel } from "./EcPositionPanel";
 import { useMatchmaking } from "./useMatchmaking";
 import { useAccount } from "wagmi";
 import { useDreamDEX } from "./useDreamDEX";
-import { useDreamEscrow } from "./useDreamEscrow";
+import { useDreamEscrow, useRoundEscrow } from "./useDreamEscrow";
+import { useGhostWallet } from "./useGhostWallet";
+import { useEcPosition } from "./useEcPosition";
 import { parseUnits, formatUnits } from "viem";
-import { EC_COLLATERAL_DECIMALS, ESCROW_ADDRESS } from "@/lib/ec/config";
+import { EC_COLLATERAL_DECIMALS, ESCROW_ADDRESS, ROUND_ESCROW_ADDRESS } from "@/lib/ec/config";
 
 export default function GameApp() {
   const g = useGameState();
@@ -1259,6 +1261,50 @@ function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; 
   const [revealText, setRevealText] = useState("");
   const [impactText, setImpactText] = useState("");
 
+  // Ghost (ephemeral) wallet + live EC feed drive per-round on-chain staking.
+  const ghost = useGhostWallet(game.matchId, game.totalRounds, game.positionAmount ?? 0);
+  const { pos } = useEcPosition(game.matchId);
+  const [roundStaked] = useState(() => new Set<string>());
+  const [fundTriggered, setFundTriggered] = useState(false);
+
+  // THE one popup of the match: as round 1 opens, fund the ghost with a single
+  // approve (the server relays player->ghost). After that every round is signed
+  // by the ghost (no popup).
+  useEffect(() => {
+    if (!game.matchId || game.phase !== "ROUND_ACTIVE" || ghost.funded || fundTriggered) return;
+    setFundTriggered(true);
+    ghost.fundGhost().catch((e: any) => {
+      console.warn("[ghost] funding not confirmed", e?.message);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [game.phase, ghost.funded, fundTriggered]);
+
+  // Stake the current round on-chain once it opens (best-effort, no popup —
+  // the ghost signs with its in-memory key). The server settles every round.
+  useEffect(() => {
+    if (!game.matchId || game.phase !== "ROUND_ACTIVE" || !ghost.funded) return;
+    const key = `${game.matchId}:${game.currentRound}`;
+    if (roundStaked.has(key)) return;
+    if (!game.positionAmount || game.positionAmount <= 0) return;
+    roundStaked.add(key);
+    const yesPrice = pos?.yesPrice;
+    const entry = yesPrice != null && yesPrice > 0
+      ? Math.min(1_000_000, Math.max(10_000, Math.round(yesPrice * 1_000_000)))
+      : 500_000;
+    ghost.stakeRound(game.currentRound, BigInt(entry)).catch((e: any) => {
+      console.warn("[ghost] round stake not confirmed", e?.message);
+    });
+  }, [game.matchId, game.currentRound, game.phase, game.positionAmount, ghost.funded, ghost, roundStaked, pos?.yesPrice]);
+
+  // End of fight: forward the ghost's winnings back to the primary wallet.
+  useEffect(() => {
+    if (!game.matchId || game.phase !== "MATCH_RESULT" || !ghost.funded) return;
+    ghost.settleAndForward().catch((e: any) => {
+      console.warn("[ghost] payout forward failed", e?.message);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [game.phase, ghost.funded]);
+
   useEffect(() => {
     if (game.phase === "MATCH_INTRO") {
       setCountdown(3);
@@ -1703,6 +1749,27 @@ function MatchResult({ game, onRematch, onChangePosition, onExit }: { game: Retu
   const won = game.playerScore > game.rivalScore;
   const draw = game.playerScore === game.rivalScore;
 
+  // Per-round on-chain settlement: the server settles each round against the
+  // live YES-mid and credits wins to the round escrow. Read that on-chain truth
+  // and let the player collect it — the client consumes what the server/chain
+  // actually committed, never a local guess.
+  const roundEscrow = useRoundEscrow(game.matchId);
+  const [withdrawing, setWithdrawing] = useState(false);
+  const roundEscrowWrites = useDreamEscrow(null, ROUND_ESCROW_ADDRESS);
+  const roundWonUsd = roundEscrow.withdrawable > 0n ? Number(roundEscrow.withdrawable) : 0;
+  const handleRoundWithdraw = async () => {
+    if (!game.matchId || roundWonUsd <= 0) return;
+    setWithdrawing(true);
+    try {
+      await roundEscrowWrites.roundWithdraw(game.matchId);
+      roundEscrow.refetch();
+    } catch (e) {
+      console.error("[round-escrow] withdraw failed", e);
+    } finally {
+      setWithdrawing(false);
+    }
+  };
+
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "40px 20px" }}>
       {game.koOverlay && (
@@ -1792,10 +1859,43 @@ function MatchResult({ game, onRematch, onChangePosition, onExit }: { game: Retu
           {game.positionAmount ?? 0} tUSDC STAKED
         </div>
         <div style={{ fontSize: 10, color: "#64748b", marginTop: 4 }}>
-          Your stake is locked for the ~15 min window and settles ONCE on-chain at
-          resolution. This match was bragging only.
+          Your single stake opens the fight. Each round settles separately on-chain
+          against the live YES-mid (see below).
         </div>
       </div>
+
+      {/* Per-round on-chain settlement — read from the round escrow that the
+          server settled every round against, then collect here. */}
+      {game.matchId && (
+        <div style={{
+          background: "rgba(4,120,87,0.12)", border: `2px solid ${roundWonUsd > 0 ? "#10b981" : "#1e293b"}`, borderRadius: 8,
+          padding: "12px 20px", marginBottom: 24, textAlign: "center", maxWidth: 340, width: "100%",
+        }}>
+          <div style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.1em", marginBottom: 6 }}>
+            PER-ROUND ON-CHAIN SETTLEMENT
+          </div>
+          <div style={{ fontSize: 22, fontWeight: 900, color: roundWonUsd > 0 ? "#10b981" : "#94a3b8", letterSpacing: "0.05em" }}>
+            {roundWonUsd > 0 ? `${roundWonUsd} tUSDC WON` : "0 tUSDC WON"}
+          </div>
+          <div style={{ fontSize: 10, color: "#64748b", marginTop: 4, lineHeight: 1.5 }}>
+            Each round settles on-chain against the live YES-mid. Wins are waiting
+            in the round escrow.
+          </div>
+          {roundWonUsd > 0 && (
+            <button
+              onClick={handleRoundWithdraw}
+              disabled={withdrawing || !roundEscrow.isMine}
+              style={{
+                marginTop: 10, padding: "10px 22px", fontSize: 13, fontWeight: 700,
+                borderRadius: 6, border: "none", cursor: roundEscrow.isMine ? "pointer" : "not-allowed",
+                color: "#042f2e", background: "linear-gradient(135deg, #34d399, #10b981)",
+              }}
+            >
+              {withdrawing ? "WITHDRAWING..." : !roundEscrow.isMine ? "NOT YOURS" : `\u2192 WITHDRAW ${roundWonUsd} tUSDC`}
+            </button>
+          )}
+        </div>
+      )}
 
       <div style={{ marginBottom: 24, width: "100%", maxWidth: 340 }}>
         {game.matchId && <EcPositionPanel matchId={game.matchId} compact />}

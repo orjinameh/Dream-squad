@@ -691,6 +691,49 @@ export function useGameState(): GameHook {
   // Responds to server state changes for both bot and PvP matches
   useEffect(() => {
     const ss = mp.state.serverState;
+
+    // ── REHYDRATE roundHistory from the AUTHORITATIVE server rounds[] ────────
+    // The server is the source of truth for every resolved round. The client's
+    // local `roundHistory` is append-only during a live session, so a mid-match
+    // reconnect (or a completed match reached via polling) would otherwise MISS
+    // any rounds that resolved while we weren't looking. Rebuild it here by
+    // mapping each server RoundRecord to the same RoundResult shape used by
+    // playCombatAnimation, preserving any rounds already played locally.
+    if (ss?.rounds?.length) {
+      const serverRounds: any[] = ss.rounds;
+      const haveRounds = serverRounds.map((r) => r.roundNum);
+      setRoundHistory((prev) => {
+        const seen = new Set(prev.map((r) => r.roundNum));
+        const missing = serverRounds.filter((r) => !seen.has(r.roundNum));
+        if (!missing.length) return prev;
+        const hydrated = missing.map((lastRound) => {
+          const result: RoundResult = {
+            roundNum: lastRound.roundNum,
+            actual: lastRound.actual,
+            playerPredicted: lastRound.playerPrediction,
+            rivalPredicted: lastRound.rivalPrediction,
+            playerCorrect: lastRound.playerCorrect,
+            rivalCorrect: lastRound.rivalCorrect,
+            playerDamage: lastRound.playerDamage ?? 0,
+            rivalDamage: lastRound.rivalDamage ?? 0,
+            isCritical: lastRound.isCritical ?? false,
+            isDraw: lastRound.playerCorrect === lastRound.rivalCorrect,
+            knockout: lastRound.knockout ?? false,
+            startPrice: lastRound.startPrice,
+            endPrice: lastRound.endPrice,
+            prices: lastRound.prices,
+            asset: lastRound.asset,
+            playerPnL: lastRound.playerPnL,
+            rivalPnL: lastRound.rivalPnL,
+            playerExecution: lastRound.playerExecution,
+            rivalExecution: lastRound.rivalExecution,
+          };
+          return result;
+        });
+        return [...prev, ...hydrated];
+      });
+    }
+
     // PvP: hydrate the player/rival character objects from the server-provided
     // charId strings. In PvP startPvPMatch never sets rivalChar, so without this
     // the ArenaScreen would render RetroCharacter with a null char and crash
@@ -906,16 +949,15 @@ export function useGameState(): GameHook {
   // you hold one position per round and can flip it until the market closes.
   const [lockedPrediction, setLockedPrediction] = useState<"UP" | "DOWN" | null>(null);
 
-  // You pick your position ONCE as the round goes live. From then on the the
-  // choice is LOCKED for the fight — only the live chart updates (no mid-round
-  // repositioning). The locked choice is cleared when the round resolves.
-  // The player's call is decided ONCE before the match and locked for the whole
-  // fight. In-match there is nothing to re-pick: each round automatically uses
-  // the stored call (see the round-open seeding). Kept as a no-op defensively so
-  // any lingering UI button can never flip the position mid-match.
+  // Per-round binary semantics: you HOLD one position per round and can FLIP it
+  // UP<->DOWN any number of times while the round is ACTIVE (before the round
+  // lock timer commits it). The default call for a round is the previous round's
+  // (or the pre-match) position, so a fight still resolves if you don't touch
+  // it; changing it here re-submits the NEW call for the CURRENT round to the
+  // server (which stores/updates `playerPrediction` while the round is ACTIVE).
   const makePrediction = useCallback((_pred: "UP" | "DOWN") => {
-    if (storedPrediction) return;
     if (phase !== "ROUND_ACTIVE") return;
+    if (localPrediction === _pred) return; // already holding that side
     setLocalPrediction(_pred);
     setPlayerPrediction(_pred);
     setLockedPrediction(_pred);
@@ -933,7 +975,7 @@ export function useGameState(): GameHook {
         roundPhaseRef.current = "LOCKED";
       });
     }
-  }, [phase, storedPrediction, isBotMatch, mp.actions]);
+  }, [phase, localPrediction, isBotMatch, mp.actions]);
 
   const rematch = useCallback(() => {
     clearAllTimers();

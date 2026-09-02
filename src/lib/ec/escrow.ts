@@ -1,7 +1,7 @@
 import { createPublicClient, createWalletClient, http, type Hash } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { EC_CHAIN, EC_RPC_URL, ESCROW_ADDRESS } from "./config";
-import { DREAMDUEL_ESCROW_ABI, LEGACY_POSITION_ABI } from "./escrowAbi";
+import { EC_CHAIN, EC_RPC_URL, ESCROW_ADDRESS, ROUND_ESCROW_ADDRESS } from "./config";
+import { DREAMDUEL_ESCROW_ABI, LEGACY_POSITION_ABI, DREAMDUEL_ROUND_ESCROW_ABI } from "./escrowAbi";
 
 /**
  * DreamDuel v2 on-chain escrow client.
@@ -28,13 +28,13 @@ import { DREAMDUEL_ESCROW_ABI, LEGACY_POSITION_ABI } from "./escrowAbi";
 let _public: ReturnType<typeof createPublicClient> | null = null;
 let _adminWallet: ReturnType<typeof createWalletClient> | null = null;
 
-function publicClient() {
+export function publicClient() {
   if (_public) return _public;
   _public = createPublicClient({ chain: EC_CHAIN, transport: http(EC_RPC_URL) });
   return _public;
 }
 
-function adminWallet() {
+export function adminWallet() {
   if (_adminWallet) return _adminWallet;
   const pk = process.env.OPERATOR_PRIVATE_KEY;
   if (!pk) throw new Error("OPERATOR_PRIVATE_KEY is not set (escrow admin)");
@@ -179,3 +179,84 @@ export async function setWindowLengthOnchain(length: bigint) {
     gas: ADMIN_GAS,
   });
 }
+
+// ─── Per-round escrow (DreamDuelRoundEscrow) ─────────────────────────────────
+// Same model as the window escrow but keyed by (matchId, round): each round is a
+// separate stake that auto-settles at that round's close. Player stakes per round
+// (signed by the player in the browser); the operator relay settles each round
+// with the real round outcome; the player withdraws their total won balance.
+
+/** Read the current per-round escrow address (defaults to the deployed one). */
+export function roundEscrowAddress(): `0x${string}` {
+  return ROUND_ESCROW_ADDRESS;
+}
+
+/** Read a round lock on the per-round escrow. */
+export async function roundLockInfo(matchId: Hash, round: number, escrow: `0x${string}` = ROUND_ESCROW_ADDRESS) {
+  const [owner, amount, entryPrice, won, settled] = (await publicClient().readContract({
+    address: escrow,
+    abi: DREAMDUEL_ROUND_ESCROW_ABI,
+    functionName: "roundLock",
+    args: [matchId, BigInt(round)],
+  })) as [`0x${string}`, bigint, bigint, number, boolean];
+  return { owner, amount, entryPrice, won: Number(won), settled };
+}
+
+/** Read a match's total withdrawable balance on the per-round escrow. */
+export async function roundWithdrawableOnchain(matchId: Hash, escrow: `0x${string}` = ROUND_ESCROW_ADDRESS): Promise<bigint> {
+  return (await publicClient().readContract({
+    address: escrow,
+    abi: DREAMDUEL_ROUND_ESCROW_ABI,
+    functionName: "withdrawable",
+    args: [matchId],
+  })) as bigint;
+}
+
+/** Admin: settle a resolved round on the per-round escrow. `won` commits the DEX
+ *  payout (stake / entryPrice) to the owner's withdrawable; `false` forfeits. */
+export async function settleRoundOnchain(matchId: Hash, round: number, won: boolean, escrow: `0x${string}` = ROUND_ESCROW_ADDRESS) {
+  const wc = adminWallet();
+  return wc.writeContract({
+    address: escrow,
+    abi: DREAMDUEL_ROUND_ESCROW_ABI,
+    functionName: "settleRound",
+    args: [matchId, BigInt(round), won],
+    chain: EC_CHAIN,
+    account: wc.account!,
+    gas: ADMIN_GAS,
+  });
+}
+
+/** Admin: collect a forfeited (lost) round's stake to the house. */
+export async function collectRoundLostOnchain(matchId: Hash, round: number, escrow: `0x${string}` = ROUND_ESCROW_ADDRESS) {
+  const wc = adminWallet();
+  return wc.writeContract({
+    address: escrow,
+    abi: DREAMDUEL_ROUND_ESCROW_ABI,
+    functionName: "collectLost",
+    args: [matchId, BigInt(round)],
+    chain: EC_CHAIN,
+    account: wc.account!,
+    gas: ADMIN_GAS,
+  });
+}
+
+/**
+ * Settle a resolved round on the per-round escrow, guarded so it only runs when
+ * the round was actually staked on-chain (non-zero amount) and isn't already
+ * settled. No-throw contract (callers fire-and-forget): a missing/unsettled
+ * stake must never break a match. `won=true` credits the DEX payout.
+ */
+export async function settleRoundOnEscrowGuarded(matchId: Hash, round: number, won: boolean, playerAddress?: string) {
+  try {
+    const lock = await roundLockInfo(matchId, round);
+    if (!lock || lock.amount === 0n || lock.settled) return false;
+    await settleRoundOnchain(matchId, round, won);
+    return true;
+  } catch (err) {
+    console.error("[round-escrow] guarded settle failed", { matchId: String(matchId), round, won, err });
+    return false;
+  }
+}
+
+

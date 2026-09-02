@@ -8,8 +8,8 @@ import {
   useWriteContract,
 } from "wagmi";
 import { parseUnits, formatUnits, createPublicClient, http, type Hash } from "viem";
-import { EC_CHAIN, EC_RPC_URL, ESCROW_ADDRESS, EC_ADDRESSES, EC_COLLATERAL_DECIMALS } from "@/lib/ec/config";
-import { DREAMDUEL_ESCROW_ABI, LEGACY_POSITION_ABI } from "@/lib/ec/escrowAbi";
+import { EC_CHAIN, EC_RPC_URL, ESCROW_ADDRESS, ROUND_ESCROW_ADDRESS, EC_ADDRESSES, EC_COLLATERAL_DECIMALS } from "@/lib/ec/config";
+import { DREAMDUEL_ESCROW_ABI, LEGACY_POSITION_ABI, DREAMDUEL_ROUND_ESCROW_ABI } from "@/lib/ec/escrowAbi";
 
 export const TUSDC_ADDRESS: `0x${string}` =
   (EC_ADDRESSES.testUsdc ?? EC_ADDRESSES.collateral)!;
@@ -205,6 +205,60 @@ export function useDreamEscrow(windowId?: string | null, escrowAddress: `0x${str
     return hash as `0x${string}`;
   }, [key, escrow, writeWithTimeout]);
 
+  /// ── Per-round escrow (DreamDuelRoundEscrow) ────────────────────────────────
+  /// Each round is its OWN stake, keyed by (matchId, round); the round auto-
+  /// settles at its close. `stakeRound` approves tUSDC and deposits round
+  /// `round`'s amount; `roundWithdraw` collects the match's total won balance.
+  const roundEscrow = ROUND_ESCROW_ADDRESS ?? escrow;
+
+  const stakeRound = useCallback(
+    async (matchId: Hash | string | null | undefined, round: number, amountRaw: bigint, entryPrice?: bigint) => {
+      const mid = matchId as Hash | undefined;
+      if (!mid || !address) throw new Error("Wallet not connected");
+      const curAllowance = allowance.data as bigint | undefined;
+      if ((curAllowance ?? 0n) < amountRaw) {
+        const approveHash = await writeWithTimeout({
+          abi: TUSDC_ABI,
+          address: TUSDC_ADDRESS,
+          functionName: "approve",
+          args: [roundEscrow, amountRaw],
+          chainId: EC_CHAIN.id,
+        });
+        setLastHash(approveHash as `0x${string}`);
+        await waitForReceipt(approveHash as `0x${string}`);
+      }
+      const hash = await writeWithTimeout({
+        abi: DREAMDUEL_ROUND_ESCROW_ABI,
+        address: roundEscrow,
+        functionName: "stakeRound",
+        args: [mid, BigInt(round), amountRaw, entryPrice ? (entryPrice as bigint) : 500_000n],
+        chainId: EC_CHAIN.id,
+      });
+      setLastHash(hash as `0x${string}`);
+      await waitForReceipt(hash as `0x${string}`);
+      return hash as `0x${string}`;
+    },
+    [address, allowance.data, roundEscrow, writeWithTimeout],
+  );
+
+  const roundWithdraw = useCallback(
+    async (matchId: Hash | string | null | undefined) => {
+      const mid = matchId as Hash | undefined;
+      if (!mid || !address) throw new Error("No position");
+      const hash = await writeWithTimeout({
+        abi: DREAMDUEL_ROUND_ESCROW_ABI,
+        address: roundEscrow,
+        functionName: "withdraw",
+        args: [mid],
+        chainId: EC_CHAIN.id,
+      });
+      setLastHash(hash as `0x${string}`);
+      await waitForReceipt(hash as `0x${string}`);
+      return hash as `0x${string}`;
+    },
+    [address, roundEscrow, writeWithTimeout],
+  );
+
   const getFaucet = useCallback(
     async (amountRaw: bigint) => {
       if (!address) throw new Error("Wallet not connected");
@@ -239,6 +293,9 @@ export function useDreamEscrow(windowId?: string | null, escrowAddress: `0x${str
     stakeAmountFormatted: raw?.balance != null && raw.balance > 0n ? formatUnits(raw.balance, EC_COLLATERAL_DECIMALS) : null,
     approveAndStake,
     withdraw,
+    stakeRound,
+    roundWithdraw,
+    roundEscrowAddress: roundEscrow,
     getFaucet,
     loading: usdc.isLoading || allowance.isLoading || pos.isLoading,
     refetch: () => {
@@ -262,4 +319,46 @@ async function waitForReceipt(hash: `0x${string}`) {
     await new Promise((r) => setTimeout(r, 1500));
   }
   throw new Error("transaction did not confirm in time");
+}
+
+/**
+ * Read the per-round on-chain escrow for a combat match. The server settles each
+ * round via `settleRound(matchId, round, won)`; this exposes the resulting
+ * on-chain truth (total `withdrawable`, per-round won/lost) so the UI can show
+ * what the server actually committed on-chain — never a local guess.
+ */
+export function useRoundEscrow(matchId?: string | null) {
+  const { address } = useAccount();
+  const key = (matchId ?? undefined) as Hash | undefined;
+  const escrow: `0x${string}` = ROUND_ESCROW_ADDRESS ?? ESCROW_ADDRESS;
+
+  const withdrawable = useReadContract({
+    abi: DREAMDUEL_ROUND_ESCROW_ABI,
+    address: escrow,
+    functionName: "withdrawable",
+    args: key ? [key] : undefined,
+    chainId: EC_CHAIN.id,
+  });
+
+  const matchOwner = useReadContract({
+    abi: DREAMDUEL_ROUND_ESCROW_ABI,
+    address: escrow,
+    functionName: "matchOwner",
+    args: key ? [key] : undefined,
+    chainId: EC_CHAIN.id,
+  });
+
+  const isMine = Boolean(matchOwner.data && address && (matchOwner.data as `0x${string}`).toLowerCase() === address.toLowerCase());
+
+  return {
+    matchId: key,
+    escrowAddress: escrow,
+    withdrawable: (withdrawable.data as bigint | undefined) ?? 0n,
+    withdrawableFormatted: withdrawable.data != null ? formatUnits(withdrawable.data as bigint, EC_COLLATERAL_DECIMALS) : null,
+    isMine,
+    refetch: () => {
+      withdrawable.refetch();
+      matchOwner.refetch();
+    },
+  };
 }

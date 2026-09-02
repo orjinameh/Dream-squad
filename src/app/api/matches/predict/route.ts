@@ -6,6 +6,7 @@ import { jsonError } from "@/lib/utils";
 import { getPvpWinPoints } from "@/lib/rank";
 import { readArenaPrice } from "@/lib/ec/executor";
 import { ecArenaForMatch } from "@/lib/ec/arena";
+import { settleRoundOnEscrowGuarded } from "@/lib/ec/escrow";
 import { z } from "zod";
 import { isAddress } from "viem";
 import { randomBytes } from "node:crypto";
@@ -465,6 +466,16 @@ export async function POST(req: Request): Promise<Response> {
       try {
         const result = await resolveRound(claim, now);
         const { roundRecord, newPlayerScore, newRivalScore, newPlayerHP, newRivalHP, newPlayerStreak, newRivalStreak, matchDecided, winner } = result;
+
+        // Per-round on-chain settlement (DreamDuelRoundEscrow): each round is a
+        // separate stake that auto-settles at its close. If the player staked this
+        // (matchId, round) on-chain, the operator settles it now with the real round
+        // outcome (playerCorrect drives won/lost). Guarded + no-throw: a match must
+        // never fail because a round wasn't staked or was already settled.
+        if (roundRecord.playerPrediction) {
+          const matchKey = match._id as unknown as `0x${string}`;
+          settleRoundOnEscrowGuarded(matchKey, roundRecord.roundNum, roundRecord.playerCorrect, claim.playerAddress).catch(() => {});
+        }
 
         const nextDeadline = new Date(now.getTime() + ROUND_TIMINGS.ROUND_DURATION_MS + ROUND_TIMINGS.LOCK_MS);
         const nextStatus = matchDecided ? "COMPLETED" : "ACTIVE";

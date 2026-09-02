@@ -466,3 +466,106 @@ export const LEGACY_POSITION_ABI = [
     ],
   },
 ] as const;
+
+/**
+ * DreamDuelRoundEscrow — per-round on-chain tUSDC settlement. Keyed by
+ * (matchId, round): same stake per round, flippable UP/DOWN, auto-settled at
+ * each round's close against the live YES-mid. Deployed (chain 50312) at
+ * ROUND_ESCROW_ADDRESS, admin = operator.
+ */
+export const DREAMDUEL_ROUND_ESCROW_ABI = [
+  {
+    type: "function",
+    name: "stakeRound",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "matchId", type: "bytes32" },
+      { name: "round", type: "uint256" },
+      { name: "amount", type: "uint256" },
+      { name: "entryPrice", type: "uint256" },
+    ],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "settleRound",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "matchId", type: "bytes32" },
+      { name: "round", type: "uint256" },
+      { name: "won", type: "bool" },
+    ],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "withdraw",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "matchId", type: "bytes32" }],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "collectLost",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "matchId", type: "bytes32" },
+      { name: "round", type: "uint256" },
+    ],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "topUpProfitPool",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "amount", type: "uint256" }],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "matchOwner",
+    stateMutability: "view",
+    inputs: [{ name: "", type: "bytes32" }],
+    outputs: [{ name: "", type: "address" }],
+  },
+  {
+    type: "function",
+    name: "withdrawable",
+    stateMutability: "view",
+    inputs: [{ name: "matchId", type: "bytes32" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "collateral",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "address" }],
+  },
+  {
+    type: "function",
+    name: "roundLock",
+    stateMutability: "view",
+    inputs: [
+      { name: "matchId", type: "bytes32" },
+      { name: "round", type: "uint256" },
+    ],
+    outputs: [
+      { name: "owner", type: "address" },
+      { name: "amount", type: "uint256" },
+      { name: "entryPrice", type: "uint256" },
+      { name: "won", type: "uint8" },
+      { name: "settled", type: "bool" },
+    ],
+  },
+] as const;
+
+/** Decoded RoundLock from DreamDuelRoundEscrow.roundLock(). */
+export interface RoundLockInfo {
+  owner: `0x${string}` | null;
+  amount: bigint;
+  entryPrice: bigint;
+  won: number; // 0 pending / 1 won / 2 lost
+  settled: boolean;
+}
+
