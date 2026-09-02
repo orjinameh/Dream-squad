@@ -37,6 +37,40 @@ export async function GET(req: Request) {
   try {
     await connectToDatabase();
     const lower = address.toLowerCase();
+
+    // ?list=1 — the wallet's FULL EC stake history (each position + its WON/LOST
+    // outcome), used by the STAKE HISTORY screen. Normalize outcomes lazily.
+    if (url.searchParams.get("list") === "1") {
+      await reconcilePositions({ address: lower }).catch(() => {});
+      const all = await EcPosition.find({ address: lower }).sort({ createdAt: -1 }).limit(50).lean();
+      const stakes = [];
+      for (const position of all) {
+        if (!position.windowId) continue;
+        const esc = await resolvePositionEscrow(position.windowId as string, position);
+        let info = null;
+        try { info = await positionInfo(position.windowId as `0x${string}`, esc); } catch { /* skip */ }
+        const outcomeRaw = await resolvePositionOutcome(position).catch(() => null);
+        stakes.push({
+          id: String(position._id),
+          direction: position.direction,
+          market: position.market,
+          amount: position.amount,
+          status: position.status,
+          createdAt: position.createdAt?.toISOString() ?? null,
+          outcome: info?.settled
+            ? info.won === 1n ? "WON" : info.won === 2n ? "LOST" : null
+            : outcomeRaw == null ? null : outcomeRaw ? "WON" : "LOST",
+          claimable: info?.settled === true && info.won === 1n && info.balance > 0n,
+          stakeAmountFormatted: info && info.balance > 0n ? formatUnits(info.balance, EC_COLLATERAL_DECIMALS) : null,
+          escrowAddress: esc,
+          windowId: position.windowId,
+          stakeTxHash: position.stakeTxHash ?? null,
+          arenaSymbol: (position.arena as { symbol?: string } | undefined)?.symbol ?? null,
+        });
+      }
+      return Response.json({ stakes });
+    }
+
     // Lazy-settle: the external scheduler is unreliable, so every visit to this
     // endpoint also settles the wallet's own past-close positions (idempotent).
     await reconcilePositions({ address: lower }).catch(() => {});

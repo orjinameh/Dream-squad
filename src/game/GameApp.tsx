@@ -83,7 +83,7 @@ export default function GameApp() {
     }}>
       <style>{globalCSS}</style>
 
-      {g.phase === "HOME" && <HomeScreen address={address} escrow={escrow} onEnter={g.actions.goToMarketSelect} onLeaderboard={g.actions.goToLeaderboard} onProfile={g.actions.goToProfile} onHistory={g.actions.goToMatchHistory} onRejoin={activeMatchId ? rejoinMatch : undefined} />}
+      {g.phase === "HOME" && <HomeScreen address={address} escrow={escrow} game={g} onEnter={g.actions.goToMarketSelect} onLeaderboard={g.actions.goToLeaderboard} onProfile={g.actions.goToProfile} onHistory={g.actions.goToMatchHistory} onStakeHistory={g.actions.goToStakeHistory} onRejoin={activeMatchId ? rejoinMatch : undefined} />}
       {g.phase === "MARKET_SELECT" && <TradeSelect onSelect={g.actions.selectMarket} onBack={g.actions.goToHome} />}
       {g.phase === "POSITION" && <PositionScreen game={g} escrow={escrow} onBack={g.actions.goToMarketSelect} onNext={g.actions.goToMatchType} onOpenPosition={g.actions.openPosition} />}
       {g.phase === "MATCH_TYPE" && <MatchTypeScreen game={g} onBack={g.actions.changePosition} onPvP={() => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.joinMatchmaking(7); mm.actions.joinQueue(7, g.playerChar?.id ?? "dreamer"); }} onBot={() => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.fightBotInstead(); }} onHome={g.actions.goToHome} />}
@@ -97,8 +97,9 @@ export default function GameApp() {
         <ArenaScreen game={g} escrow={escrow} />
       )}
       {g.phase === "MATCH_RESULT" && <MatchResult game={g} onRematch={() => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.rematch(); }} onChangePosition={g.actions.changePosition} onExit={g.actions.goToHome} />}
-      {g.phase === "PROFILE" && <ProfileScreen address={address} escrow={escrow} onBack={g.actions.goToHome} onHistory={g.actions.goToMatchHistory} />}
+      {g.phase === "PROFILE" && <ProfileScreen address={address} escrow={escrow} onBack={g.actions.goToHome} onHistory={g.actions.goToMatchHistory} onStakeHistory={g.actions.goToStakeHistory} />}
       {g.phase === "MATCH_HISTORY" && <MatchHistoryScreen address={address} onBack={g.actions.goToHome} onSelectMatch={g.actions.goToMatchDetail} />}
+      {g.phase === "STAKE_HISTORY" && <StakeHistoryScreen address={address} onBack={g.actions.goToProfile} />}
       {g.phase === "MATCH_DETAIL" && <MatchDetailScreen matchId={g.selectedMatchId} address={address} onBack={g.actions.goToMatchHistory} />}
 
       {g.isReconnecting && <ReconnectOverlay />}
@@ -179,13 +180,15 @@ function ReconnectOverlay() {
   );
 }
 
-function HomeScreen({ address, escrow, onEnter, onLeaderboard, onProfile, onHistory, onRejoin }: {
+function HomeScreen({ address, escrow, game, onEnter, onLeaderboard, onProfile, onHistory, onStakeHistory, onRejoin }: {
   address?: string;
   escrow: ReturnType<typeof useDreamEscrow>;
+  game: ReturnType<typeof useGameState>;
   onEnter: () => void;
   onLeaderboard: () => void;
   onProfile: () => void;
   onHistory: () => void;
+  onStakeHistory: () => void;
   onRejoin?: () => void;
 }) {
   return (
@@ -222,6 +225,18 @@ function HomeScreen({ address, escrow, onEnter, onLeaderboard, onProfile, onHist
           REJOIN MATCH
         </button>
       )}
+
+      {game.positionWonPositions.length > 0 && (
+        <div style={{ maxWidth: 420, width: "100%", marginBottom: 20 }}>
+          <div style={{ fontSize: 11, fontWeight: 900, letterSpacing: "0.1em", color: "#34d399", marginBottom: 8, textAlign: "center" }}>
+            {"\uD83D\uDCB0"} READY TO WITHDRAW
+          </div>
+          {game.positionWonPositions.map((won) => (
+            <WonPayoutCard key={won.id} won={won} onClaimed={game.reloadPosition} />
+          ))}
+        </div>
+      )}
+
       <button onClick={onEnter} style={ctaButtonStyle}>
         {"\u2694\uFE0F"} ENTER THE ARENA
       </button>
@@ -230,7 +245,10 @@ function HomeScreen({ address, escrow, onEnter, onLeaderboard, onProfile, onHist
           {"\uD83D\uDC64"} PROFILE
         </button>
         <button onClick={onHistory} style={{ ...ctaButtonStyle, background: "transparent", border: "3px solid #22d3ee", color: "#22d3ee", fontSize: 13, padding: "10px 24px" }}>
-          {"\uD83D\uDCCB"} HISTORY
+          {"\u2694\uFE0F"} BATTLES
+        </button>
+        <button onClick={onStakeHistory} style={{ ...ctaButtonStyle, background: "transparent", border: "3px solid #7c3aed", color: "#a855f7", fontSize: 13, padding: "10px 24px" }}>
+          {"\uD83C\uDFE6"} STAKES
         </button>
         <button onClick={onLeaderboard} style={{ ...ctaButtonStyle, background: "transparent", border: "3px solid #fbbf24", color: "#fbbf24", fontSize: 13, padding: "10px 24px" }}>
           {"\uD83C\uDFC6"} RANKS
@@ -1804,7 +1822,7 @@ function MatchResult({ game, onRematch, onChangePosition, onExit }: { game: Retu
   );
 }
 
-function ProfileScreen({ address, escrow, onBack, onHistory }: { address?: string; escrow: ReturnType<typeof useDreamEscrow>; onBack: () => void; onHistory: () => void }) {
+function ProfileScreen({ address, escrow, onBack, onHistory, onStakeHistory }: { address?: string; escrow: ReturnType<typeof useDreamEscrow>; onBack: () => void; onHistory: () => void; onStakeHistory: () => void }) {
   const [profile, setProfile] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
@@ -1996,9 +2014,12 @@ function ProfileScreen({ address, escrow, onBack, onHistory }: { address?: strin
         </div>
       )}
 
-      <div style={{ display: "flex", gap: 12 }}>
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", justifyContent: "center" }}>
         <button onClick={onHistory} style={{ ...ctaButtonStyle, background: "linear-gradient(135deg, #155e75, #22d3ee)", fontSize: 14, padding: "12px 28px" }}>
-          BATTLE HISTORY
+          {"\u2694\uFE0F"} MARKET \u00B7 BATTLE HISTORY
+        </button>
+        <button onClick={onStakeHistory} style={{ ...ctaButtonStyle, background: "linear-gradient(135deg, #4c1d95, #7c3aed)", fontSize: 14, padding: "12px 28px" }}>
+          {"\uD83C\uDFE6"} EC STAKE HISTORY
         </button>
         <button onClick={onBack} style={{ ...ctaButtonStyle, background: "transparent", border: "2px solid #475569", color: "#94a3b8", fontSize: 14, padding: "12px 28px" }}>
           {"\u2190"} BACK
@@ -2401,6 +2422,96 @@ const globalCSS = `
     50% { opacity: 1; transform: scale(1.2); }
   }
 `;
+
+function StakeHistoryScreen({ address, onBack }: { address?: string; onBack: () => void }) {
+  const [stakes, setStakes] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!address) { setLoading(false); return; }
+    fetch(`/api/position?list=1&address=${encodeURIComponent(address)}`)
+      .then((r) => r.json())
+      .then((d) => { setStakes(d.stakes ?? []); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, [address]);
+
+  const timeAgo = (iso: string) => {
+    const diff = Date.now() - new Date(iso).getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins}m ago`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return `${hours}h ago`;
+    return `${Math.floor(hours / 24)}d ago`;
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", padding: "40px 20px" }}>
+      <h2 style={{ fontSize: 28, fontWeight: 900, letterSpacing: "0.1em", color: "#a855f7", textShadow: "2px 2px 0 #4c1d95", marginBottom: 24 }}>
+        {"\uD83C\uDFE6"} EC STAKE HISTORY
+      </h2>
+      <p style={{ fontSize: 12, color: "#64748b", letterSpacing: "0.1em", marginBottom: 24, textAlign: "center", maxWidth: 420 }}>
+        YOUR ON-CHAIN FINANCIAL POSITIONS — LOST STAKES ARE FORFEITED, WON STAKES CAN BE COLLECTED FROM THE POOL.
+      </p>
+
+      {loading && <div style={{ fontSize: 16, color: "#64748b", letterSpacing: "0.1em" }}>LOADING STAKES...</div>}
+
+      {!loading && stakes.length === 0 && (
+        <div style={{ textAlign: "center", padding: "40px 0" }}>
+          <div style={{ fontSize: 18, color: "#64748b", letterSpacing: "0.1em", marginBottom: 8 }}>NO EC STAKES YET</div>
+          <div style={{ fontSize: 13, color: "#475569", letterSpacing: "0.08em", marginBottom: 24 }}>OPEN A POSITION IN THE ARENA TO START EARNING.</div>
+          <button onClick={onBack} style={ctaButtonStyle}>BACK TO PROFILE</button>
+        </div>
+      )}
+
+      <div style={{ maxWidth: 500, width: "100%" }}>
+        {stakes.map((s) => {
+          const isWon = s.outcome === "WON";
+          const isLost = s.outcome === "LOST";
+          const borderColor = s.status === "ACTIVE" ? "#a855f7" : isWon ? "#10b981" : isLost ? "#ef4444" : "#64748b";
+          return (
+            <div key={s.id} style={{ marginBottom: 10, padding: "12px 16px", borderRadius: 8, border: `1.5px solid ${borderColor}`, background: `${borderColor}08` }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontSize: 16 }}>{s.direction === "UP" ? "\uD83D\uDCC8" : "\uD83D\uDCC9"}</span>
+                  <span style={{ fontSize: 14, fontWeight: 900, color: borderColor, letterSpacing: "0.08em" }}>
+                    {s.direction} \u00D7 {s.amount} tUSDC
+                  </span>
+                  <span style={{
+                    fontSize: 9, fontWeight: 900, letterSpacing: "0.1em", padding: "2px 8px", borderRadius: 4,
+                    border: `1px solid ${borderColor}`, color: borderColor,
+                  }}>
+                    {s.status === "ACTIVE" ? "\u23F3 ACTIVE" : isWon ? "\u2705 WON" : isLost ? "\u274C LOST" : s.status}
+                  </span>
+                </div>
+                {s.createdAt && <span style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.05em" }}>{timeAgo(s.createdAt)}</span>}
+              </div>
+              <div style={{ fontSize: 11, color: "#94a3b8", letterSpacing: "0.05em" }}>
+                {s.market ?? "UNKNOWN"} {s.arenaSymbol ? `\u00B7 ${s.arenaSymbol}` : ""}
+              </div>
+              {s.claimable && (
+                <div style={{ marginTop: 8 }}>
+                  <WonPayoutCard won={{
+                    id: s.id, direction: s.direction, market: s.market ?? "", amount: s.amount,
+                    windowId: s.windowId, escrowAddress: s.escrowAddress, stakeAmountFormatted: s.stakeAmountFormatted, claimable: true,
+                  }} onClaimed={() => {
+                    setStakes((prev) => prev.map((p) => p.id === s.id ? { ...p, claimable: false, stakeAmountFormatted: null } : p));
+                  }} />
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ display: "flex", gap: 12, marginTop: 16 }}>
+        <button onClick={onBack} style={{ ...ctaButtonStyle, background: "transparent", border: "2px solid #475569", color: "#94a3b8", fontSize: 13, padding: "10px 24px" }}>
+          {"\u2190"} BACK TO PROFILE
+        </button>
+      </div>
+    </div>
+  );
+}
 
 const ctaButtonStyle: React.CSSProperties = {
   background: "linear-gradient(135deg, #b45309, #f59e0b)",

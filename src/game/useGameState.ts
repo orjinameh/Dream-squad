@@ -38,6 +38,7 @@ export interface GameActions {
   goToLeaderboard: () => void;
   goToProfile: () => void;
   goToMatchHistory: () => void;
+  goToStakeHistory: () => void;
   goToMatchDetail: (matchId: string) => void;
   selectMarket: (market: TradeMarket) => void;
   selectChar: (char: CharacterDef) => void;
@@ -825,6 +826,12 @@ export function useGameState(): GameHook {
     setRivalChar(rival);
     setRivalName(rn);
 
+    // Flows that reach MATCH_TYPE without passing through character selection
+    // (e.g. POSITION -> MATCH_TYPE -> BOT MATCH) leave `playerChar` unset. Give
+    // it a default so every arena render (intro/round/result) has a character —
+    // previously the null `playerChar!` crashed the HUD with a client error.
+    if (!playerChar) setPlayerChar(CHARACTERS[0]);
+
     setPlayerScore(0); setRivalScore(0);
     setPlayerStreak(0); setRivalStreak(0);
     setRoundHistory([]); setRoundResult(null);
@@ -876,7 +883,6 @@ export function useGameState(): GameHook {
       }, ROUND_TRANSITION_DELAY);
     }, MATCH_INTRO_DURATION);
   }, [playerChar, mode, marketSymbol, scheduleTimer, address, mp.actions, positionId]);
-
   // Advance from the general stake gate into the fight (bot path only — PvP
   // advances via the server round-open once both players READY UP).
   const startDuel = useCallback(() => {
@@ -960,6 +966,7 @@ export function useGameState(): GameHook {
   const goToLeaderboard = useCallback(() => { window.location.href = "/leaderboard"; }, []);
   const goToProfile = useCallback(() => { setPhase("PROFILE"); }, []);
   const goToMatchHistory = useCallback(() => { setPhase("MATCH_HISTORY"); }, []);
+  const goToStakeHistory = useCallback(() => { setPhase("STAKE_HISTORY"); }, []);
   const goToMatchDetail = useCallback((matchId: string) => { setSelectedMatchId(matchId); setPhase("MATCH_DETAIL"); }, []);
   const selectMarket = useCallback((m: TradeMarket) => { setMarketSymbol(m.symbol); setMode(DEFAULT_MODE); setPhase("POSITION"); }, []);
   const selectChar = useCallback((c: CharacterDef) => { setPlayerChar(c); setPhase("MATCH_TYPE"); }, []);
@@ -1101,7 +1108,7 @@ export function useGameState(): GameHook {
     hasActivePosition: Boolean(positionWindowId && positionDirection),
     actions: {
       goToHome, goToMarketSelect, goToCharSelect, goToLeaderboard,
-      goToProfile, goToMatchHistory, goToMatchDetail,
+      goToProfile, goToMatchHistory, goToStakeHistory, goToMatchDetail,
       selectMarket, selectChar, confirmDuel, selectPrediction, setMatchPrediction, selectDifficulty, selectAmount, makePrediction, rematch,
       joinMatchmaking, startPvPMatch, setReady, startDuel, cancelMatchmaking, fightBotInstead,
       goToPosition, goToMatchType, openPosition, changePosition,
