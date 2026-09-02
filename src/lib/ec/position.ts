@@ -116,8 +116,25 @@ export async function resolvePositionOutcome(position: {
  * result → implements it on-chain via settleWindow + pays/collects.
  * Returns the count of positions newly settled.
  */
-export async function reconcilePositions({ inWindow = true } = {}): Promise<number> {
+export interface ReconcileDebugEntry {
+  id: string;
+  market: string;
+  arena: string | null;
+  onchain: string | null;
+  outcome: string | null;
+  win: boolean | null;
+  settledAt: string | null;
+  error: string | null;
+}
+
+/** Populated by reconcilePositions({debug:true}); read by the reconcile route. */
+export const reconcileDebug: ReconcileDebugEntry[] = [];
+
+export async function reconcilePositions(
+  { inWindow = true, debug = false } = {},
+): Promise<number> {
   await connectToDatabase();
+  reconcileDebug.length = 0;
   const query: Record<string, unknown> = { status: "ACTIVE" };
   if (inWindow) query["windowCloseAt"] = { $lte: new Date() };
 
@@ -125,10 +142,23 @@ export async function reconcilePositions({ inWindow = true } = {}): Promise<numb
   let settled = 0;
 
   for (const pos of active) {
+    const entry: ReconcileDebugEntry = {
+      id: String(pos._id),
+      market: `${(pos as any).market ?? "?"}-${(pos as any).direction ?? "?"}`,
+      arena: (pos as any).arena?.symbol ?? null,
+      onchain: null,
+      outcome: null,
+      win: null,
+      settledAt: null,
+      error: null,
+    };
     try {
-      if (!pos.windowId) continue;
+      if (!pos.windowId) { entry.error = "no windowId"; continue; }
       // If already settled on-chain, just mark it.
       const onchain = await positionInfo(pos.windowId as `0x${string}`).catch(() => null);
+      entry.onchain = onchain
+        ? `open=${onchain.open} settled=${onchain.settled} won=${Number(onchain.won)}`
+        : "null(readFailed)";
       if (onchain?.settled) {
         await EcPosition.updateOne(
           { _id: pos._id },
@@ -140,19 +170,24 @@ export async function reconcilePositions({ inWindow = true } = {}): Promise<numb
           },
         );
         settled += 1;
+        entry.outcome = "already-settled-onchain";
+        entry.settledAt = new Date().toISOString();
         continue;
       }
       // A doc that was never funded on-chain (browser stake failed) is a phantom.
       // There's nothing to settle or collect — drop it so it never blocks.
       if (onchain && !onchain.open) {
         await EcPosition.deleteOne({ _id: pos._id });
+        entry.outcome = "phantom-deleted";
         continue;
       }
       // Resolve the real outcome and implement it on-chain.
       const won = await resolvePositionOutcome(pos);
+      entry.outcome = won === null ? "readArenaSettlement -> null (not resolved?)" : String(won);
       if (won === null) continue;
       const win = won as boolean;
-      await settleWindowOnchain(pos.windowId as `0x${string}`, win);
+      const tx = await settleWindowOnchain(pos.windowId as `0x${string}`, win);
+      entry.settledAt = tx as unknown as string;
       if (!win) {
         await collectLostOnchain(pos.windowId as `0x${string}`).catch(() => {});
       }
@@ -165,9 +200,13 @@ export async function reconcilePositions({ inWindow = true } = {}): Promise<numb
           settledOnchain: true,
         },
       );
+      entry.win = win;
       settled += 1;
     } catch (err) {
       console.error(`[position] reconcile failed for ${pos._id}`, err);
+      entry.error = err instanceof Error ? `${err.message.slice(0, 200)}` : String(err);
+    } finally {
+      if (debug) reconcileDebug.push(entry);
     }
   }
   return settled;
