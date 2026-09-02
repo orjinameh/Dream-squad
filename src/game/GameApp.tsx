@@ -23,7 +23,7 @@ export default function GameApp() {
   const { isConnected, address } = useAccount();
   const mm = useMatchmaking(address as `0x${string}` | undefined);
   const dreamDex = useDreamDEX(g.marketSymbol);
-  const escrow = useDreamEscrow(g.positionWindowId);
+  const escrow = useDreamEscrow(g.positionWindowId, (g.positionEscrowAddress as `0x${string}` | null | undefined) ?? undefined);
   const startedMatchRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -328,7 +328,7 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
   escrow: ReturnType<typeof useDreamEscrow>;
   onBack: () => void;
   onNext: () => void;
-  onOpenPosition: (opts: { direction: "UP" | "DOWN"; market: string; amount: number; positionId: string; windowId: string; stakeTxHash: string | null }) => void;
+  onOpenPosition: (opts: { direction: "UP" | "DOWN"; market: string; amount: number; positionId: string; windowId: string; stakeTxHash: string | null; escrowAddress?: string | null; entryPrice?: string | null }) => void;
 }) {
   const { address } = useAccount();
   const asset = (TRADE_MARKETS.find((m) => m.symbol === game.marketSymbol)?.asset) ?? "BTC";
@@ -337,6 +337,7 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [faucetBusy, setFaucetBusy] = useState(false);
+  const [withdrawBusy, setWithdrawBusy] = useState(false);
   const presets = [1, 5, 10, 25, 50];
 
   // A position is already active — show it and let the player proceed to
@@ -367,7 +368,8 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       const amountRaw = parseUnits(String(amount), EC_COLLATERAL_DECIMALS);
-      const stakeTxHash = (await escrow.approveAndStake(data.windowId, amountRaw)) ?? null;
+      const entryPrice = typeof data.entryPrice === "string" && data.entryPrice ? BigInt(data.entryPrice) : undefined;
+      const stakeTxHash = (await escrow.approveAndStake(data.windowId, amountRaw, entryPrice)) ?? null;
       if (stakeTxHash && data.position?._id) {
         fetch("/api/position", {
           method: "PATCH",
@@ -376,13 +378,30 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
         }).catch(() => { /* recording is best-effort */ });
       }
       escrow.refetch();
-      onOpenPosition({ direction, market: asset, amount, positionId: data.position?._id ?? data.positionId, windowId: data.windowId, stakeTxHash });
+      onOpenPosition({ direction, market: asset, amount, positionId: data.position?._id ?? data.positionId, windowId: data.windowId, stakeTxHash, escrowAddress: data.escrowAddress ?? data.position?.escrowAddress ?? null, entryPrice: data.entryPrice ?? null });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to open position");
     } finally {
       setBusy(false);
     }
   };
+
+  const handleWithdraw = async () => {
+    if (!escrow.windowId || !escrow.address) { setError("Connect your wallet first"); return; }
+    setWithdrawBusy(true); setError(null);
+    try {
+      await escrow.withdraw();
+      escrow.refetch();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Withdraw failed");
+    } finally {
+      setWithdrawBusy(false);
+    }
+  };
+
+  // On-chain settlement state of the attached position (0 pending / 1 won / 2 lost).
+  const settled = Boolean(escrow.settled);
+  const wonFlag = escrow.won != null ? Number(String(escrow.won)) : 0;
 
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "40px 20px" }}>
@@ -395,8 +414,9 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
         The financial layer: stake tUSDC UP/DOWN on {asset} for the ~15 min Event-Contract window.
       </p>
       <p style={{ fontSize: 11, color: "#475569", marginBottom: 28, textAlign: "center", maxWidth: 420, lineHeight: 1.6 }}>
-        Your balance is FIXED for the whole window. It settles ONCE on-chain when the EC pays:
-        win {"\u2192"} stake back in full, loss {"\u2192"} forfeited. Combats are bragging/stats only.
+        Like a real dreamDEX Event Contract: you buy your call at the market's implied odds.
+        Win {"\u2192"} the fixed $1.00-per-token payout (stake + DEX profit). Loss {"\u2192"} stake
+        forfeited. Combats are bragging/stats only.
       </p>
 
       <div style={{ width: "100%", maxWidth: 440, marginBottom: 20 }}>
@@ -458,6 +478,53 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
             You already hold a position: {"\uD83D\uDCC8"} {activeDirection} {"\u00D7"} {activeAmount} tUSDC.
             {"\n"}To switch UP {"\u2194"} DOWN, open a new position below (a fresh one for this window). The old one settles on its own.
           </div>
+        ) : null}
+
+        {escrow.windowId && settled ? (
+          wonFlag === 1 ? (
+            <div style={{ marginBottom: 12, padding: "12px 14px", borderRadius: 8, border: "1px solid #10b981", background: "rgba(16,185,129,0.1)" }}>
+              <div style={{ fontSize: 13, fontWeight: 900, letterSpacing: "0.08em", color: "#34d399", marginBottom: 6 }}>
+                {"\uD83C\uDFC6"} SETTLED — YOU WON
+              </div>
+              <div style={{ fontSize: 12, color: "#a7f3d0", marginBottom: 2 }}>
+                You beat the market. DEX payout is ready in the escrow.
+              </div>
+              {(() => {
+                const stakeRaw = escrow.onchain?.balance;
+                const price = escrow.entryPrice;
+                if (stakeRaw != null && price != null && price > 0n && price <= 1_000_000n) {
+                  const payoutNum = (Number(stakeRaw) * 1_000_000) / Number(price);
+                  const profitNum = payoutNum - Number(stakeRaw);
+                  return (
+                    <div style={{ fontSize: 12, color: "#a7f3d0", marginBottom: 10 }}>
+                      Payout {"\u2248"} {(payoutNum / 1e6).toFixed(2)} tUSDC (stake back + {"\u2248"}{(profitNum / 1e6).toFixed(2)} profit)
+                    </div>
+                  );
+                }
+                return (
+                  <div style={{ fontSize: 12, color: "#a7f3d0", marginBottom: 10 }}>
+                    {escrow.stakeAmountFormatted ?? "Your"} tUSDC is in the escrow, ready to collect.
+                  </div>
+                );
+              })()}
+              <button onClick={handleWithdraw} disabled={withdrawBusy} style={{
+                width: "100%", padding: "12px 0", borderRadius: 6, cursor: "pointer", fontWeight: 800, fontSize: 14, fontFamily: "'Courier New', monospace",
+                background: "linear-gradient(135deg, #059669, #10b981)", border: "none", color: "#023020", letterSpacing: "0.08em", opacity: withdrawBusy ? 0.6 : 1,
+              }}>
+                {withdrawBusy ? "WITHDRAWING..." : `\u2192 WITHDRAW ${escrow.stakeAmountFormatted ?? ""} + PROFIT tUSDC`}
+              </button>
+            </div>
+          ) : wonFlag === 2 ? (
+            <div style={{ marginBottom: 12, padding: "12px 14px", borderRadius: 8, border: "1px solid #ef4444", background: "rgba(239,68,68,0.08)" }}>
+              <div style={{ fontSize: 13, fontWeight: 900, letterSpacing: "0.08em", color: "#f87171" }}>
+                {"\u2716"} SETTLED — LOST (stake forfeited to house)
+              </div>
+            </div>
+          ) : (
+            <div style={{ marginBottom: 12, padding: "12px 14px", borderRadius: 8, border: "1px solid #64748b", background: "rgba(100,116,139,0.08)" }}>
+              <div style={{ fontSize: 12, color: "#94a3b8" }}>Settled. Pending outcome.</div>
+            </div>
+          )
         ) : null}
 
         <button onClick={handleStake} disabled={busy || !escrow.address} style={{

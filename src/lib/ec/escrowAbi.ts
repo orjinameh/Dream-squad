@@ -86,6 +86,11 @@ export const DREAMDUEL_ESCROW_ABI = [
             "internalType": "uint256"
           },
           {
+            "name": "entryPrice",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
             "name": "windowOpen",
             "type": "uint64",
             "internalType": "uint64"
@@ -133,6 +138,11 @@ export const DREAMDUEL_ESCROW_ABI = [
       },
       {
         "name": "balance",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "entryPrice",
         "type": "uint256",
         "internalType": "uint256"
       },
@@ -217,6 +227,24 @@ export const DREAMDUEL_ESCROW_ABI = [
         "type": "bytes32",
         "internalType": "bytes32"
       },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "entryPrice",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "topUpProfitPool",
+    "inputs": [
       {
         "name": "amount",
         "type": "uint256",

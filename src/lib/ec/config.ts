@@ -66,7 +66,17 @@ export const EC_LOT = 1;
  * DEPLOYED (v2 window-keyed) via scripts/deploy-escrow.ts — chain 50312, tx
  * 0x0641...8f. Verified: admin, collateral (tUSDC), windowLength (900).
  */
-export const ESCROW_ADDRESS = "0x1debf7cc74b77734fdbef8c18bb8915fc474eb3f" as `0x${string}`;
+export const ESCROW_ADDRESS = "0x63159a329934c42e44b4b9bd20386467dec4b793" as `0x${string}`;
+
+/**
+ * Prior escrow deployments. Positions created before a redeploy carry no
+ * `escrowAddress`; the app falls back through these so a WON stake on a legacy
+ * contract stays withdrawable. Order newest-first by age. v2 holds the user's
+ * 09-01 settled WON position (windowId 0x4d835ab7…).
+ */
+export const ESCROW_LEGACY_BY_AGE: `0x${string}`[] = [
+  "0x1debf7cc74b77734fdbef8c18bb8915fc474eb3f", // v2 — window-keyed, flat stake return
+];
 
 /** Seconds a player must wait before self-refunding a stuck match. */
 export const ESCROW_REFUND_DELAY = 900;

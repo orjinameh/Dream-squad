@@ -57,17 +57,18 @@ const TUSDC_ABI = [
 ] as const;
 
 /**
- * Client (browser) interface to the deployed v2 DreamDuel escrow for an EC
- * POSITION (a single tUSDC stake for a 15-minute window). The player's own
- * wallet approves tUSDC and calls `stake(windowId, amount)` — money only moves
- * when their wallet signs. On win they call `withdraw(windowId)` to collect in
- * full. Everything shown is read on-chain via `position(windowId)`, never
- * simulated. Keyed by windowId, NOT matchId — combat matches are stats/rank
- * only and ride the plan.
+ * Client (browser) interface to the deployed DreamDuel escrow for an EC POSITION
+ * (a single tUSDC stake for a 15-minute window). The player's own wallet
+ * approves tUSDC and calls `stake(windowId, amount, entryPrice)` — money only
+ * moves when their wallet signs. On win they call `withdraw(windowId)` to
+ * collect the DEX payout (stake / entryPrice). Everything shown is read on-chain
+ * via `position(windowId)`, never simulated. Keyed by windowId, NOT matchId —
+ * combat matches are stats/rank only and ride the position.
  */
-export function useDreamEscrow(windowId?: string | null) {
+export function useDreamEscrow(windowId?: string | null, escrowAddress: `0x${string}` = ESCROW_ADDRESS) {
   const { address } = useAccount();
   const key = (windowId ?? undefined) as Hash | undefined;
+  const escrow = escrowAddress ?? ESCROW_ADDRESS;
 
   const usdc = useReadContract({
     abi: TUSDC_ABI,
@@ -81,13 +82,13 @@ export function useDreamEscrow(windowId?: string | null) {
     abi: TUSDC_ABI,
     address: TUSDC_ADDRESS,
     functionName: "allowance",
-    args: address && key ? [address, ESCROW_ADDRESS] : undefined,
+    args: address && key ? [address, escrow] : undefined,
     chainId: EC_CHAIN.id,
   });
 
   const pos = useReadContract({
     abi: DREAMDUEL_ESCROW_ABI,
-    address: ESCROW_ADDRESS,
+    address: escrow,
     functionName: "position",
     args: key ? [key] : undefined,
     chainId: EC_CHAIN.id,
@@ -97,6 +98,7 @@ export function useDreamEscrow(windowId?: string | null) {
     | {
         owner: `0x${string}`;
         balance: bigint;
+        entryPrice: bigint;
         windowOpen: bigint;
         windowClose: bigint;
         won: bigint; // 0 pending / 1 won / 2 lost
@@ -134,9 +136,10 @@ export function useDreamEscrow(windowId?: string | null) {
   // Approve the escrow to spend the stake, then open/restake the position.
   // `windowId` is the position the player just opened (returned by POST
   // /api/position) — the hook's own key is only set AFTER onOpenPosition runs,
-  // so callers must pass the explicit windowId here.
+  // so callers must pass the explicit windowId here. `entryPrice` is the player's
+  // side entry price scaled 1e6 (server-computed from the live DEX YES price).
   const approveAndStake = useCallback(
-    async (windowId: Hash | string | null | undefined, amountRaw: bigint) => {
+    async (windowId: Hash | string | null | undefined, amountRaw: bigint, entryPrice?: bigint) => {
       const wid = (windowId ?? key) as Hash | undefined;
       if (!wid || !address) throw new Error("Wallet not connected");
       const currentAllowance = allowance.data as bigint | undefined;
@@ -145,7 +148,7 @@ export function useDreamEscrow(windowId?: string | null) {
           abi: TUSDC_ABI,
           address: TUSDC_ADDRESS,
           functionName: "approve",
-          args: [ESCROW_ADDRESS, amountRaw],
+          args: [escrow, amountRaw],
           chainId: EC_CHAIN.id,
         });
         setLastHash(approveHash as `0x${string}`);
@@ -153,24 +156,24 @@ export function useDreamEscrow(windowId?: string | null) {
       }
       const stakeHash = await writeWithTimeout({
         abi: DREAMDUEL_ESCROW_ABI,
-        address: ESCROW_ADDRESS,
+        address: escrow,
         functionName: "stake",
-        args: [wid, amountRaw],
+        args: [wid, amountRaw, entryPrice ? (entryPrice as bigint) : 500_000n],
         chainId: EC_CHAIN.id,
       });
       setLastHash(stakeHash as `0x${string}`);
       await waitForReceipt(stakeHash as `0x${string}`);
       return stakeHash as `0x${string}`;
     },
-    [key, address, allowance.data, writeWithTimeout],
+    [key, address, allowance.data, escrow, writeWithTimeout],
   );
 
-  // Collect a WON position (stake returned in full).
+  // Collect a WON position (DEX payout = stake / entryPrice).
   const withdraw = useCallback(async () => {
     if (!key) throw new Error("No position");
     const hash = await writeWithTimeout({
       abi: DREAMDUEL_ESCROW_ABI,
-      address: ESCROW_ADDRESS,
+      address: escrow,
       functionName: "withdraw",
       args: [key],
       chainId: EC_CHAIN.id,
@@ -178,7 +181,7 @@ export function useDreamEscrow(windowId?: string | null) {
     setLastHash(hash as `0x${string}`);
     await waitForReceipt(hash as `0x${string}`);
     return hash as `0x${string}`;
-  }, [key, writeWithTimeout]);
+  }, [key, escrow, writeWithTimeout]);
 
   const getFaucet = useCallback(
     async (amountRaw: bigint) => {
@@ -199,6 +202,7 @@ export function useDreamEscrow(windowId?: string | null) {
 
   return {
     windowId: key,
+    escrowAddress: escrow,
     address,
     usdcBalance: usdc.data as bigint | undefined,
     usdcBalanceFormatted: usdc.data != null ? formatUnits(usdc.data as bigint, EC_COLLATERAL_DECIMALS) : null,
@@ -209,6 +213,7 @@ export function useDreamEscrow(windowId?: string | null) {
     hasStaked,
     won: raw?.won, // 0 pending / 1 won / 2 lost
     settled: raw?.settled,
+    entryPrice: raw?.entryPrice, // scaled 1e6 (UP = YES price, DOWN = NO price)
     stakeAmountFormatted: raw?.balance != null && raw.balance > 0n ? formatUnits(raw.balance, EC_COLLATERAL_DECIMALS) : null,
     approveAndStake,
     withdraw,

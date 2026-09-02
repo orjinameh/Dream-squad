@@ -3,8 +3,47 @@ import { EcPosition } from "@/db/models/EcPosition";
 import { findArenaFloor, readArenaPrice, readArenaSettlement } from "./executor";
 import { positionWindowId } from "./matchId";
 import { positionInfo, settleWindowOnchain, collectLostOnchain, positionOpen } from "./escrow";
+import { ESCROW_ADDRESS, ESCROW_LEGACY_BY_AGE } from "./config";
 
 const POSITION_WINDOW_MS = 15 * 60 * 1000; // ~15 minute DreamDEX window
+
+/** Entry-price scale shared with the v3 escrow (1e6 = $1.00). */
+export const ENTRY_PRICE_SCALE = 1_000_000n;
+
+/**
+ * Find the escrow contract that actually holds a position's stake. Docs created
+ * after a redeploy carry their exact `escrowAddress`; for legacy docs (no field)
+ * we probe the deployment history for the contract whose slot is open/settled so
+ * a settled WON stake on an old escrow stays reachable for withdraw.
+ */
+export async function resolvePositionEscrow(
+  windowId: string,
+  pos: { escrowAddress?: string },
+): Promise<`0x${string}`> {
+  const seen = new Set<string>();
+  const candidates = [pos.escrowAddress, ESCROW_ADDRESS, ...ESCROW_LEGACY_BY_AGE]
+    .filter((a): a is string => !!a && !seen.has(a.toLowerCase()) && (seen.add(a.toLowerCase()), true));
+  for (const addr of candidates) {
+    try {
+      const p = await positionInfo(windowId as `0x${string}`, addr as `0x${string}`);
+      if (p.open || p.settled) return addr as `0x${string}`;
+    } catch {
+      /* try the next deployment */
+    }
+  }
+  return candidates[0] as `0x${string}` ?? ESCROW_ADDRESS;
+}
+
+/**
+ * The player's side entry price (0..1) for a direction: UP buys the YES token,
+ * DOWN buys the NO token (no = 1 - yes on the DEX). Scaled to 1e6 for the
+ * escrow's fixed $1.00-per-token payout math.
+ */
+function sideEntryPriceScaled(yesPrice: number, direction: "UP" | "DOWN"): bigint {
+  const p = direction === "UP" ? yesPrice : Number((1 - yesPrice).toFixed(6));
+  const clamped = Math.min(Math.max(p, 0.01), 1);
+  return BigInt(Math.round(clamped * 1_000_000));
+}
 
 export interface OpenPositionInput {
   address: string;
@@ -43,7 +82,8 @@ export async function openPosition(input: OpenPositionInput) {
     if (!pos.windowId) continue;
     // On a read error, assume it's a real stake (never clear a possibly-funded
     // position) — safe direction.
-    const open = await positionOpen(pos.windowId as `0x${string}`).catch(() => true);
+    const escrow = await resolvePositionEscrow(pos.windowId as string, pos);
+    const open = await positionOpen(pos.windowId as `0x${string}`, escrow).catch(() => true);
     if (open) {
       throw new PositionError(409, "you already have an active EC position. Settle it or switch direction by opening a new one.");
     }
@@ -58,6 +98,7 @@ export async function openPosition(input: OpenPositionInput) {
     throw new PositionError(503, "no live Event Contract window right now — try again in a moment");
   }
   const openPrice = await readArenaPrice(arena).then((q) => (q.yesPrice && q.yesPrice > 0 ? q.yesPrice : 0)).catch(() => 0);
+  const entryPrice = openPrice > 0 ? sideEntryPriceScaled(openPrice, input.direction) : ENTRY_PRICE_SCALE / 2n;
 
   const now = new Date();
   const windowOpen = Math.floor(now.getTime() / 1000);
@@ -78,6 +119,8 @@ export async function openPosition(input: OpenPositionInput) {
     amount: input.amount,
     arena,
     arenaOpen: openPrice || undefined,
+    entryPrice: entryPrice.toString(),
+    escrowAddress: ESCROW_ADDRESS,
     status: "ACTIVE",
     windowId: windowId as unknown as string,
     windowOpenAt: now,
@@ -87,7 +130,7 @@ export async function openPosition(input: OpenPositionInput) {
     createdAt: now,
   });
 
-  return { position: doc.toObject(), windowId: windowId as unknown as string };
+  return { position: doc.toObject(), windowId: windowId as unknown as string, escrow: ESCROW_ADDRESS, entryPrice };
 }
 
 /**
@@ -154,10 +197,11 @@ export async function reconcilePositions(
     };
     try {
       if (!pos.windowId) { entry.error = "no windowId"; continue; }
+      const escrow = await resolvePositionEscrow(pos.windowId as string, pos);
       // If already settled on-chain, just mark it.
-      const onchain = await positionInfo(pos.windowId as `0x${string}`).catch(() => null);
+      const onchain = await positionInfo(pos.windowId as `0x${string}`, escrow).catch(() => null);
       entry.onchain = onchain
-        ? `open=${onchain.open} settled=${onchain.settled} won=${Number(onchain.won)}`
+        ? `open=${onchain.open} settled=${onchain.settled} won=${Number(onchain.won)} escrow=${escrow}`
         : "null(readFailed)";
       if (onchain?.settled) {
         await EcPosition.updateOne(
@@ -186,10 +230,10 @@ export async function reconcilePositions(
       entry.outcome = won === null ? "readArenaSettlement -> null (not resolved?)" : String(won);
       if (won === null) continue;
       const win = won as boolean;
-      const tx = await settleWindowOnchain(pos.windowId as `0x${string}`, win);
+      const tx = await settleWindowOnchain(pos.windowId as `0x${string}`, win, escrow);
       entry.settledAt = tx as unknown as string;
       if (!win) {
-        await collectLostOnchain(pos.windowId as `0x${string}`).catch(() => {});
+        await collectLostOnchain(pos.windowId as `0x${string}`, escrow).catch(() => {});
       }
       await EcPosition.updateOne(
         { _id: pos._id },

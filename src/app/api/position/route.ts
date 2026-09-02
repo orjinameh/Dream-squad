@@ -1,7 +1,7 @@
 import { connectToDatabase } from "@/db/connect";
 import { normalizeAddress } from "@/lib/addresses";
 import { jsonError } from "@/lib/utils";
-import { findActivePosition, openPosition, reconcilePositions, PositionError } from "@/lib/ec/position";
+import { findActivePosition, openPosition, reconcilePositions, resolvePositionEscrow, PositionError } from "@/lib/ec/position";
 import { positionInfo } from "@/lib/ec/escrow";
 import { EcPosition } from "@/db/models/EcPosition";
 import { z } from "zod";
@@ -27,7 +27,8 @@ function jsonSafe(value: unknown): unknown {
   return JSON.parse(JSON.stringify(value, (_key, v) => (typeof v === "bigint" ? v.toString() : v)));
 }
 
-/** GET /api/position?address=0x… — the wallet's active EC position. */
+/** GET /api/position?address=0x… — the wallet's position: the ACTIVE one if any,
+ *  else the latest (settled) one so a WON stake stays reachable for withdraw. */
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const raw = url.searchParams.get("address") ?? "";
@@ -35,19 +36,26 @@ export async function GET(req: Request) {
   const address = normalizeAddress(raw);
   try {
     await connectToDatabase();
-    const pos = await findActivePosition(address.toLowerCase());
+    const lower = address.toLowerCase();
+    const pos =
+      (await findActivePosition(lower)) ??
+      (await EcPosition.findOne({ address: lower }).sort({ createdAt: -1 }).lean());
     if (!pos) return Response.json({ position: null });
 
-    // Merge live on-chain stake state for the position's windowId.
+    // Merge live on-chain stake state for the position's windowId (on whichever
+    // escrow deployment actually holds it — legacy positions may predate v3).
     let onchain = null;
+    let escrowAddress = ESCROW_ADDRESS;
     if (pos.windowId) {
-      const info = await positionInfo(pos.windowId as `0x${string}`).catch(() => null);
+      escrowAddress = await resolvePositionEscrow(pos.windowId as string, pos);
+      const info = await positionInfo(pos.windowId as `0x${string}`, escrowAddress).catch(() => null);
       if (info) {
         onchain = {
           open: info.open,
           settled: info.settled,
           won: info.won, // 0 pending / 1 won / 2 lost
           balanceRaw: info.balance.toString(),
+          entryPrice: info.entryPrice.toString(),
           balance: formatUnits(info.balance, EC_COLLATERAL_DECIMALS),
           windowOpen: Number(info.windowOpen),
           windowClose: Number(info.windowClose),
@@ -63,10 +71,11 @@ export async function GET(req: Request) {
         amount: pos.amount,
         status: pos.status,
         arenaOpen: pos.arenaOpen ?? null,
+        entryPrice: pos.entryPrice ? pos.entryPrice.toString() : null,
         windowOpenAt: pos.windowOpenAt?.toISOString() ?? null,
         windowCloseAt: pos.windowCloseAt?.toISOString() ?? null,
         matchCount: pos.matchCount,
-        escrowAddress: ESCROW_ADDRESS,
+        escrowAddress,
         windowId: pos.windowId ?? null,
         stakeTxHash: pos.stakeTxHash ?? null,
         arena: pos.arena
@@ -107,7 +116,12 @@ export async function POST(req: Request) {
       amount: input.amount,
     });
     return Response.json(
-      { position: jsonSafe(result.position), windowId: result.windowId },
+      {
+        position: jsonSafe(result.position),
+        windowId: result.windowId,
+        escrowAddress: result.escrow,
+        entryPrice: result.entryPrice.toString(),
+      },
       { status: 201 },
     );
   } catch (err) {

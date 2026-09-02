@@ -14,9 +14,9 @@ export type PositionStatus = (typeof POSITION_STATUS)[number];
  *   - The stake IS the position; its balance does NOT change during the window.
  *   - While active it is referenced by multiple 70-second combat MATCHES (stats/
  *     rank only). Matches never touch this position's money.
- *   - Settles ONCE when the EC window resolves: win → stake returned in full,
- *     loss → stake forfeited (admin collects). Switching UP↔DOWN requires a new
- *     position.
+ *   - Settles ONCE when the EC window resolves: win → DEX payout (stake /
+ *     entryPrice, i.e. the fixed $1.00 per token), loss → stake forfeited (admin
+ *     collects). Switching UP↔DOWN requires a new position.
  *   - The on-chain escrow slot (windowId) holds the real tUSDC.
  */
 export interface EcPositionDoc {
@@ -25,9 +25,15 @@ export interface EcPositionDoc {
   direction: "UP" | "DOWN";
   market: string; // asset e.g. "BTC" | "ETH"
   amount: number; // stake $ (human units)
-  // Pinned EC arena floor + window-open YES anchor (stable across the window)
+  // Pinned EC arena floor + window-open anchors (stable across the window)
   arena?: EcArenaMarket;
   arenaOpen?: number;
+  // The player's side entry price scaled 1e6 (UP = YES price, DOWN = NO price) —
+  // the v3 escrow's fixed $1.00-per-token payout uses this on a win.
+  entryPrice?: string;
+  // The escrow deployment that holds this stake (positions predating a redeploy
+  // have no field; the resolver falls back through ESCROW_LEGACY_BY_AGE).
+  escrowAddress?: string;
   // Lifecycle
   status: PositionStatus;
   windowId?: string; // on-chain escrow slot id (bytes32 hex)
@@ -52,6 +58,8 @@ export const EcPositionSchema = new Schema<EcPositionDoc>(
     amount: { type: Number, required: true },
     arena: { type: Schema.Types.Mixed },
     arenaOpen: { type: Number },
+    entryPrice: { type: String },
+    escrowAddress: { type: String },
     status: { type: String, enum: POSITION_STATUS, default: "ACTIVE" },
     windowId: { type: String },
     stakeTxHash: { type: String },

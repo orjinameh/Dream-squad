@@ -56,7 +56,7 @@ export interface GameActions {
   fightBotInstead: () => void;
   goToPosition: () => void;
   goToMatchType: () => void;
-  openPosition: (opts: { direction: "UP" | "DOWN"; market: string; amount: number; positionId: string; windowId: string; stakeTxHash: string | null }) => void;
+  openPosition: (opts: { direction: "UP" | "DOWN"; market: string; amount: number; positionId: string; windowId: string; stakeTxHash: string | null; escrowAddress?: string | null; entryPrice?: string | null }) => void;
   changePosition: () => void;
 }
 
@@ -127,6 +127,8 @@ export interface GameHook {
   positionAmount: number | null;
   positionMarket: string | null;
   positionStakeTxHash: string | null;
+  positionEscrowAddress: string | null;
+  positionEntryPrice: string | null;
   hasActivePosition: boolean;
   actions: GameActions;
 }
@@ -191,7 +193,50 @@ export function useGameState(): GameHook {
   const [positionMarket, setPositionMarket] = useState<string | null>(null);
   const [positionStakeTxHash, setPositionStakeTxHash] = useState<string | null>(null);
   const [positionId, setPositionId] = useState<string | null>(null);
+  const [positionEscrowAddress, setPositionEscrowAddress] = useState<string | null>(null);
+  const [positionEntryPrice, setPositionEntryPrice] = useState<string | null>(null);
   const hasActivePosition = Boolean(positionWindowId && positionDirection);
+
+  // Load the wallet's EC POSITION (active, else latest settled) so a WON stake
+  // stays reachable across reloads for withdraw. Doesn't clobber a just-opened
+  // position (that is written by openPosition below).
+  useEffect(() => {
+    if (!address) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/position?address=${address}`);
+        if (!res.ok) return;
+        const data = (await res.json()) as {
+          position?: {
+            windowId?: string | null;
+            direction?: "UP" | "DOWN" | null;
+            amount?: number | null;
+            market?: string | null;
+            stakeTxHash?: string | null;
+            status?: string | null;
+            escrowAddress?: string | null;
+            entryPrice?: string | null;
+            onchain?: { settled?: boolean; won?: number | string } | null;
+          } | null;
+        };
+        const p = data.position;
+        if (!p || cancelled || positionWindowId) return;
+        if (p.windowId && p.direction) {
+          setPositionWindowId(p.windowId);
+          setPositionDirection(p.direction);
+          setPositionAmount(p.amount ?? null);
+          setPositionMarket(p.market ?? null);
+          setPositionStakeTxHash(p.stakeTxHash ?? null);
+          setPositionEscrowAddress(p.escrowAddress ?? null);
+          setPositionEntryPrice(p.entryPrice ?? null);
+        }
+      } catch {
+        /* position load is best-effort */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [address, positionWindowId]);
 
   const animFrameRef = useRef<number>(0);
   const phaseTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
@@ -903,17 +948,20 @@ export function useGameState(): GameHook {
   // positionId; we store them so combat matches can reference this position.
   const goToPosition = useCallback(() => { setPhase("POSITION"); }, []);
   const goToMatchType = useCallback(() => { if (!hasActivePosition) return; setPhase("MATCH_TYPE"); }, [hasActivePosition]);
-  const openPosition = useCallback((opts: { direction: "UP" | "DOWN"; market: string; amount: number; positionId: string; windowId: string; stakeTxHash: string | null }) => {
+  const openPosition = useCallback((opts: { direction: "UP" | "DOWN"; market: string; amount: number; positionId: string; windowId: string; stakeTxHash: string | null; escrowAddress?: string | null; entryPrice?: string | null }) => {
     setPositionDirection(opts.direction);
     setPositionAmount(opts.amount);
     setPositionMarket(opts.market);
     setPositionId(opts.positionId);
     setPositionWindowId(opts.windowId);
     setPositionStakeTxHash(opts.stakeTxHash);
+    setPositionEscrowAddress(opts.escrowAddress ?? null);
+    setPositionEntryPrice(opts.entryPrice ?? null);
   }, []);
   const changePosition = useCallback(() => {
     setPositionDirection(null); setPositionAmount(null); setPositionMarket(null);
     setPositionId(null); setPositionWindowId(null); setPositionStakeTxHash(null);
+    setPositionEscrowAddress(null); setPositionEntryPrice(null);
     setPhase("POSITION");
   }, []);
   const selectPrediction = useCallback((pred: PredictionConfig) => { setSelectedPrediction(pred); }, []);
@@ -1022,6 +1070,8 @@ export function useGameState(): GameHook {
     positionAmount,
     positionMarket,
     positionStakeTxHash,
+    positionEscrowAddress,
+    positionEntryPrice,
     hasActivePosition: Boolean(positionWindowId && positionDirection),
     actions: {
       goToHome, goToMarketSelect, goToCharSelect, goToLeaderboard,
