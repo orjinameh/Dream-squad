@@ -30,9 +30,9 @@ const GHOST_PREFIX = "dreamduel_ghost_";
 
 export interface GhostWallet {
   address: `0x${string}`;
-  signStakeRound(args: { matchId: string; round: number; amount: bigint; entryPrice: bigint }): Promise<Hash>;
+  signStakeRound(args: { matchId: string; playerAddress: string; round: number; amount: bigint; entryPrice: bigint }): Promise<Hash>;
   signApproveEscrow(spender: `0x${string}`, amountRaw: bigint): Promise<Hash>;
-  signWithdraw(matchId: string): Promise<Hash>;
+  signWithdraw(matchId: string, playerAddress: string): Promise<Hash>;
   signTransfer(to: `0x${string}`, amountRaw: bigint): Promise<Hash>;
   ghostBalance(): Promise<bigint>;
   /** Remove this match's ghost key from sessionStorage (end of fight). */
@@ -132,12 +132,12 @@ function buildGhost(pk: `0x${string}`, onDestroy: () => void): GhostWallet {
 
   return {
     address: account.address,
-    async signStakeRound({ matchId, round, amount, entryPrice }) {
+    async signStakeRound({ matchId, playerAddress, round, amount, entryPrice }) {
       const hash = await wallet.writeContract({
         abi: DREAMDUEL_ROUND_ESCROW_ABI,
         address: ROUND_ESCROW_ADDRESS,
         functionName: "stakeRound",
-        args: [matchKey(matchId), BigInt(round), amount, entryPrice],
+        args: [matchKey(matchId, playerAddress), BigInt(round), amount, entryPrice],
         account: account,
         chain: EC_CHAIN,
         gas: 3_000_000n,
@@ -158,12 +158,12 @@ function buildGhost(pk: `0x${string}`, onDestroy: () => void): GhostWallet {
       await waitMined(hash);
       return hash;
     },
-    async signWithdraw(matchId) {
+    async signWithdraw(matchId, playerAddress) {
       const hash = await wallet.writeContract({
         abi: DREAMDUEL_ROUND_ESCROW_ABI,
         address: ROUND_ESCROW_ADDRESS,
         functionName: "withdraw",
-        args: [matchKey(matchId)],
+        args: [matchKey(matchId, playerAddress)],
         account: account,
         chain: EC_CHAIN,
         gas: 1_000_000n,

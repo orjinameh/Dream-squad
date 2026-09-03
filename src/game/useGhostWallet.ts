@@ -125,17 +125,17 @@ export function useGhostWallet(matchId: string | null, totalRounds: number, amou
    */
   const stakeRound = useCallback(
     async (round: number, entryPrice: bigint) => {
-      if (!matchId || !ghost) return;
+      if (!matchId || !ghost || !address) return;
       const amountRaw = parseUnits(String(amountPerRound), EC_COLLATERAL_DECIMALS);
-      await ghost.signStakeRound({ matchId, round, amount: amountRaw, entryPrice });
+      await ghost.signStakeRound({ matchId, playerAddress: address, round, amount: amountRaw, entryPrice });
     },
-    [matchId, ghost, amountPerRound],
+    [matchId, ghost, address, amountPerRound],
   );
 
   /** End of match: ghost withdraws winnings and forwards to the primary wallet. */
   const settleAndForward = useCallback(async () => {
     if (!matchId || !ghost || !address) return;
-    await ghost.signWithdraw(matchId);
+    await ghost.signWithdraw(matchId, address);
     const bal = await ghost.ghostBalance();
     if (bal > 0n) {
       await ghost.signTransfer(address, bal);

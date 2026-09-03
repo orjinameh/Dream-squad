@@ -23,8 +23,9 @@ const account = privateKeyToAccount(pk);
 const wallet = createWalletClient({ account, chain: EC_CHAIN, transport: http(EC_RPC_URL) });
 const pc = createPublicClient({ chain: EC_CHAIN, transport: http(EC_RPC_URL) });
 
-function matchKey(id: string) {
-  return keccak256(toHex(id));
+function matchKey(id: string, player?: string) {
+  const p = player ? player.toLowerCase() : "";
+  return keccak256(toHex(`${id}:${p}`));
 }
 
 async function wait(hash: `0x${string}`) {
@@ -45,7 +46,7 @@ async function wait(hash: `0x${string}`) {
 
 async function main() {
   const matchId = `smoke-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
-  const key = matchKey(matchId);
+  const key = matchKey(matchId, account.address);
   const round = 1;
   const amount = parseUnits("5", 6); // 5 tUSDC
   const entry = 500_000n; // 0.50

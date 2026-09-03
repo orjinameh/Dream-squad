@@ -62,8 +62,15 @@ export async function POST(req: NextRequest) {
     if (!match) return jsonError(404, "match not found");
 
     // Guard: only fund the ghost for a match owned by the requesting player.
-    const owner = (match.playerAddress ?? "").toString().toLowerCase();
-    if (owner && owner !== playerAddress.toLowerCase() && owner !== "0x0000000000000000000000000000000000000000") {
+    // Accept player 1 OR player 2 (PvP) as a legitimate owner of this match.
+    const pl = playerAddress.toLowerCase();
+    const p1 = (match.playerAddress ?? "").toString().toLowerCase();
+    const p2 = (match.player2Address ?? "").toString().toLowerCase();
+    const isOwner =
+      (p1 && p1 === pl) ||
+      (p2 && p2 === pl) ||
+      p1 === "0x0000000000000000000000000000000000000000";
+    if (!isOwner) {
       return jsonError(403, "not your match");
     }
 

@@ -214,7 +214,7 @@ export function useDreamEscrow(windowId?: string | null, escrowAddress: `0x${str
 
   const stakeRound = useCallback(
     async (matchId: Hash | string | null | undefined, round: number, amountRaw: bigint, entryPrice?: bigint) => {
-      const mid = matchId == null ? undefined : matchKey(String(matchId));
+      const mid = matchId == null ? undefined : matchKey(String(matchId), address);
       if (!mid || !address) throw new Error("Wallet not connected");
       const curAllowance = allowance.data as bigint | undefined;
       if ((curAllowance ?? 0n) < amountRaw) {
@@ -244,7 +244,7 @@ export function useDreamEscrow(windowId?: string | null, escrowAddress: `0x${str
 
   const roundWithdraw = useCallback(
     async (matchId: Hash | string | null | undefined) => {
-      const mid = matchId == null ? undefined : matchKey(String(matchId));
+      const mid = matchId == null ? undefined : matchKey(String(matchId), address);
       if (!mid || !address) throw new Error("No position");
       const hash = await writeWithTimeout({
         abi: DREAMDUEL_ROUND_ESCROW_ABI,
@@ -330,7 +330,7 @@ async function waitForReceipt(hash: `0x${string}`) {
  */
 export function useRoundEscrow(matchId?: string | null) {
   const { address } = useAccount();
-  const key = matchId ? matchKey(matchId) : undefined;
+  const key = matchId && address ? matchKey(matchId, address) : undefined;
   const escrow: `0x${string}` = ROUND_ESCROW_ADDRESS ?? ESCROW_ADDRESS;
 
   const withdrawable = useReadContract({

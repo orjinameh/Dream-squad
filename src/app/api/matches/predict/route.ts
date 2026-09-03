@@ -469,13 +469,17 @@ export async function POST(req: Request): Promise<Response> {
         const { roundRecord, newPlayerScore, newRivalScore, newPlayerHP, newRivalHP, newPlayerStreak, newRivalStreak, matchDecided, winner } = result;
 
         // Per-round on-chain settlement (DreamDuelRoundEscrow): each round is a
-        // separate stake that auto-settles at its close. If the player staked this
-        // (matchId, round) on-chain, the operator settles it now with the real round
-        // outcome (playerCorrect drives won/lost). Guarded + no-throw: a match must
-        // never fail because a round wasn't staked or was already settled.
-        if (roundRecord.playerPrediction) {
-          const onchainMatchId = matchKey(String(match._id));
-          settleRoundOnEscrowGuarded(onchainMatchId, roundRecord.roundNum, roundRecord.playerCorrect, claim.playerAddress).catch(() => {});
+        // separate stake that auto-settles at its close. The round escrow keys by
+        // (matchKey(id, player), round) — PER PLAYER — so bot (player 1) and BOTH
+        // PvP players settle their own stake with their own correctness. Guarded +
+        // no-throw: a match must never fail because a round wasn't staked or was
+        // already settled.
+        const onchainMatchId = matchKey(String(match._id), claim.playerAddress);
+        settleRoundOnEscrowGuarded(onchainMatchId, roundRecord.roundNum, roundRecord.playerCorrect, claim.playerAddress).catch(() => {});
+        // PvP: the rival stakes a per-player key too — settle it against their result.
+        if (claim.player2Address) {
+          const rivalKey = matchKey(String(match._id), claim.player2Address);
+          settleRoundOnEscrowGuarded(rivalKey, roundRecord.roundNum, roundRecord.rivalCorrect, claim.player2Address).catch(() => {});
         }
 
         const nextDeadline = new Date(now.getTime() + ROUND_TIMINGS.ROUND_DURATION_MS + ROUND_TIMINGS.LOCK_MS);
