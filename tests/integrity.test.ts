@@ -29,6 +29,7 @@ import { GET as stateRoute } from "@/app/api/matches/state/route";
 import { GET as activeRoute } from "@/app/api/matches/active/route";
 import { Match } from "@/db/models/Match";
 import { PlayerStats } from "@/db/models/PlayerStats";
+import { EcPosition } from "@/db/models/EcPosition";
 import { normalizeAddress } from "@/lib/addresses";
 
 let mongo: MongoMemoryServer;
@@ -81,6 +82,18 @@ async function createActiveBotMatch(player: string, totalRounds = 3): Promise<st
   return match._id;
 }
 
+async function seedActivePosition(player: string, amount = 10): Promise<string> {
+  const doc = await EcPosition.create({
+    address: normalizeAddress(player).toLowerCase(),
+    direction: "UP",
+    market: "BTC",
+    amount,
+    status: "ACTIVE",
+    windowId: `test-round-${player}-${Date.now()}`,
+  });
+  return doc._id;
+}
+
 describe("Match Integrity — Exploit Tests", () => {
   // 1. Predict resolves atomically — second call returns state (not error)
   it("atomic prediction claim resolves round exactly once", async () => {
@@ -126,6 +139,7 @@ describe("Match Integrity — Exploit Tests", () => {
 
   // 3. Creating second match while one is active
   it("prevents creating a second match while one is active", async () => {
+    await seedActivePosition(PLAYER_A);
     await createActiveBotMatch(PLAYER_A, 3);
 
     const res = await createRoute(jsonPost("/api/matches/create", {

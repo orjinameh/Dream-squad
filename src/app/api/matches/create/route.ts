@@ -57,6 +57,21 @@ export async function POST(req: Request): Promise<Response> {
       return jsonError(409, "your EC position window has ended — open a new position to fight");
     }
 
+    // Enforce one active match per wallet: a player with a live match can't open
+    // a second one until the first resolves. Match either address casing (EIP-55
+    // checksummed or lowercased) — callers historically varied.
+    const checksumAddr = normalizeAddress(input.playerAddress);
+    const activeMatch = await Match.findOne({
+      $or: [
+        { playerAddress: { $in: [address, checksumAddr] } },
+        { player2Address: { $in: [address, checksumAddr] } },
+      ],
+      status: "ACTIVE",
+    }).lean();
+    if (activeMatch) {
+      return jsonError(409, "already in an active match — finish it first");
+    }
+
     const now = new Date();
     const deadline = new Date(now.getTime() + ROUND_TIMINGS.ROUND_DURATION_MS + ROUND_TIMINGS.LOCK_MS);
 

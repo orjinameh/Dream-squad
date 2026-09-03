@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import mongoose from "mongoose";
 
@@ -28,11 +28,24 @@ import { POST as predictRoute } from "@/app/api/matches/predict/route";
 import { GET as stateRoute } from "@/app/api/matches/state/route";
 import { GET as leaderboardRoute } from "@/app/api/leaderboard/route";
 import { Match } from "@/db/models/Match";
+import { EcPosition } from "@/db/models/EcPosition";
 import { normalizeAddress } from "@/lib/addresses";
 import { buildMatchPriceModel } from "@/lib/prices";
 
 let mongo: MongoMemoryServer;
 const PLAYER = "0x9196d7670eea0CB723af11465d4285541a2eA86a";
+
+async function seedActivePosition(player: string, amount = 10): Promise<string> {
+  const doc = await EcPosition.create({
+    address: normalizeAddress(player).toLowerCase(),
+    direction: "UP",
+    market: "BTC",
+    amount,
+    status: "ACTIVE",
+    windowId: `test-round-${player}-${Date.now()}`,
+  });
+  return doc._id;
+}
 
 beforeAll(async () => {
   mongo = await MongoMemoryServer.create();
@@ -58,7 +71,13 @@ function jsonGet(url: string): Request {
 }
 
 describe("POST /api/matches/create", () => {
+  beforeEach(async () => {
+    await Match.deleteMany({ $or: [{ playerAddress: normalizeAddress(PLAYER).toLowerCase() }, { player2Address: normalizeAddress(PLAYER).toLowerCase() }] });
+    await EcPosition.deleteMany({ address: normalizeAddress(PLAYER).toLowerCase() });
+  });
+
   it("creates a bot match and returns match info", async () => {
+    await seedActivePosition(PLAYER);
     const res = await createRoute(jsonPost("/api/matches/create", {
       playerAddress: PLAYER,
       playerChar: "dreamer",
@@ -75,6 +94,8 @@ describe("POST /api/matches/create", () => {
   });
 
   it("rejects duplicate active matches for same wallet", async () => {
+    await seedActivePosition(PLAYER);
+    // First create succeeds and leaves an active match.
     await createRoute(jsonPost("/api/matches/create", {
       playerAddress: PLAYER,
       playerChar: "dreamer",
@@ -92,6 +113,8 @@ describe("POST /api/matches/create", () => {
       totalRounds: 3,
     }));
     expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toContain("already in an active match");
   });
 });
 

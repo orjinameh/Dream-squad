@@ -87,6 +87,18 @@ export function useDreamEscrow(windowId?: string | null, escrowAddress: `0x${str
     chainId: EC_CHAIN.id,
   });
 
+  // Allowance to the OPERATOR (ESCROW_ADMIN) — the spender the ghost fund's
+  // `transferFrom` draws against. THIS is the honest proof that the player
+  // actually approved the full match pot (a real on-chain event they signed).
+  // Used to gate the POSITION screen's "STAKED" state and the fight advance.
+  const opAllowance = useReadContract({
+    abi: TUSDC_ABI,
+    address: TUSDC_ADDRESS,
+    functionName: "allowance",
+    args: address ? [address, ESCROW_ADMIN] : undefined,
+    chainId: EC_CHAIN.id,
+  });
+
   const pos = useReadContract({
     abi: DREAMDUEL_ESCROW_ABI,
     address: escrow,
@@ -312,6 +324,7 @@ export function useDreamEscrow(windowId?: string | null, escrowAddress: `0x${str
     usdcBalance: usdc.data as bigint | undefined,
     usdcBalanceFormatted: usdc.data != null ? formatUnits(usdc.data as bigint, EC_COLLATERAL_DECIMALS) : null,
     allowance: allowance.data as bigint | undefined,
+    operatorAllowance: opAllowance.data as bigint | undefined,
     onchain: raw,
     isMine,
     isOpen,
@@ -327,10 +340,11 @@ export function useDreamEscrow(windowId?: string | null, escrowAddress: `0x${str
     roundWithdraw,
     roundEscrowAddress: roundEscrow,
     getFaucet,
-    loading: usdc.isLoading || allowance.isLoading || pos.isLoading,
+    loading: usdc.isLoading || allowance.isLoading || opAllowance.isLoading || pos.isLoading,
     refetch: () => {
       usdc.refetch();
       allowance.refetch();
+      opAllowance.refetch();
       pos.refetch();
       legacyPos.refetch();
     },

@@ -416,10 +416,14 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
   const fullPot = amount * rounds;
 
   // Per-round model: an active position = a funded fight entry (the position
-  // record gates fighting and carries amountPerRound). Money itself is handled
-  // by the per-round escrow + ghost at round 1 — there is no v4 window stake to
-  // settle here. `escrow.settled` no longer gates anything (v4 is removed).
-  const hasActive = Boolean(game.positionWindowId && game.positionDirection);
+  // record carries amountPerRound). Money itself is handled by the per-round
+  // escrow + ghost. Being "STAKED" here is HONEST: the player must have a real
+  // on-chain approve covering the full match pot (amount x rounds) to the
+  // operator. A leftover DB record or an auto-loaded position alone is NOT
+  // funded — you can't be STAKED without actually approving on-chain.
+  const fullPotRaw = parseUnits(String(fullPot), EC_COLLATERAL_DECIMALS);
+  const onchainApproved = (escrow.operatorAllowance ?? 0n) >= fullPotRaw;
+  const hasActive = Boolean(game.positionWindowId && game.positionDirection) && onchainApproved;
   const activeDirection = game.positionDirection;
   const activeAmount = game.positionAmount;
 
@@ -599,13 +603,13 @@ function MatchTypeScreen({ game, onBack, onPvP, onBot, onHome }: {
       <h2 style={{ fontSize: 28, fontWeight: 900, letterSpacing: "0.1em", color: "#fbbf24", textShadow: "2px 2px 0 #92400e", marginBottom: 8, textAlign: "center" }}>
         CHOOSE YOUR OPPONENT
       </h2>
-      <p style={{ fontSize: 12, color: "#64748b", letterSpacing: "0.12em", marginBottom: 32 }}>FUNDED UP FRONT \u2014 EVERY ROUND STAKES {game.positionAmount ?? 0} tUSDC AND SETTLES ON-CHAIN</p>
+      <p style={{ fontSize: 12, color: "#64748b", letterSpacing: "0.12em", marginBottom: 32 }}>POT ALLOCATED \u2014 EVERY ROUND STAKES {game.positionAmount ?? 0} tUSDC AND SETTLES ON-CHAIN</p>
 
       <div style={{
         fontSize: 13, color: "#94a3b8", marginBottom: 24, padding: "8px 18px", borderRadius: 6,
         border: "1px solid #7c3aed", background: "rgba(124,58,237,0.06)", maxWidth: 420, textAlign: "center",
       }}>
-        Riding position: {"\uD83D\uDCC8"} {game.positionDirection ?? "UP"} {"\u00D7"} {game.positionAmount ?? 0} tUSDC / ROUND {"\u00D7"} {game.totalRounds} = {(game.positionAmount ?? 0) * (game.totalRounds ?? 7)} tUSDC funded
+        Riding position: {"\uD83D\uDCC8"} {game.positionDirection ?? "UP"} {"\u00D7"} {game.positionAmount ?? 0} tUSDC / ROUND {"\u00D7"} {game.totalRounds} = {(game.positionAmount ?? 0) * (game.totalRounds ?? 7)} tUSDC allocated
       </div>
 
       <div style={{ display: "flex", gap: 20, flexWrap: "wrap", justifyContent: "center" }}>
@@ -1831,7 +1835,7 @@ function MatchResult({ game, onRematch, onChangePosition, onExit }: { game: Retu
           FIGHT STAKE {"\u00B7"} {game.positionDirection ?? "UP"} {"\u00B7"} {game.positionAmount ?? 0} tUSDC / ROUND
         </div>
         <div style={{ fontSize: 22, fontWeight: 900, color: "#fbbf24", letterSpacing: "0.05em" }}>
-          {(game.positionAmount ?? 0) * (game.totalRounds ?? 7)} tUSDC FUNDED
+          {(game.positionAmount ?? 0) * (game.totalRounds ?? 7)} tUSDC ALLOCATED
         </div>
         <div style={{ fontSize: 10, color: "#64748b", marginTop: 4 }}>
           {game.positionAmount ?? 0} tUSDC staked each round and settled on-chain;

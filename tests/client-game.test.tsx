@@ -4,7 +4,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import React from "react";
 import { create as renderer, act } from "react-test-renderer";
 import { useGameState, type GameHook } from "@/game/useGameState";
-import { CHARACTERS } from "@/game/characters";
 import { DEFAULT_TRADE_MARKET } from "@/game/types";
 
 const PLAYER = "0x9196d7670eea0CB723af11465d4285541a2eA86a";
@@ -147,6 +146,28 @@ async function waitFor(pred: (h: GameHook) => boolean, timeoutMs = 60_000, label
   throw new Error(`TIMEOUT waiting for ${label}. Latest phase=${latest?.phase}`);
 }
 
+// Drive the hook from HOME to a live bot ROUND_ACTIVE via the current screen
+// flow: MARKET -> POSITION (stake opens a position) -> MATCH_TYPE -> BOT.
+async function openToRoundActive(pred: "UP" | "DOWN") {
+  act(() => { latest!.actions.selectMarket(DEFAULT_TRADE_MARKET); });
+  await waitFor((h) => h.phase === "POSITION", 3000, "POSITION");
+
+  // POSITION screen: stake up front (open the position record), then unlock
+  // the CHOOSE MATCH TYPE button.
+  act(() => {
+    latest!.actions.openPosition({ direction: pred, market: "BTC", amount: 10, positionId: "pos-1", windowId: "win-1", stakeTxHash: null, entryPrice: "500000" });
+  });
+  await waitFor((h) => h.hasActivePosition === true, 3000, "hasActivePosition");
+  act(() => { latest!.actions.goToMatchType(); });
+  await waitFor((h) => h.phase === "MATCH_TYPE", 3000, "MATCH_TYPE");
+
+  // Lock the pre-match call, then fight the bot (skips CHAR_SELECT — the
+  // match starts straight into the intro/fight).
+  act(() => { latest!.actions.setMatchPrediction(pred); });
+  act(() => { latest!.actions.fightBotInstead(); });
+  await waitFor((h) => h.phase === "ROUND_ACTIVE", 10_000, "first ROUND_ACTIVE");
+}
+
 describe("client bot game full loop", () => {
   beforeEach(() => {
     mockFetch();
@@ -164,13 +185,7 @@ describe("client bot game full loop", () => {
     });
 
     // Full bot flow — pick the call up front (locked), then fight the bot.
-    act(() => { latest!.actions.selectMarket(DEFAULT_TRADE_MARKET); });
-    await waitFor((h) => h.phase === "CHAR_SELECT", 3000, "CHAR_SELECT");
-    act(() => { latest!.actions.selectChar(CHARACTERS[0]); });
-    await waitFor((h) => h.phase === "PREDICTION_SELECT", 3000, "PREDICTION_SELECT");
-    act(() => { latest!.actions.setMatchPrediction("UP"); });
-    act(() => { latest!.actions.fightBotInstead(); });
-    await waitFor((h) => h.phase === "ROUND_ACTIVE", 10_000, "first ROUND_ACTIVE");
+    await openToRoundActive("UP");
 
     // Every round auto-uses the locked pre-match call (no in-match picking).
     await waitFor((h) => h.roundHistory.length >= 1, 30_000, "round 1 resolved");
@@ -189,18 +204,12 @@ describe("client bot game full loop", () => {
     r?.unmount();
   }, 120_000);
 
-  it("PREDICTION IS LOCKED once a round goes live (cannot change mid-round)", async () => {
+  it("seeds the round with the pre-match call, which is flippable per-round", async () => {
     let r: any;
     act(() => { r = renderer(<Probe />); });
-    act(() => { latest!.actions.selectMarket(DEFAULT_TRADE_MARKET); });
-    await waitFor((h) => h.phase === "CHAR_SELECT", 3000, "CHAR_SELECT");
-    act(() => { latest!.actions.selectChar(CHARACTERS[0]); });
-    await waitFor((h) => h.phase === "PREDICTION_SELECT", 3000, "PREDICTION_SELECT");
-    act(() => { latest!.actions.setMatchPrediction("UP"); });
-    act(() => { latest!.actions.fightBotInstead(); });
-    await waitFor((h) => h.phase === "ROUND_ACTIVE", 10_000, "first ROUND_ACTIVE");
+    await openToRoundActive("UP");
 
-    // The pre-match call is seeded into the open round and is locked.
+    // The pre-match call is seeded into the open round for round 1.
     expect(latest!.playerPrediction).toBe("UP");
     expect(latest!.lockedCall).toBe("UP");
 
@@ -208,15 +217,15 @@ describe("client bot game full loop", () => {
     expect(latest!.roundHistory.length).toBe(0);
     expect(latest!.phase).toBe("ROUND_ACTIVE");
 
-    // Attempting to change the call mid-match is ignored — makePrediction is a
-    // no-op once a call is locked for the fight.
+    // Per-round model: the call is flippable while the round is live — flipping
+    // re-submits the new side for THIS round, which resolves with the new call.
     act(() => { latest!.actions.makePrediction("DOWN"); });
-    expect(latest!.playerPrediction).toBe("UP");
-    expect(latest!.lockedCall).toBe("UP");
+    expect(latest!.playerPrediction).toBe("DOWN");
+    expect(latest!.lockedCall).toBe("UP"); // the saved pre-match call is unchanged
 
-    // Resolves when the round closes (timeout), with the locked pick.
+    // Resolves when the round closes (timeout), with the flipped call.
     await waitFor((h) => h.roundHistory.length >= 1, 25_000, "round resolves at close (not on pick)");
-    expect(latest!.roundHistory[0]?.playerPredicted).toBe("UP");
+    expect(latest!.roundHistory[0]?.playerPredicted).toBe("DOWN");
     r?.unmount();
   }, 60_000);
 
@@ -237,13 +246,7 @@ describe("client bot game full loop", () => {
 
     let r: any;
     act(() => { r = renderer(<Probe />); });
-    act(() => { latest!.actions.selectMarket(DEFAULT_TRADE_MARKET); });
-    await waitFor((h) => h.phase === "CHAR_SELECT", 3000, "CHAR_SELECT");
-    act(() => { latest!.actions.selectChar(CHARACTERS[0]); });
-    await waitFor((h) => h.phase === "PREDICTION_SELECT", 3000, "PREDICTION_SELECT");
-    act(() => { latest!.actions.setMatchPrediction("UP"); });
-    act(() => { latest!.actions.fightBotInstead(); });
-    await waitFor((h) => h.phase === "ROUND_ACTIVE", 10_000, "first ROUND_ACTIVE");
+    await openToRoundActive("UP");
 
     // The round auto-submits the locked call; first submit fails (500), retry must succeed.
     await waitFor((h) => h.roundHistory.length >= 1, 25_000, "round 1 resolved after retry");
