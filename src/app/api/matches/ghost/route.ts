@@ -88,6 +88,33 @@ export async function POST(req: NextRequest) {
       return jsonError(402, `insufficient allowance: approved ${allowance} of ${amount}`);
     }
 
+    const wc = adminWallet();
+
+    // The ghost is a fresh EOA with no native STT — yet it must sign its own
+    // per-round `stakeRound`/`approve`/`withdraw`. tUSDC alone can't pay gas, so
+    // top the ghost up with native STT from the operator so the per-round writes
+    // actually land. Without this the ghost's stakeRound reverts `insufficient
+    // balance` and nothing ever stakes on-chain.
+    //
+    // Somnia runs hot: a single `stakeRound` costs ~0.02+ STT (3M gas @ 6-7gwei),
+    // so 7 rounds + approve + withdraw need well over 0.15 STT. 0.03 left the
+    // ghost dry mid-match. Budget 1 STT. This runs on EVERY fund call (idempotent:
+    // only tops up the shortfall) so it also keeps a re-funded ghost funded.
+    const GHOST_GAS_STT = 1_000_000_000_000_000_000n; // 1.0 STT
+    const ghostNative = await pc.getBalance({ address: ghostAddress as `0x${string}` });
+    if (ghostNative < GHOST_GAS_STT) {
+      const sttTx = await wc.sendTransaction({
+        to: ghostAddress as `0x${string}`,
+        value: GHOST_GAS_STT - ghostNative,
+        chain: EC_CHAIN,
+        account: wc.account!,
+      });
+      // Mine it so the operator nonce advances before any tUSDC transferFrom
+      // below; otherwise both txs could share one pending nonce and one gets
+      // dropped ("relay tx did not confirm in time").
+      await waitMined(sttTx);
+    }
+
     // Idempotency guard: the ghost key is stable per match, so a re-mount that
     // re-invokes this route must NOT charge the player a second time. If the
     // ghost already holds the full stake, it's already funded — no new transfer.
@@ -101,7 +128,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true, alreadyFunded: true, ghostBalance: ghostBal.toString() });
     }
 
-    const wc = adminWallet();
     const tx = await wc.writeContract({
       address: TUSDC_ADDRESS,
       abi: TUSDC_ABI,
@@ -116,6 +142,7 @@ export async function POST(req: NextRequest) {
 
     // Wait for the relay to mine so the ghost has funds before the fight starts.
     const receipt = await waitMined(tx);
+
     const ghostBalance = (await pc.readContract({
       address: TUSDC_ADDRESS,
       abi: TUSDC_ABI,

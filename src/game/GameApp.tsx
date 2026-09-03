@@ -7,7 +7,6 @@ import { CHARACTERS } from "./characters";
 import { TRADE_MARKETS, PREDICTIONS, type GameMode, type PredictionConfig, type TradeMarket, type BotDifficulty, type FighterState } from "./types";
 import { WalletModal } from "@/components/WalletModal";
 import { LiveChart } from "./LiveChart";
-import { EcPositionPanel } from "./EcPositionPanel";
 import { useMatchmaking } from "./useMatchmaking";
 import { useAccount } from "wagmi";
 import { useDreamDEX } from "./useDreamDEX";
@@ -1473,7 +1472,6 @@ function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; 
         {(game.phase === "ROUND_ACTIVE" || game.phase === "ROUND_LOCKED" || game.phase === "ROUND_REVEAL" || game.phase === "ROUND_IMPACT") && (
           <div style={{ width: "100%", maxWidth: 460, margin: "0 auto 16px" }}>
             <LiveChart asset={game.selectedPrediction?.asset ?? "BTC"} height={180} />
-            {game.matchId && <EcPositionPanel matchId={game.matchId} compact />}
           </div>
         )}
 
@@ -1884,7 +1882,6 @@ function MatchResult({ game, onRematch, onChangePosition, onExit }: { game: Retu
       )}
 
       <div style={{ marginBottom: 24, width: "100%", maxWidth: 340 }}>
-        {game.matchId && <EcPositionPanel matchId={game.matchId} compact />}
         <div style={{ fontSize: 11, color: "#94a3b8", lineHeight: 1.5, textAlign: "center", marginTop: 4 }}>
           Rounds track the real Event Contract window. Your stake settles on-chain
           once the window closes. DUEL AGAIN to keep riding the same position, or

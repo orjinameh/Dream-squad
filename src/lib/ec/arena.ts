@@ -20,7 +20,13 @@ export async function ecArenaForMatch(match: LoosenedMatch, asset: "BTC" | "ETH"
     return pinned;
   }
   try {
-    const arena = await findArenaFloor(asset, 30);
+    // Prefer a window with >=30s left (stable, won't roll mid-match), but FALL
+    // BACK to any live window if none qualifies. Requiring 30s+ exclusively made
+    // rounds between window rolls throw "no live EC arena floor" -> recorded as
+    // FLAT no-ops -> every match degenerated to a 0-0 draw. A window with even a
+    // few seconds left is a valid, honest reference.
+    let arena = await findArenaFloor(asset, 30);
+    if (!arena) arena = await findArenaFloor(asset, 0);
     if (!arena) return null;
     // Only re-anchor if a fresh arena differs from the pinned one. The arena + its
     // window-open YES seed must be STABLE across the whole window so that a single
