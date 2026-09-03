@@ -1154,6 +1154,13 @@ function ReadyUpScreen({ game, escrow, onReady, onStartDuel }: {
   );
 }
 
+/** True while the 7-round battle is live — no wallet prompts may appear here.
+ *  The single approval (Step 1 of the flow) must be settled before round 1. */
+function isFightPhase(phase: string): boolean {
+  return phase === "ROUND_START" || phase === "ROUND_ACTIVE" || phase === "ROUND_LOCKED"
+    || phase === "ROUND_EXECUTING" || phase === "ROUND_REVEAL" || phase === "ROUND_IMPACT";
+}
+
 function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; escrow: ReturnType<typeof useDreamEscrow> }) {
   const [countdown, setCountdown] = useState(3);
   const [showResult, setShowResult] = useState(false);
@@ -1332,16 +1339,26 @@ function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; 
         </div>
         {!ghost.funded && !ghost.funding && (
           <div style={{ textAlign: "center", marginTop: 4 }}>
-            <button
-              onClick={() => { ghost.fundGhost().catch((e: any) => console.warn("[ghost] funding failed", e?.message)); }}
-              style={{
-                padding: "8px 22px", borderRadius: 6, cursor: "pointer", fontWeight: 900, fontSize: 13,
-                letterSpacing: "0.08em", border: "none", color: "#3b2000",
-                background: "linear-gradient(135deg, #f59e0b, #fbbf24)",
-              }}
-            >
-              {"\u2694"} FUND MATCH \u2014 PAY {(game.positionAmount ?? 0) * game.totalRounds} tUSDC
-            </button>
+            {isFightPhase(game.phase) ? (
+              /* The ONE approval must happen RIGHT BEFORE the duel begins (Step 1
+                 of the match flow). During an active round the match MUST NOT offer
+                 a wallet prompt — keep this a non-interactive notice so there are
+                 zero popups in the middle of the 7-round battle. */
+              <div style={{ fontSize: 11, color: "#f87171", letterSpacing: "0.08em" }}>
+                {"\u26A0\uFE0F"} One-time approval pending \u2014 it should be confirmed on the ready screen before round 1.
+              </div>
+            ) : (
+              <button
+                onClick={() => { ghost.fundGhost().catch((e: any) => console.warn("[ghost] funding failed", e?.message)); }}
+                style={{
+                  padding: "8px 22px", borderRadius: 6, cursor: "pointer", fontWeight: 900, fontSize: 13,
+                  letterSpacing: "0.08em", border: "none", color: "#3b2000",
+                  background: "linear-gradient(135deg, #f59e0b, #fbbf24)",
+                }}
+              >
+                {"\u2694"} FUND MATCH \u2014 PAY {(game.positionAmount ?? 0) * game.totalRounds} tUSDC
+              </button>
+            )}
             {ghost.error && (
               <div style={{ marginTop: 6, fontSize: 11, color: "#ef4444", maxWidth: 480, marginLeft: "auto", marginRight: "auto", wordBreak: "break-word" }}>
                 {ghost.error}
@@ -1558,25 +1575,13 @@ function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; 
             {!ghost.funded ? (
               <div style={{ padding: "16px 12px", borderRadius: 10, border: "2px solid #f59e0b", background: "rgba(245,158,11,0.08)" }}>
                 <div style={{ fontSize: 16, fontWeight: 900, letterSpacing: "0.1em", color: "#fbbf24", marginBottom: 8 }}>
-                  {"\u26A0\uFE0F"} STAKE TO PLAY
+                  {"\u26A0\uFE0F"} FUNDING PENDING
                 </div>
-                <div style={{ fontSize: 13, color: "#fcd34d", lineHeight: 1.6, marginBottom: 12 }}>
+                <div style={{ fontSize: 13, color: "#fcd34d", lineHeight: 1.6 }}>
                   This match costs <b>{game.positionAmount ?? 0} tUSDC \u00D7 {game.totalRounds} rounds
                   {" "} = {(game.positionAmount ?? 0) * game.totalRounds} tUSDC</b>, charged up front in one
-                  approval. You can't fight until it's funded.
+                  approval on the ready screen. The fight is in progress \u2014 no wallet prompt can appear now.
                 </div>
-                <button
-                  onClick={() => { ghost.fundGhost().catch((e: any) => console.warn("[ghost] funding failed", e?.message)); }}
-                  disabled={ghost.funding}
-                  style={{
-                    padding: "12px 32px", borderRadius: 8, cursor: ghost.funding ? "wait" : "pointer", fontWeight: 900,
-                    fontSize: 14, letterSpacing: "0.1em", border: "none", color: "#3b2000",
-                    background: "linear-gradient(135deg, #f59e0b, #fbbf24)", opacity: ghost.funding ? 0.7 : 1,
-                  }}
-                >
-                  {ghost.funding ? "FUNDING..." : `\u2694 FUND MATCH \u2014 PAY ${(game.positionAmount ?? 0) * game.totalRounds} tUSDC`}
-                </button>
-                {ghost.error && <div style={{ marginTop: 8, fontSize: 11, color: "#ef4444" }}>{ghost.error}</div>}
               </div>
             ) : (
               <>

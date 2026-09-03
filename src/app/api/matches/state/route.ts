@@ -106,7 +106,9 @@ async function updateStatsForAutoResolved(match: any, now: Date) {
   const totalLosses = match.winner === "rival" ? 1 : 0;
   const totalDraws = match.winner === "draw" ? 1 : 0;
   const isBot = match.opponentType === "bot";
-  const rankDelta = getPvpWinPoints(totalWins === 1, totalDraws === 1);
+  // Rank points only move for REAL PvP matches; an auto-resolved bot match must
+  // not inflate/deflate the player's PvP ranking.
+  const rankDelta = isBot ? 0 : getPvpWinPoints(totalWins === 1, totalDraws === 1);
 
   await PlayerStats.findOneAndUpdate(
     { _id: addr, processedMatches: { $ne: matchId } },

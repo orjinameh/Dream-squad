@@ -33,8 +33,8 @@ export async function GET(req: Request): Promise<Response> {
     const playerCorrectCount = rounds.filter((r) => r.playerCorrect).length;
     const rivalCorrectCount = rounds.filter((r) => r.rivalCorrect).length;
 
-    // Count knockouts
-    let knockouts = 0;
+    // Count knockouts — rounds where a KO landed (early stop before all rounds).
+    const knockouts = rounds.filter((r) => r.knockout).length;
     let bestStreak = 0;
     let currentStreak = 0;
     for (const r of rounds) {

@@ -22,16 +22,26 @@ const MAX_HP = 100;
 const BASE_DAMAGE = 15;
 const STREAK_BONUS: Record<number, number> = { 0: 0, 1: 0, 2: 3, 3: 10 };
 
+// Step 5 of the game flow: the tiny 10-second price fluctuation is multiplied
+// into COMBAT DAMAGE. A round that moved decisively past the FLAT band lands a
+// harder hit than a barely-directional round. `decisiveness` is the leveraged
+// YES-mid delta minus the FLAT band (how far the move overshot "no movement").
+// A move past ~MOVE_DAMAGE_REF yields the full bonus; marginal rounds stay close
+// to BASE_DAMAGE. Streak bonuses still fold on top.
+const MAX_MOVE_DAMAGE = 15;
+const MOVE_DAMAGE_REF = 0.4;
+
 const predictSchema = z.object({
   matchId: z.string().min(1),
   playerAddress: z.string().refine((v) => isAddress(v), "invalid address"),
   prediction: z.enum(["UP", "DOWN"]).optional(),
 });
 
-function calcDamage(streakCount: number): { damage: number; isCritical: boolean } {
-  const bonus = STREAK_BONUS[Math.min(streakCount, 3)] ?? 0;
+function calcDamage(streakCount: number, decisiveness: number): { damage: number; isCritical: boolean } {
+  const streakBonus = STREAK_BONUS[Math.min(streakCount, 3)] ?? 0;
+  const moveBonus = Math.min(MAX_MOVE_DAMAGE, Math.round(Math.max(0, decisiveness) * (MAX_MOVE_DAMAGE / MOVE_DAMAGE_REF)));
   const isCritical = streakCount >= 3;
-  return { damage: BASE_DAMAGE + bonus, isCritical };
+  return { damage: BASE_DAMAGE + moveBonus + streakBonus, isCritical };
 }
 
 function computeLongestStreak(rounds: Array<{ playerCorrect: boolean }>): number {
@@ -171,6 +181,9 @@ async function resolveRound(match: any, now: Date): Promise<{
   }
 
   const actual: "UP" | "DOWN" | "FLAT" = diff > band ? "UP" : diff < -band ? "DOWN" : "FLAT";
+  // How decisively the mid moved past the FLAT band this round (leveraged). 0 for
+  // a FLAT round. Feeds the Step 5 damage scaling so a bigger move lands a bigger hit.
+  const decisiveness = Math.max(0, Math.abs(diff) - band);
   const startPrice = anchor;
   const endPrice = quote.yesPrice;
   const volume = [startPrice, endPrice];
@@ -189,11 +202,11 @@ async function resolveRound(match: any, now: Date): Promise<{
   let isCritical = false;
   if (!isDraw) {
     if (playerCorrect) {
-      const d = calcDamage(match.playerStreak);
+      const d = calcDamage(match.playerStreak, decisiveness);
       rivalDamage = d.damage;
       isCritical = d.isCritical;
     } else {
-      const d = calcDamage(match.rivalStreak);
+      const d = calcDamage(match.rivalStreak, decisiveness);
       playerDamage = d.damage;
       isCritical = d.isCritical;
     }
@@ -261,7 +274,10 @@ async function updatePlayerStatsAtomic(match: any, allRounds: any[], winner: str
   const p1LongestStreak = computeLongestStreak(allRounds);
   const p1Win = winner === "player";
   const p1Draw = winner === "draw";
-  const p1RankDelta = getPvpWinPoints(p1Win, p1Draw);
+  // Rank points only move for REAL PvP matches — a bot win/loss must never
+  // inflate or deflate a player's ranking (rank reflects PvP skill, not
+  // bot grinding).
+  const p1RankDelta = match.opponentType === "player" ? getPvpWinPoints(p1Win, p1Draw) : 0;
   const hasKO = allRounds.some((r: any) => r.knockout);
 
   await PlayerStats.findOneAndUpdate(

@@ -154,25 +154,49 @@ export function useGhostWallet(matchId: string | null, totalRounds: number, amou
 
   /** End of match: withdraw any winnings, forward leftovers to the primary
    *  wallet, and fully clear the ghost so the next match starts from clean state.
-   *  Runs on MATCH_RESULT even if funding partially failed, so funds are never
-   *  stranded and `funded` always reverts to false. */
+   *  Runs on MATCH_RESULT even if funding partially failed.
+   *
+   *  SAFETY: the ghost's private key in sessionStorage is the ONLY way to move
+   *  whatever tUSDC it still holds. If a withdraw/forward reverts and any balance
+   *  remains, we MUST NOT destroy the key — doing so would permanently lock that
+   *  money. The key is only dropped once the on-chain balance is confirmed 0, and
+   *  any leftover that couldn't be reclaimed keeps the key alive (sessionStorage
+   *  persists for the tab) so a later retry can still recover the funds. */
   const settleAndForward = useCallback(async () => {
-    if (!matchId || !ghost || !address) return;
+    if (!matchId || !ghost || !address) {
+      setFunded(false);
+      return;
+    }
+    let leftover: bigint | null = null;
     try {
       await ghost.signWithdraw(matchId, address);
     } catch (e) {
       console.warn("[ghost] withdraw failed, forwarding balance anyway", (e as Error)?.message);
     }
     try {
-      const bal = await ghost.ghostBalance();
-      if (bal > 0n) {
-        await ghost.signTransfer(address, bal);
+      const before = await ghost.ghostBalance();
+      if (before > 0n) {
+        await ghost.signTransfer(address, before);
+        // Confirm the money actually left before we consider it safe to clear.
+        leftover = await ghost.ghostBalance();
+        if (leftover > 0n) {
+          console.warn(`[ghost] ${leftover} tUSDC still in ghost after forward — key retained for safe retry`);
+        }
+      } else {
+        leftover = 0n;
       }
     } catch (e) {
-      console.warn("[ghost] forward failed", (e as Error)?.message);
+      console.warn("[ghost] forward failed, retaining key to avoid stranding funds", (e as Error)?.message);
+      // Re-read so we know whether the key must survive.
+      try { leftover = await ghost.ghostBalance(); } catch { leftover = null; }
     }
-    ghost.destroy();
-    setGhost(null);
+
+    if (leftover === 0n) {
+      // Balance fully reclaimed — safe to clear the ghost so the next fight
+      // starts from clean state.
+      ghost.destroy();
+      setGhost(null);
+    }
     setFunded(false);
   }, [matchId, ghost, address]);
 
