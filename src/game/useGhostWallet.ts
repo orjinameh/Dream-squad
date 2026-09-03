@@ -132,13 +132,24 @@ export function useGhostWallet(matchId: string | null, totalRounds: number, amou
     [matchId, ghost, address, amountPerRound],
   );
 
-  /** End of match: ghost withdraws winnings and forwards to the primary wallet. */
+  /** End of match: withdraw any winnings, forward leftovers to the primary
+   *  wallet, and fully clear the ghost so the next match starts from clean state.
+   *  Runs on MATCH_RESULT even if funding partially failed, so funds are never
+   *  stranded and `funded` always reverts to false. */
   const settleAndForward = useCallback(async () => {
     if (!matchId || !ghost || !address) return;
-    await ghost.signWithdraw(matchId, address);
-    const bal = await ghost.ghostBalance();
-    if (bal > 0n) {
-      await ghost.signTransfer(address, bal);
+    try {
+      await ghost.signWithdraw(matchId, address);
+    } catch (e) {
+      console.warn("[ghost] withdraw failed, forwarding balance anyway", (e as Error)?.message);
+    }
+    try {
+      const bal = await ghost.ghostBalance();
+      if (bal > 0n) {
+        await ghost.signTransfer(address, bal);
+      }
+    } catch (e) {
+      console.warn("[ghost] forward failed", (e as Error)?.message);
     }
     ghost.destroy();
     setGhost(null);

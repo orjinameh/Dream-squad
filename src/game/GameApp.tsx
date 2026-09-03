@@ -1196,14 +1196,17 @@ function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; 
     });
   }, [game.matchId, game.currentRound, game.phase, game.positionAmount, ghost.funded, ghost, roundStaked, pos?.yesPrice]);
 
-  // End of fight: forward the ghost's winnings back to the primary wallet.
+  // End of fight: forward the ghost's winnings back to the primary wallet and
+  // fully reset funding state. Runs whenever a ghost exists for this match (even
+  // if funding partially failed), so money is never stranded and state always
+  // reverts before the next match.
   useEffect(() => {
-    if (!game.matchId || game.phase !== "MATCH_RESULT" || !ghost.funded) return;
+    if (!game.matchId || game.phase !== "MATCH_RESULT" || !ghost.address) return;
     ghost.settleAndForward().catch((e: any) => {
       console.warn("[ghost] payout forward failed", e?.message);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [game.phase, ghost.funded]);
+  }, [game.phase, ghost.address]);
 
   useEffect(() => {
     if (game.phase === "MATCH_INTRO") {
