@@ -1170,14 +1170,17 @@ function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; 
   // the ghost with a single approve for the FULL match stake (amount x rounds,
   // e.g. 10 x 7 = 70 tUSDC); the server relays player->ghost. After that every
   // round is signed by the ghost (no popup). Play is blocked until funded.
+  // Only fires once the ghost wallet is actually created (ghost.address present),
+  // and retries on transient failure instead of permanently marking fundTriggered.
   useEffect(() => {
-    if (!game.matchId || ghost.funded || fundTriggered) return;
+    if (!game.matchId || !ghost.address || ghost.funded || fundTriggered) return;
     setFundTriggered(true);
     ghost.fundGhost().catch((e: any) => {
       console.warn("[ghost] funding not confirmed", e?.message);
+      setFundTriggered(false); // transient failure — allow retry on next render
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [game.matchId, ghost.funded, fundTriggered]);
+  }, [game.matchId, ghost.address, ghost.funded, fundTriggered]);
 
   // Stake the current round on-chain once it opens (best-effort, no popup —
   // the ghost signs with its in-memory key). The server settles every round.
