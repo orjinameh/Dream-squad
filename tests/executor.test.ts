@@ -90,6 +90,7 @@ async function createActiveBotMatchForPlayer(player: string, totalRounds = 3): P
     roundDeadline: new Date(now.getTime() + 60_000),
     status: "ACTIVE",
     opponentType: "bot",
+    funded: true,
     player1Ready: true,
   });
   return match._id;

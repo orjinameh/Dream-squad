@@ -35,6 +35,13 @@ export async function GET(req: Request): Promise<Response> {
 
     // Auto-resolve expired bot rounds (server-authoritative)
     if (match.status === "ACTIVE" && match.opponentType === "bot" && match.roundPhase === "ACTIVE" && now.getTime() > match.roundDeadline.getTime()) {
+      // ── GHOST FUNDING GATE ────────────────────────────────────────────────
+      // Never auto-resolve an expired bot round that was never funded — the
+      // fight may not advance unfunded. Hold until `/api/matches/ghost` sets
+      // `match.funded = true`. The client shows a blocking FUND screen.
+      if (!match.funded) {
+        return Response.json({ ...buildState(match, now, isViewerP2, viewerAddress), fundingPending: true });
+      }
       // Check if player predicted
       if (!match.playerPrediction) {
         // No prediction submitted — mark as draw/no-contest for this round
@@ -234,6 +241,8 @@ function buildState(match: any, serverTime: Date, isViewerP2: boolean, viewerAdd
     predictionAsset: match.predictionAsset ?? "BTC",
     predictionQuestion: match.predictionQuestion ?? "WILL BTC GO UP OR DOWN?",
     botDifficulty: match.botDifficulty ?? "normal",
+    // Ghost-funding gate — the fight is held until this is true for bot matches
+    funded: !!match.funded,
     // Server-authoritative combat
     playerHP: myHP,
     rivalHP: theirHP,

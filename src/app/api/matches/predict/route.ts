@@ -105,19 +105,15 @@ async function resolveRound(match: any, now: Date): Promise<{
   const isBot = match.opponentType === "bot";
   const playerPred = match.playerPrediction as "UP" | "DOWN" | null;
 
-  // Bot prediction: generate based on difficulty BEFORE resolution. Matches do
-  // NOT trade money — the bot prediction only drives bragging/scoring.
+  // Bot prediction: an INDEPENDENT, randomized move each round. It is NEVER
+  // derived from the player's call — the bot does not see or copy the player.
+  // Each round the bot commits a fair-coin UP/DOWN (its own input), and its
+  // correctness against the real market decides whether it lands a hit. This is
+  // the honest "bot input is randomized" combat model: the round's actual market
+  // direction, not the player's move, is what the bot is compared against.
   let rivalPred: "UP" | "DOWN" | null = match.rivalPrediction as "UP" | "DOWN" | null;
   if (isBot && !rivalPred) {
-    const difficulty = match.botDifficulty ?? "normal";
-    const accuracy = difficulty === "easy" ? 0.30 : difficulty === "hard" ? 0.70 : 0.50;
-    // Bot uses a simple bias: slightly favor UP (market uptrend) unless difficulty randomizes
-    const randomFactor = randomDouble();
-    rivalPred = randomFactor < accuracy
-      ? (playerPred ?? "UP")  // Match player's likely correct prediction
-      : (playerPred === "UP" ? "DOWN" : "UP");  // Opposite of player
-    // Ensure bot always has a prediction
-    if (!rivalPred) rivalPred = randomDouble() > 0.5 ? "UP" : "DOWN";
+    rivalPred = randomDouble() < 0.5 ? "UP" : "DOWN";
   }
 
   // REAL EC ORACLE RESOLUTION — the Event-Contract order book is the only
@@ -413,6 +409,16 @@ export async function POST(req: Request): Promise<Response> {
     const deadlinePassed = now.getTime() > match.roundDeadline.getTime();
     const isExpired = deadlinePassed && match.roundPhase === "ACTIVE";
 
+    // ── GHOST FUNDING GATE (server-authoritative) ─────────────────────────
+    // A bot match MUST have its one-time ghost deposit funded before any round
+    // can resolve. The fight can never run nor advance unfunded. If the relay
+    // hasn't landed yet, hold: return current state without recording the
+    // prediction or advancing the round. The client shows a blocking FUND g
+    // screen; once `/api/matches/ghost` sets `match.funded=true` this lets go.
+    if (isBot && !match.funded) {
+      return Response.json({ ...buildState(match, now), fundingPending: true });
+    }
+
     // Store prediction if provided and round is ACTIVE
     if (input.prediction && match.roundPhase === "ACTIVE" && !deadlinePassed) {
       const predField = isPlayer1 ? "playerPrediction" : "rivalPrediction";
@@ -672,6 +678,7 @@ export interface MatchStateResponse {
   predictionQuestion?: string;
   botDifficulty?: string;
   marketId?: string;
+  funded?: boolean;
   // Server-authoritative combat
   playerHP: number;
   rivalHP: number;
@@ -747,6 +754,7 @@ function buildState(match: any, serverTime: Date): MatchStateResponse {
     predictionAsset: match.predictionAsset,
     predictionQuestion: match.predictionQuestion,
     botDifficulty: match.botDifficulty,
+    funded: !!match.funded,
     marketId: match.marketId,
     playerHP: match.playerHP ?? MAX_HP,
     rivalHP: match.rivalHP ?? MAX_HP,

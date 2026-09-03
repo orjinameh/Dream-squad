@@ -1379,6 +1379,65 @@ function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; 
           background: "linear-gradient(180deg, rgba(168,85,247,0.03) 0%, rgba(6,182,212,0.02) 50%, transparent 100%)",
         }} />
 
+        {/* GHOST FUNDING GATE — the fight is HARD BLOCKED until the one-time
+            ghost deposit is funded on-chain. The server refuses to resolve any
+            round of an unfunded bot match; here we hold the arena closed and
+            surface the single approve+fund action the player must complete
+            before round 1, so the battle literally cannot run unfunded. */}
+        {game.fundingHeld && (
+          <div style={{
+            position: "absolute", inset: 0, zIndex: 80,
+            display: "flex", flexDirection: "column",
+            alignItems: "center", justifyContent: "center", gap: 18,
+            background: "rgba(8,8,16,0.92)",
+          }}>
+            <div style={{
+              fontSize: 26, fontWeight: 900, letterSpacing: "0.12em", color: "#fbbf24",
+              textShadow: "2px 2px 0 #92400e",
+            }}>
+              {"\u2694"} FUND TO START
+            </div>
+            <div style={{ fontSize: 13, color: "#e2e8f0", maxWidth: 460, textAlign: "center", lineHeight: 1.6, letterSpacing: "0.03em" }}>
+              The ghost wallet is funded up front with one approval, before the duel — no wallet
+              prompts mid-battle. Your stake auto-settles each round and winnings return to your wallet.
+            </div>
+            <div style={{ fontSize: 15, fontWeight: 800, color: "#38bdf8", letterSpacing: "0.05em" }}>
+              {(game.positionAmount ?? 0)} tUSDC {"\u00D7"} {game.totalRounds} ={" "}
+              <b>{(game.positionAmount ?? 0) * game.totalRounds} tUSDC</b>
+            </div>
+            {ghost.funding ? (
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#fbbf24", letterSpacing: "0.08em" }}>
+                {"\u231B"} FUNDING... confirming the one-time approval + deposit on-chain
+              </div>
+            ) : (
+              <>
+                <button
+                  onClick={() => { ghost.fundGhost().catch((e: any) => console.warn("[ghost] funding failed", e?.message)); }}
+                  disabled={!!ghost.error}
+                  style={{
+                    padding: "14px 34px", borderRadius: 8, cursor: "pointer", fontWeight: 900, fontSize: 15,
+                    letterSpacing: "0.08em", border: "none", color: "#3b2000",
+                    background: "linear-gradient(135deg, #f59e0b, #fbbf24)",
+                    boxShadow: "0 0 24px rgba(245,158,11,0.4)",
+                  }}
+                >
+                  {"\u2705"} APPROVE + DEPOSIT FULL STAKE
+                </button>
+                {ghost.error && (
+                  <div style={{ marginTop: 6, fontSize: 11, color: "#ef4444", maxWidth: 480, textAlign: "center", wordBreak: "break-word" }}>
+                    {ghost.error}
+                  </div>
+                )}
+                {!ghost.address && (
+                  <div style={{ fontSize: 11, color: "#94a3b8", letterSpacing: "0.04em" }}>
+                    preparing ghost wallet...
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
+
         {/* KO Overlay */}
         {game.koOverlay && (
           <div style={{

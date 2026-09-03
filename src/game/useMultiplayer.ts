@@ -80,6 +80,7 @@ export interface ServerMatchState {
     rivalExecution?: any;
   };
   opponentType?: string;
+  funded?: boolean;
   hasOpponent?: boolean;
   botDifficulty?: string;
   player1Ready?: boolean;
@@ -150,7 +151,7 @@ export interface MultiplayerActions {
     positionId?: string;
   }) => Promise<CreateMatchResult>;
   fetchState: () => Promise<ServerMatchState | null>;
-  submitPrediction: (prediction: "UP" | "DOWN") => Promise<PredictionResult | null>;
+  submitPrediction: (prediction: "UP" | "DOWN" | null | undefined) => Promise<PredictionResult | null>;
   reconnectToMatch: (matchId: string) => Promise<ServerMatchState | null>;
   detectActiveMatch: (address: string) => Promise<{ active: boolean; matchId?: string; opponentType?: string }>;
   reset: () => void;
@@ -353,7 +354,7 @@ export function useMultiplayer(): UseMultiplayerReturn {
     return pollState(id);
   }, [pollState]);
 
-  const submitPrediction = useCallback(async (prediction: "UP" | "DOWN"): Promise<PredictionResult | null> => {
+  const submitPrediction = useCallback(async (prediction: "UP" | "DOWN" | null | undefined): Promise<PredictionResult | null> => {
     const matchId = currentMatchIdRef.current;
     if (!matchId || !playerAddressRef.current) return null;
 

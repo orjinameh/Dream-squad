@@ -137,6 +137,7 @@ describe("POST /api/matches/predict", () => {
       roundDeadline: new Date(Date.now() + 60_000),
       status: "ACTIVE",
       opponentType: "bot",
+      funded: true,
       predictionAsset: "BTC",
       priceModel,
     });
@@ -181,6 +182,7 @@ describe("GET /api/matches/state", () => {
       roundDeadline: new Date(Date.now() + 60_000),
       status: "ACTIVE",
       opponentType: "bot",
+      funded: true,
     });
 
     const res = await stateRoute(jsonGet(`/api/matches/state?matchId=${matchId}&address=${PLAYER}`));

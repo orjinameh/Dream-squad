@@ -91,6 +91,7 @@ async function seedMatch(totalRounds = 5): Promise<string> {
     roundDeadline: new Date(Date.now() + 60_000),
     status: "ACTIVE",
     opponentType: "bot",
+    funded: true,
     predictionAsset: "BTC",
     priceModel,
   });

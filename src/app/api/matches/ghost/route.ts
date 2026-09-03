@@ -125,6 +125,8 @@ export async function POST(req: NextRequest) {
       args: [ghostAddress as `0x${string}`],
     })) as bigint;
     if (ghostBal >= amount) {
+      // Already funded: mark the match funded (idempotent re-mount).
+      await Match.updateOne({ _id: match._id }, { $set: { funded: true, ghostAddress } });
       return NextResponse.json({ ok: true, alreadyFunded: true, ghostBalance: ghostBal.toString() });
     }
 
@@ -149,6 +151,10 @@ export async function POST(req: NextRequest) {
       functionName: "balanceOf",
       args: [ghostAddress as `0x${string}`],
     })) as bigint;
+
+    // Funding landed: record it so the server-authoritative gate will let the
+    // fight resolve. Without this the match stays held (never runs unfunded).
+    await Match.updateOne({ _id: match._id }, { $set: { funded: true, ghostAddress } });
 
     return NextResponse.json({ ok: true, txHash: tx, gasUsed: Number(receipt.gasUsed), ghostBalance: ghostBalance.toString() });
   } catch (err: any) {

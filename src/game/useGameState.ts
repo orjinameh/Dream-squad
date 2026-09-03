@@ -86,6 +86,8 @@ export interface GameHook {
   rivalCharState: FighterState;
   matchId: string | null;
   isBotMatch: boolean;
+  funded: boolean;
+  fundingHeld: boolean;
   connectionStatus: ConnectionStatus;
   pingMs: number;
   predictionStatus: "idle" | "selected" | "submitting" | "confirmed" | "error";
@@ -561,6 +563,12 @@ export function useGameState(): GameHook {
   // Visual countdown only. Server resolves the round via predict endpoint.
   useEffect(() => {
     if (!isBotMatch || phase !== "ROUND_ACTIVE") return;
+    // GHOST FUNDING GATE: the one-time deposit must land before any round clock
+    // runs. If the bot match is explicitly unfunded keep the timer OFF entirely —
+    // the round can never auto-resolve/advance unfunded (the server also refuses).
+    // `funded` is only true once `/api/matches/ghost` confirms on-chain. Missing/
+    // undefined funding info (e.g. offline/test state) is NOT treated as unfunded.
+    if (mp.state.serverState?.funded === false) return;
     if (botTimerRef.current) return;
 
     const deadline = Date.now() + ROUND_TIME * 1000;
@@ -580,18 +588,18 @@ export function useGameState(): GameHook {
         setPlayerCharState("locked");
         setRivalCharState("locked");
 
-        // If no prediction, auto-pick for submission
-        if (!localPredictionRef.current) {
-          const auto: "UP" | "DOWN" = Math.random() < 0.5 ? "UP" : "DOWN";
-          setLocalPrediction(auto);
-          setPlayerPrediction(auto);
-        }
+        // The player's actual move for this round is their locked call (or a
+        // per-round flip). NEVER invent a random UP/DOWN for them — the round
+        // must resolve against the input the player actually made. If they made
+        // no call, submit a no-move so the server records an honest no-op (no
+        // hit) at the deadline instead of a fabricated call that could land an
+        // unearned hit.
 
         // Submit to server — server resolves everything. Use a BOUNDED retry
         // so a transient network/5xx failure cannot leave the round frozen at
         // ROUND_LOCKED. After a few attempts, force a local advance so the
         // game ALWAYS flows to the next round (never freezes).
-        const pred = localPredictionRef.current as "UP" | "DOWN";
+        const pred = (localPredictionRef.current as "UP" | "DOWN" | null) ?? undefined;
         setExecutionStatus("executing");
         roundPhaseRef.current = "SUBMITTING";
 
@@ -631,8 +639,7 @@ export function useGameState(): GameHook {
       if (botTimerRef.current) { clearInterval(botTimerRef.current); botTimerRef.current = null; }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isBotMatch, phase]);
-
+  }, [isBotMatch, phase, mp.state.serverState?.funded]);
   // --- PVP ROUND COUNTDOWN + SUBMIT ---
   // PvP rounds resolve server-authoritatively via the predict route, which
   // claims the round, waiting for both players to submit (or resolving after
@@ -824,6 +831,10 @@ export function useGameState(): GameHook {
     // round 1 ACTIVE the instant createMatch runs) — letting the match start
     // before the stake is confirmed.
     if (phase === "READY_UP") return;
+    // GHOST FUNDING GATE: never open a bot round while explicitly unfunded —
+    // hold on the FUND screen until the one-time deposit confirms (server refuses
+    // to resolve anyway). PvP has no ghost and is unaffected.
+    if (isBotMatch && mp.state.serverState?.funded === false && ss.roundPhase === "ACTIVE") return;
     if (ss.roundPhase === "ACTIVE" && !midRound) {
       roundIdentityRef.current = `${isBotMatch ? "bot" : "pvp"}-${ss.currentRound}`;
       activeRoundNumRef.current = ss.currentRound;
@@ -1125,6 +1136,13 @@ export function useGameState(): GameHook {
     playerCharState, rivalCharState,
     matchId: mp.state.serverState?.matchId ?? null,
     isBotMatch,
+    // Ghost-funding gate flag (bot matches only): true while the one-time
+    // deposit is pending/not-landed during a fight phase; false once funded.
+    // PvP has no ghost and is never held.
+    funded: mp.state.serverState?.funded === true,
+    fundingHeld: isBotMatch &&
+      mp.state.serverState?.funded === false &&
+      (phase === "MATCH_INTRO" || phase === "ROUND_START" || phase === "ROUND_ACTIVE" || phase === "ROUND_LOCKED"),
     connectionStatus: connectionDisplay,
     pingMs: mp.state.pingMs,
     predictionStatus: mp.state.predictionStatus === "idle" ? predictionUIStatus : mp.state.predictionStatus,

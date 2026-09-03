@@ -119,6 +119,12 @@ export interface MatchDoc {
   statsProcessed: StatsProcessedStatus;
   // On-chain escrow settlement state (PvP only)
   escrowStatus?: EscrowStatus;
+  // Ghost-wallet funding gate: the ONE-time approval (and the deposit relay
+  // into the ephemeral ghost) must land BEFORE any round can resolve. A bot
+  // match whose ghost was never funded is held — the fight cannot start or
+  // advance until `funded` is true. Set by the ghost/fund route on success.
+  funded: boolean;
+  ghostAddress?: string;
   // Reference to the player's active EC POSITION this combat match rides on.
   // The match is stats/rank only; the position holds the real stake.
   positionId?: string;
@@ -240,6 +246,8 @@ const MatchSchema = new Schema<MatchDoc>(
     priceModel: { type: Schema.Types.Mixed },
     statsProcessed: { type: String, enum: ["PENDING", "PROCESSING", "COMPLETE", "FAILED"], default: "PENDING" },
     escrowStatus: { type: String, enum: ["PENDING", "SETTLED", "DRAWN", "FAILED"], default: "PENDING" },
+    funded: { type: Boolean, default: false },
+    ghostAddress: { type: String },
     positionId: { type: String },
     positionWindowId: { type: String },
     positionDirection: { type: String, enum: ["UP", "DOWN"] },
