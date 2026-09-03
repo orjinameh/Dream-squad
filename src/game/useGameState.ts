@@ -365,7 +365,14 @@ export function useGameState(): GameHook {
       rivalExecution: lastRound.rivalExecution,
     };
     setRoundResult(result);
-    setRoundHistory((prev) => [...prev, result]);
+    // Idempotent append: playCombatAnimation can be reached from BOTH
+    // advanceAfterSubmit AND the server-sync effect for the same round, which
+    // used to push duplicate rounds -> roundHistory grew past totalRounds (e.g.
+    // 11 icons for a 7-round match). Dedup by roundNum so it never overflows.
+    setRoundHistory((prev) => {
+      if (prev.some((r) => r.roundNum === result.roundNum)) return prev;
+      return [...prev, result];
+    });
 
     // Extract tx hash for display
     const pExec = lastRound.playerExecution;
@@ -459,9 +466,14 @@ export function useGameState(): GameHook {
       } else {
         setPlayerCharState("idle"); setRivalCharState("idle");
         setRoundResult(null); setLastDamage(null);
-        // The player's call is locked for the whole match: seed every round with
-        // the pre-chosen position instead of asking them to re-pick.
-        setLocalPrediction(storedPredictionRef.current); setPlayerPrediction(storedPredictionRef.current);
+        // Per-round binary semantics: the player's pick is NOT locked to the
+        // pre-match call. Carry the previous round's position forward as the new
+        // round's default (so an untouched fight still resolves), but never
+        // overwrite an in-progress per-round flip. The server resolves each round
+        // against the per-round playerPrediction it stored, so a different
+        // direction per round is a genuine 7-trades-in-1-match.
+        setLocalPrediction((prev) => prev ?? storedPredictionRef.current);
+        setPlayerPrediction((prev) => prev ?? storedPredictionRef.current);
         setLockedPrediction(storedPredictionRef.current);
         setPredictionUIStatus("idle");
         const nextRound = rNum + 1;

@@ -79,42 +79,62 @@ export function useGhostWallet(matchId: string | null, totalRounds: number, amou
     if (!matchId || !address || !ghost) throw new Error("not ready");
     if (totalStakeRaw <= 0n) throw new Error("invalid stake");
     setFunding(true); setError(null);
+
+    // Hard timebox so `funding` can never hang the UI on a perpetual spinner:
+    // if the approve popup or the relay never confirms, give up and reset the
+    // flag so the manual FUND MATCH button becomes clickable again.
+    let settled = false;
+    const guard = new Promise<never>((_, reject) => {
+      setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          setFunding(false);
+          reject(new Error("funding timed out — check your wallet popup and try again"));
+        }
+      }, 60_000);
+    });
+
     try {
-      // ONE popup: approve the operator to move totalStake for this match.
-      const existing = await allowanceOf(address, ESCROW_ADMIN);
-      if (existing < totalStakeRaw) {
-        const approveHash = await writeContractAsync({
-          abi: TUSDC_ABI,
-          address: TUSDC_ADDRESS,
-          functionName: "approve",
-          args: [ESCROW_ADMIN, totalStakeRaw],
-          chainId: EC_CHAIN.id,
-          gas: 30_000_000n,
-        } as any);
-        await waitForReceipt(approveHash as `0x${string}`);
-      }
+      const body = (async () => {
+        // ONE popup: approve the operator to move totalStake for this match.
+        const existing = await allowanceOf(address, ESCROW_ADMIN);
+        if (existing < totalStakeRaw) {
+          const approveHash = await writeContractAsync({
+            abi: TUSDC_ABI,
+            address: TUSDC_ADDRESS,
+            functionName: "approve",
+            args: [ESCROW_ADMIN, totalStakeRaw],
+            chainId: EC_CHAIN.id,
+            gas: 30_000_000n,
+          } as any);
+          await waitForReceipt(approveHash as `0x${string}`);
+        }
 
-      const res = await fetch("/api/matches/ghost/fund", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          matchId,
-          playerAddress: address,
-          ghostAddress: ghost.address,
-          totalStakeRaw: totalStakeRaw.toString(),
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error ?? "fund ghost failed");
+        const res = await fetch("/api/matches/ghost/fund", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            matchId,
+            playerAddress: address,
+            ghostAddress: ghost.address,
+            totalStakeRaw: totalStakeRaw.toString(),
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.error ?? "fund ghost failed");
 
-      // Ghost approves the round escrow so it can move its own funds per round.
-      await ghost.signApproveEscrow(ROUND_ESCROW_ADDRESS, parseUnits("1000000", EC_COLLATERAL_DECIMALS));
-      setFunded(true);
-      return data;
+        // Ghost approves the round escrow so it can move its own funds per round.
+        await ghost.signApproveEscrow(ROUND_ESCROW_ADDRESS, parseUnits("1000000", EC_COLLATERAL_DECIMALS));
+        setFunded(true);
+        return data;
+      })();
+
+      return await Promise.race([body, guard]);
     } catch (e) {
       setError((e as Error)?.message ?? "failed to fund ghost");
       throw e;
     } finally {
+      settled = true;
       setFunding(false);
     }
   }, [matchId, address, ghost, totalStakeRaw, writeContractAsync]);

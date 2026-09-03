@@ -1164,23 +1164,24 @@ function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; 
   const ghost = useGhostWallet(game.matchId, game.totalRounds, game.positionAmount ?? 0);
   const { pos } = useEcPosition(game.matchId);
   const [roundStaked] = useState(() => new Set<string>());
-  const [fundTriggered, setFundTriggered] = useState(false);
+  const [autoFundAttempted, setAutoFundAttempted] = useState(false);
 
   // THE one popup of the match: as soon as the match exists (pre-round-1), fund
   // the ghost with a single approve for the FULL match stake (amount x rounds,
   // e.g. 10 x 7 = 70 tUSDC); the server relays player->ghost. After that every
   // round is signed by the ghost (no popup). Play is blocked until funded.
-  // Only fires once the ghost wallet is actually created (ghost.address present),
-  // and retries on transient failure instead of permanently marking fundTriggered.
+  // Only fires once the ghost wallet is actually created (ghost.address present).
+  // On failure we do NOT hot-loop-retry (that left the UI stuck on a perpetual
+  // "⌛ FUNDING..." spinner); we surface the error and let the user retry via the
+  // FUND MATCH button, which calls fundGhost manually.
   useEffect(() => {
-    if (!game.matchId || !ghost.address || ghost.funded || fundTriggered) return;
-    setFundTriggered(true);
+    if (!game.matchId || !ghost.address || ghost.funded || autoFundAttempted) return;
+    setAutoFundAttempted(true);
     ghost.fundGhost().catch((e: any) => {
       console.warn("[ghost] funding not confirmed", e?.message);
-      setFundTriggered(false); // transient failure — allow retry on next render
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [game.matchId, ghost.address, ghost.funded, fundTriggered]);
+  }, [game.matchId, ghost.address, ghost.funded, autoFundAttempted]);
 
   // Stake the current round on-chain once it opens (best-effort, no popup —
   // the ghost signs with its in-memory key). The server settles every round.
@@ -1632,9 +1633,9 @@ function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; 
                     style={{
                       padding: "12px 28px", borderRadius: 8, fontSize: 16, fontWeight: 900, letterSpacing: "0.08em",
                       fontFamily: "'Courier New', monospace", cursor: "pointer", border: "none",
-                      background: (game.lockedCall ?? game.playerPrediction) === "UP" ? "rgba(16,185,129,0.18)" : "rgba(15,23,42,0.8)",
-                      borderColor: (game.lockedCall ?? game.playerPrediction) === "UP" ? "#10b981" : "#334155",
-                      boxShadow: (game.lockedCall ?? game.playerPrediction) === "UP" ? "0 0 14px rgba(16,185,129,0.5)" : undefined,
+                      background: (game.playerPrediction) === "UP" ? "rgba(16,185,129,0.18)" : "rgba(15,23,42,0.8)",
+                      borderColor: (game.playerPrediction) === "UP" ? "#10b981" : "#334155",
+                      boxShadow: (game.playerPrediction) === "UP" ? "0 0 14px rgba(16,185,129,0.5)" : undefined,
                     }}
                   >
                     {"\u2191"} UP
@@ -1644,9 +1645,9 @@ function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; 
                     style={{
                       padding: "12px 28px", borderRadius: 8, fontSize: 16, fontWeight: 900, letterSpacing: "0.08em",
                       fontFamily: "'Courier New', monospace", cursor: "pointer", border: "none",
-                      background: (game.lockedCall ?? game.playerPrediction) === "DOWN" ? "rgba(239,68,68,0.18)" : "rgba(15,23,42,0.8)",
-                      borderColor: (game.lockedCall ?? game.playerPrediction) === "DOWN" ? "#ef4444" : "#334155",
-                      boxShadow: (game.lockedCall ?? game.playerPrediction) === "DOWN" ? "0 0 14px rgba(239,68,68,0.5)" : undefined,
+                      background: (game.playerPrediction) === "DOWN" ? "rgba(239,68,68,0.18)" : "rgba(15,23,42,0.8)",
+                      borderColor: (game.playerPrediction) === "DOWN" ? "#ef4444" : "#334155",
+                      boxShadow: (game.playerPrediction) === "DOWN" ? "0 0 14px rgba(239,68,68,0.5)" : undefined,
                     }}
                   >
                     {"\u2193"} DOWN
