@@ -527,8 +527,9 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
 
         {hasActive ? (
           <div style={{ fontSize: 12, color: "#f59e0b", lineHeight: 1.5, marginBottom: 10 }}>
-            Ready to fight: you'll enter with {"\uD83D\uDCC8"} {activeDirection} at {activeAmount} tUSDC per round.
-            {"\n"}One approval funds your per-round stake; each round settles on-chain via the escrow.
+            Ready to fight: {"\uD83D\uDCC8"} {activeDirection} {activeAmount} tUSDC per round {"\u00D7"} {game.totalRounds} rounds
+            {" "} = <b>{(activeAmount ?? 0) * (game.totalRounds ?? 7)} tUSDC total</b>. One approval funds it all up front;
+            {"\n"}each round flips UP/DOWN and settles on-chain via the escrow.
           </div>
         ) : (
           <div style={{ marginBottom: 12, padding: "12px 14px", borderRadius: 8, border: "1px solid #334155", background: "rgba(30,41,59,0.25)" }}>
