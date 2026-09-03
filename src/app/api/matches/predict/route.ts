@@ -125,6 +125,7 @@ async function resolveRound(match: any, now: Date): Promise<{
   }
   const quote = await readArenaPrice(arena);
   if (quote.yesPrice == null || !(quote.yesPrice > 0)) {
+    console.warn(`[predict] YES price unavailable for ${arena.marketId} symbol=${arena.symbol} bid=${quote.bestBid} ask=${quote.bestAsk}`);
     throw new Error(`EC YES price unavailable for ${arena.marketId}`);
   }
 
@@ -151,6 +152,14 @@ async function resolveRound(match: any, now: Date): Promise<{
   // flow within a 10s round (tiny in absolute YES-mid terms) crosses the FLAT
   // band and resolves as a decisive UP/DOWN instead of a perpetual 0-0 draw.
   const diff = rawDiff * EC_RESOLUTION_LEVERAGE;
+
+  // Diagnostics: log the true cause of a FLAT round so we can distinguish "no
+  // price/arena (honest no-op)" from "mid genuinely didn't move" vs "band too wide".
+  if (Math.abs(rawDiff) * EC_RESOLUTION_LEVERAGE <= band) {
+    console.warn(
+      `[predict] FLAT round=${roundNumber} mid=${quote.yesPrice.toFixed(4)} anchor=${anchor.toFixed(4)} rawDiff=${rawDiff.toFixed(4)} diff=${diff.toFixed(4)} band=${band.toFixed(4)} spread=${spreadWidth.toFixed(4)}`,
+    );
+  }
 
   const actual: "UP" | "DOWN" | "FLAT" = diff > band ? "UP" : diff < -band ? "DOWN" : "FLAT";
   const startPrice = anchor;

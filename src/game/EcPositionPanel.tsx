@@ -16,14 +16,14 @@ export function EcPositionRow({ pos, compact }: { pos: EcPosition | null; compac
   if (!pos) {
     return (
       <div style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.08em", padding: "8px 0" }}>
-        {"\u23F1"} EC WINDOW {"\u2014"} checking live price...
+        {"\u23F1"} LIVE EC REFERENCE {"\u2014"} checking live price...
       </div>
     );
   }
   if (!pos.live) {
     return (
       <div style={{ fontSize: 11, color: "#f59e0b", letterSpacing: "0.08em", padding: "8px 0" }}>
-        {"\u23F1"} EC WINDOW {"\u2014"} between windows, no live market right now.
+        {"\u23F1"} LIVE EC REFERENCE {"\u2014"} between windows, no live market right now.
       </div>
     );
   }
@@ -31,7 +31,7 @@ export function EcPositionRow({ pos, compact }: { pos: EcPosition | null; compac
   return (
     <div style={{ fontSize: 11, lineHeight: 1.6, padding: "8px 0" }}>
       <div style={{ letterSpacing: "0.08em", color: "#64748b", fontWeight: 800, marginBottom: 4 }}>
-        {"\u23F1"} EC WINDOW {"\u00B7"} {pos.asset} {"\u00B7"} {"\u23F0"} {mmss(pos.remainingSec)} left
+        {"\u23F1"} LIVE EC REFERENCE {"\u00B7"} {pos.asset} {"\u00B7"} {"\u23F0"} {mmss(pos.remainingSec)} to window close
       </div>
       {!compact && (
         <div style={{ color: "#94a3b8", display: "flex", justifyContent: "space-between", maxWidth: 340 }}>
@@ -43,7 +43,7 @@ export function EcPositionRow({ pos, compact }: { pos: EcPosition | null; compac
         </div>
       )}
       <div style={{ color: "#64748b", marginTop: compact ? 4 : 8 }}>
-        Round outcomes track this window. P&amp;L locks in when it settles on-chain.
+        Live reference for each round's YES-mid movement. Every round stakes and settles on-chain on its own.
       </div>
     </div>
   );

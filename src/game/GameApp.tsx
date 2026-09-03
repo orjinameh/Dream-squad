@@ -416,11 +416,12 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
   const fullPot = amount * rounds;
 
   // Per-round model: an active position = a funded fight entry (the position
-  // record carries amountPerRound). Money itself is handled by the per-round
-  // escrow + ghost. Being "STAKED" here is HONEST: the player must have a real
-  // on-chain approve covering the full match pot (amount x rounds) to the
-  // operator. A leftover DB record or an auto-loaded position alone is NOT
-  // funded — you can't be STAKED without actually approving on-chain.
+  // record carries amountPerRound). Money is staked PER ROUND by the per-round
+  // escrow + ghost; at POSITION time the player only AUTHORIZES the full pot
+  // (amount x rounds) via a single on-chain approve to the operator. So this
+  // screen is "APPROVED", not "STAKED" — actual staking happens round by round.
+  // A leftover DB record or an auto-loaded position alone is NOT approved — you
+  // can't advance without a real on-chain approve covering the full match pot.
   const fullPotRaw = parseUnits(String(fullPot), EC_COLLATERAL_DECIMALS);
   const onchainApproved = (escrow.operatorAllowance ?? 0n) >= fullPotRaw;
   const hasActive = Boolean(game.positionWindowId && game.positionDirection) && onchainApproved;
@@ -533,8 +534,8 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
         {hasActive ? (
           <div style={{ fontSize: 12, color: "#f59e0b", lineHeight: 1.5, marginBottom: 10 }}>
             Ready to fight: {"\uD83D\uDCC8"} {activeDirection} {activeAmount} tUSDC per round {"\u00D7"} {game.totalRounds} rounds
-            {" "} = <b>{(activeAmount ?? 0) * (game.totalRounds ?? 7)} tUSDC total</b>. One approval funds it all up front;
-            {"\n"}each round flips UP/DOWN and settles on-chain via the escrow.
+            {" "} = <b>{(activeAmount ?? 0) * (game.totalRounds ?? 7)} tUSDC authorized</b> (one approval, not staked yet).
+            {"\n"}Each round stakes {activeAmount} tUSDC UP/DOWN and auto-settles on-chain; only that round's stake moves per round.
           </div>
         ) : (
           <div style={{ marginBottom: 12, padding: "12px 14px", borderRadius: 8, border: "1px solid #334155", background: "rgba(30,41,59,0.25)" }}>
@@ -550,7 +551,7 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
           width: "100%", padding: "12px 0", borderRadius: 6, cursor: "pointer", fontWeight: 800, fontSize: 14,
           background: "linear-gradient(135deg, #7c3aed, #a855f7)", border: "none", color: "#fff", letterSpacing: "0.08em", opacity: busy ? 0.6 : 1,
         }}>
-          {busy ? "STAKING..." : hasActive ? `\u2713 STAKED \u2192 SWITCH \u2192 FIGHT ${direction} ${amount} tUSDC / ROUND` : `\u2694 STAKE ${direction} ${amount} tUSDC \u00D7 ${rounds} = ${fullPot} tUSDC UP FRONT`}
+          {busy ? "APPROVING..." : hasActive ? `\u2713 APPROVED \u2192 SWITCH \u2192 FIGHT ${direction} ${amount} tUSDC / ROUND` : `\u2694 APPROVE ${direction} ${amount} tUSDC \u00D7 ${rounds} = ${fullPot} tUSDC (stakes per round)`}
         </button>
 
         {game.positionWonPositions.length > 0 && (
