@@ -461,15 +461,14 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
       <div style={{ position: "absolute", inset: 0, background: `radial-gradient(ellipse at 50% 40%, rgba(168,85,247,0.08) 0%, transparent 50%)`, pointerEvents: "none" }} />
 
       <h2 style={{ fontSize: 28, fontWeight: 900, letterSpacing: "0.1em", color: "#fbbf24", textShadow: "2px 2px 0 #92400e", marginBottom: 8, textAlign: "center" }}>
-        {"\uD83D\uDCC8"} OPEN EC POSITION
+        {"\uD83D\uDCC8"} SET UP YOUR FIGHT STAKE
       </h2>
       <p style={{ fontSize: 13, color: "#64748b", marginBottom: 8, textAlign: "center" }}>
-        The financial layer: stake tUSDC UP/DOWN on {asset} for the ~15 min Event-Contract window.
+        Fund your match: stake {amount} tUSDC {"\u00D7"} 7 rounds UP/DOWN on {asset}.
       </p>
       <p style={{ fontSize: 11, color: "#475569", marginBottom: 28, textAlign: "center", maxWidth: 420, lineHeight: 1.6 }}>
-        Like a real dreamDEX Event Contract: you buy your call at the market's implied odds.
-        Win {"\u2192"} the fixed $1.00-per-token payout (stake + DEX profit). Loss {"\u2192"} stake
-        forfeited. Combats are bragging/stats only.
+        One approval charges the full match (10 {"\u00D7"} 7 = 70 tUSDC) up front. Each round you
+        flip UP/DOWN and it auto-settles on-chain; winnings return to your wallet at match end.
       </p>
 
       <div style={{ width: "100%", maxWidth: 440, marginBottom: 20 }}>
@@ -545,7 +544,7 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
           width: "100%", padding: "12px 0", borderRadius: 6, cursor: "pointer", fontWeight: 800, fontSize: 14,
           background: "linear-gradient(135deg, #7c3aed, #a855f7)", border: "none", color: "#fff", letterSpacing: "0.08em", opacity: busy ? 0.6 : 1,
         }}>
-          {busy ? "STAKING..." : hasActive ? `\u21BB RE-STAKE \u2192 OPEN ${direction} ${amount} tUSDC` : `\u2694 STAKE ${direction} ${amount} tUSDC`}
+          {busy ? "SETTING UP..." : hasActive ? `\u21BB SWITCH \u2192 FIGHT ${direction} ${amount} tUSDC / ROUND` : `\u2694 FIGHT ${direction} ${amount} tUSDC / ROUND`}
         </button>
 
         {game.positionWonPositions.length > 0 && (
@@ -569,21 +568,17 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
         </button>
       </div>
 
-      <a
-        href={game.positionStakeTxHash
-          ? `https://shannon-explorer.somnia.network/tx/${game.positionStakeTxHash}`
-          : `https://shannon-explorer.somnia.network/address/${ESCROW_ADDRESS}`}
-        target="_blank"
-        rel="noreferrer"
-        style={{
-          marginTop: 24, fontSize: 11, color: "#64748b", textDecoration: "none",
-          display: "inline-flex", alignItems: "center", gap: 6, letterSpacing: "0.06em",
-        }}
-      >
-        {game.positionStakeTxHash
-          ? `\u{1F517} VIEW STAKE ON-CHAIN · ${game.positionStakeTxHash.slice(0, 8)}...${game.positionStakeTxHash.slice(-6)}`
-          : `\u{1F517} VIEW EC ON EXPLORER · ${ESCROW_ADDRESS.slice(0, 8)}...${ESCROW_ADDRESS.slice(-6)}`}
-      </a>
+        <a
+          href={`https://shannon-explorer.somnia.network/address/${ROUND_ESCROW_ADDRESS ?? ESCROW_ADDRESS}`}
+          target="_blank"
+          rel="noreferrer"
+          style={{
+            marginTop: 24, fontSize: 11, color: "#64748b", textDecoration: "none",
+            display: "inline-flex", alignItems: "center", gap: 6, letterSpacing: "0.06em",
+          }}
+        >
+          {"\u{1F517}"} VIEW ROUND ESCROW ON EXPLORER
+        </a>
     </div>
   );
 }
@@ -602,13 +597,13 @@ function MatchTypeScreen({ game, onBack, onPvP, onBot, onHome }: {
       <h2 style={{ fontSize: 28, fontWeight: 900, letterSpacing: "0.1em", color: "#fbbf24", textShadow: "2px 2px 0 #92400e", marginBottom: 8, textAlign: "center" }}>
         CHOOSE YOUR OPPONENT
       </h2>
-      <p style={{ fontSize: 12, color: "#64748b", letterSpacing: "0.12em", marginBottom: 32 }}>COMBAT IS BRAGGING ONLY \u2014 YOUR EC STAKE DOES THE EARNING</p>
+      <p style={{ fontSize: 12, color: "#64748b", letterSpacing: "0.12em", marginBottom: 32 }}>FUNDED UP FRONT \u2014 EVERY ROUND STAKES {game.positionAmount ?? 0} tUSDC AND SETTLES ON-CHAIN</p>
 
       <div style={{
         fontSize: 13, color: "#94a3b8", marginBottom: 24, padding: "8px 18px", borderRadius: 6,
         border: "1px solid #7c3aed", background: "rgba(124,58,237,0.06)", maxWidth: 420, textAlign: "center",
       }}>
-        Riding EC position: {"\uD83D\uDCC8"} {game.positionDirection} {"\u00D7"} {game.positionAmount} tUSDC
+        Riding position: {"\uD83D\uDCC8"} {game.positionDirection ?? "UP"} {"\u00D7"} {game.positionAmount ?? 0} tUSDC / ROUND {"\u00D7"} {game.totalRounds} = {(game.positionAmount ?? 0) * (game.totalRounds ?? 7)} tUSDC funded
       </div>
 
       <div style={{ display: "flex", gap: 20, flexWrap: "wrap", justifyContent: "center" }}>
@@ -619,7 +614,7 @@ function MatchTypeScreen({ game, onBack, onPvP, onBot, onHome }: {
           <div style={{ fontSize: 34, marginBottom: 8 }}>{"\u2694\uFE0F"}</div>
           <div style={{ fontSize: 20, fontWeight: 900, color: "#fbbf24", letterSpacing: "0.08em", marginBottom: 6 }}>PVP {"\u00B7"} MATCHMAKING</div>
           <div style={{ fontSize: 11, color: "#94a3b8", lineHeight: 1.5 }}>
-            Find a real human opponent. Best of 7 rounds. Winner is bragging rights.
+            Find a real human opponent. Best of 7 rounds, {game.positionAmount ?? 0} tUSDC staked per round.
           </div>
         </button>
         <button onClick={onBot} style={{
@@ -629,7 +624,7 @@ function MatchTypeScreen({ game, onBack, onPvP, onBot, onHome }: {
           <div style={{ fontSize: 34, marginBottom: 8 }}>{"\uD83E\uDD16"}</div>
           <div style={{ fontSize: 20, fontWeight: 900, color: "#a855f7", letterSpacing: "0.08em", marginBottom: 6 }}>BOT MATCH</div>
           <div style={{ fontSize: 11, color: "#94a3b8", lineHeight: 1.5 }}>
-            Instant AI opponent. Best of 7 rounds. Practice your calls.
+            Instant AI opponent. Best of 7 rounds, {game.positionAmount ?? 0} tUSDC staked per round.
           </div>
         </button>
       </div>
@@ -1132,15 +1127,12 @@ function ReadyUpScreen({ game, escrow, onReady, onStartDuel }: {
         textAlign: "center",
       }}>
         <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.12em", color: "#a855f7", marginBottom: 6 }}>
-          {"\uD83D\uDCC8"} RIDING EC POSITION {"\u00B7"} {game.positionDirection} {"\u00D7"} {game.positionAmount} tUSDC
+          {"\uD83D\uDCC8"} FIGHT STAKE {"\u00B7"} {game.positionDirection ?? "UP"} {"\u00D7"} {game.positionAmount ?? 0} tUSDC / ROUND
         </div>
         <div style={{ fontSize: 11, color: "#94a3b8", lineHeight: 1.5 }}>
-          Already staked on the POSITION screen. This match is bragging only — your
-          stake settles once when the EC window closes.
+          Funded up front (one approval) for {game.totalRounds} rounds \u2014 {(game.positionAmount ?? 0) * (game.totalRounds ?? 7)} tUSDC.
+          Every round stakes {game.positionAmount ?? 0} tUSDC and settles on-chain; winnings return at match end.
         </div>
-        {escrow.hasStaked
-          ? <div style={{ fontSize: 11, color: "#10b981", fontWeight: 700, marginTop: 6 }}>{"\u2713"} On-chain stake confirmed.</div>
-          : <div style={{ fontSize: 11, color: "#f59e0b", marginTop: 6 }}>Stake not seen on-chain yet.</div>}
       </div>
 
       {!ready ? (
@@ -1827,21 +1819,21 @@ function MatchResult({ game, onRematch, onChangePosition, onExit }: { game: Retu
         </div>
       </div>
 
-      {/* EC POSITION — the single financial layer. Combats are bragging/stats
-          only; this stake rides the whole 15-min window and settles once. */}
+      {/* FIGHT STAKE — funded up front for all rounds; each round stakes and
+          settles on-chain separately. */}
       <div style={{
         background: "rgba(15,23,42,0.9)", border: "2px solid #1e293b", borderRadius: 8,
         padding: "12px 20px", marginBottom: 24, textAlign: "center", maxWidth: 340, width: "100%",
       }}>
         <div style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.1em", marginBottom: 6 }}>
-          EC POSITION {"\u00B7"} {game.positionDirection ?? "UP"} {"\u00B7"} {game.positionAmount ?? 0} tUSDC
+          FIGHT STAKE {"\u00B7"} {game.positionDirection ?? "UP"} {"\u00B7"} {game.positionAmount ?? 0} tUSDC / ROUND
         </div>
         <div style={{ fontSize: 22, fontWeight: 900, color: "#fbbf24", letterSpacing: "0.05em" }}>
-          {game.positionAmount ?? 0} tUSDC STAKED
+          {(game.positionAmount ?? 0) * (game.totalRounds ?? 7)} tUSDC FUNDED
         </div>
         <div style={{ fontSize: 10, color: "#64748b", marginTop: 4 }}>
-          Your single stake opens the fight. Each round settles separately on-chain
-          against the live YES-mid (see below).
+          {game.positionAmount ?? 0} tUSDC staked each round and settled on-chain;
+          winnings from winning rounds return to your wallet.
         </div>
       </div>
 
