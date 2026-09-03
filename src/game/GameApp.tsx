@@ -1308,6 +1308,44 @@ function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; 
         </div>
       </div>
 
+      {/* Persistent per-round stake status */}
+      <div style={{
+        padding: "10px 24px", borderBottom: "2px solid #1e293b",
+        background: ghost.funded
+          ? "rgba(16,185,129,0.08)"
+          : ghost.funding
+            ? "rgba(245,158,11,0.08)"
+            : "rgba(239,68,68,0.08)",
+      }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 12, fontWeight: 900, letterSpacing: "0.08em", color: ghost.funded ? "#34d399" : ghost.funding ? "#fbbf24" : "#f87171" }}>
+            {ghost.funded ? "\u2705" : ghost.funding ? "\u231B" : "\u26A0\uFE0F"} {ghost.funded ? "STAKED" : ghost.funding ? "FUNDING..." : "NOT STAKED"}
+          </span>
+          <span style={{ fontSize: 12, color: "#94a3b8", letterSpacing: "0.03em" }}>
+            {game.positionAmount ?? 0} tUSDC \u00D7 {game.totalRounds} = <b style={{ color: "#e2e8f0" }}>{(game.positionAmount ?? 0) * game.totalRounds} tUSDC</b> funded up front \u00B7 auto-settles each round \u00B7 winnings return to your wallet
+          </span>
+        </div>
+        {!ghost.funded && !ghost.funding && (
+          <div style={{ textAlign: "center", marginTop: 4 }}>
+            <button
+              onClick={() => { ghost.fundGhost().catch((e: any) => console.warn("[ghost] funding failed", e?.message)); }}
+              style={{
+                padding: "8px 22px", borderRadius: 6, cursor: "pointer", fontWeight: 900, fontSize: 13,
+                letterSpacing: "0.08em", border: "none", color: "#3b2000",
+                background: "linear-gradient(135deg, #f59e0b, #fbbf24)",
+              }}
+            >
+              {"\u2694"} FUND MATCH \u2014 PAY {(game.positionAmount ?? 0) * game.totalRounds} tUSDC
+            </button>
+            {ghost.error && (
+              <div style={{ marginTop: 6, fontSize: 11, color: "#ef4444", maxWidth: 480, marginLeft: "auto", marginRight: "auto", wordBreak: "break-word" }}>
+                {ghost.error}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
       {/* Arena */}
       <div style={{
         flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
