@@ -91,43 +91,24 @@ export async function openPosition(input: OpenPositionInput) {
   // so they're all phantoms — remove them so they can't block a fresh stake.
   await EcPosition.deleteMany({ address: addr, status: "ACTIVE" });
 
-  // Pin the live EC arena floor (the 15-min window the position rides).
-  const arena = await findArenaFloor(input.market, 30);
-  if (!arena) {
-    throw new PositionError(503, "no live Event Contract window right now — try again in a moment");
-  }
-  const openPrice = await readArenaPrice(arena).then((q) => (q.yesPrice && q.yesPrice > 0 ? q.yesPrice : 0)).catch(() => 0);
-  const entryPrice = openPrice > 0 ? sideEntryPriceScaled(openPrice, input.direction) : ENTRY_PRICE_SCALE / 2n;
-
+  // Per-round model: create a funding record without requiring a live v4 EC window.
+  // The position is just a gate + amount carrier; money moves via per-round escrow.
   const now = new Date();
-  const windowOpen = Math.floor(now.getTime() / 1000);
-  // The position locks until the VENUE window expires (its result is final then),
-  // not stake+15min. The v4 stake arg `windowClose` is this timestamp, so the
-  // escrow unlocks settlement the moment the market knows the outcome.
-  const windowCloseSec = Math.max(arena.expiry, windowOpen + 60);
-  const windowCloseMs = windowCloseSec * 1000;
-  const nonce = `${windowOpen}-${now.getTime().toString(36)}`;
-  const windowId = positionWindowId({
-    address: addr as `0x${string}`,
-    direction: input.direction,
-    market: input.market,
-    nonce,
-  });
+  const windowId = `per-round-${addr}-${now.getTime()}`;
 
   const doc = await EcPosition.create({
-    _id: undefined, // generated
+    _id: undefined,
     address: addr,
     direction: input.direction,
     market: input.market,
     amount: input.amount,
-    arena,
-    arenaOpen: openPrice || undefined,
-    entryPrice: entryPrice.toString(),
+    // v4 arena fields are intentionally omitted for per-round mode
+    entryPrice: "0",
     escrowAddress: ESCROW_ADDRESS,
     status: "ACTIVE",
-    windowId: windowId as unknown as string,
+    windowId,
     windowOpenAt: now,
-    windowCloseAt: new Date(windowCloseMs),
+    // No windowCloseAt — per-round positions don't expire on a v4 window
     settledOnchain: false,
     matchCount: 0,
     createdAt: now,
@@ -135,10 +116,10 @@ export async function openPosition(input: OpenPositionInput) {
 
   return {
     position: doc.toObject(),
-    windowId: windowId as unknown as string,
+    windowId,
     escrow: ESCROW_ADDRESS,
-    entryPrice,
-    windowClose: windowCloseSec,
+    entryPrice: 0n,
+    windowClose: 0,
   };
 }
 
