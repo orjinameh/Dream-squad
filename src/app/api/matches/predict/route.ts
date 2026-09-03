@@ -123,9 +123,18 @@ async function resolveRound(match: any, now: Date): Promise<{
   if (!arena) {
     throw new Error(`no live EC arena floor for ${asset} — arena is between windows`);
   }
-  const quote = await readArenaPrice(arena);
+
+  // The EC order-book read is the only oracle. A single empty/thin book read
+  // (intermittent on Somnia testnet) should NOT flip an entire round to a no-op
+  // FLAT draw — retry the fetch a few times before giving up, so transient
+  // indexer blips don't produce a perpetual 0-0 match.
+  let quote = await readArenaPrice(arena);
+  for (let attempt = 0; (quote.yesPrice == null || !(quote.yesPrice > 0)) && attempt < 3; attempt++) {
+    await new Promise((r) => setTimeout(r, 1200));
+    quote = await readArenaPrice(arena);
+  }
   if (quote.yesPrice == null || !(quote.yesPrice > 0)) {
-    console.warn(`[predict] YES price unavailable for ${arena.marketId} symbol=${arena.symbol} bid=${quote.bestBid} ask=${quote.bestAsk}`);
+    console.warn(`[predict] YES price unavailable (after retries) for ${arena.marketId} symbol=${arena.symbol} bid=${quote.bestBid} ask=${quote.bestAsk}`);
     throw new Error(`EC YES price unavailable for ${arena.marketId}`);
   }
 
