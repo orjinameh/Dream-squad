@@ -1168,17 +1168,18 @@ function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; 
   const [roundStaked] = useState(() => new Set<string>());
   const [fundTriggered, setFundTriggered] = useState(false);
 
-  // THE one popup of the match: as round 1 opens, fund the ghost with a single
-  // approve (the server relays player->ghost). After that every round is signed
-  // by the ghost (no popup).
+  // THE one popup of the match: as soon as the match exists (pre-round-1), fund
+  // the ghost with a single approve for the FULL match stake (amount x rounds,
+  // e.g. 10 x 7 = 70 tUSDC); the server relays player->ghost. After that every
+  // round is signed by the ghost (no popup). Play is blocked until funded.
   useEffect(() => {
-    if (!game.matchId || game.phase !== "ROUND_ACTIVE" || ghost.funded || fundTriggered) return;
+    if (!game.matchId || ghost.funded || fundTriggered) return;
     setFundTriggered(true);
     ghost.fundGhost().catch((e: any) => {
       console.warn("[ghost] funding not confirmed", e?.message);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [game.phase, ghost.funded, fundTriggered]);
+  }, [game.matchId, ghost.funded, fundTriggered]);
 
   // Stake the current round on-chain once it opens (best-effort, no popup —
   // the ghost signs with its in-memory key). The server settles every round.
@@ -1512,68 +1513,109 @@ function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; 
       }}>
         {game.phase === "ROUND_ACTIVE" && (
           <div style={{ textAlign: "center" }}>
-            <div style={{ fontSize: 14, color: "#94a3b8", letterSpacing: "0.1em", marginBottom: 8 }}>
-              {game.selectedPrediction.question}
-            </div>
+            {!ghost.funded ? (
+              <div style={{ padding: "16px 12px", borderRadius: 10, border: "2px solid #f59e0b", background: "rgba(245,158,11,0.08)" }}>
+                <div style={{ fontSize: 16, fontWeight: 900, letterSpacing: "0.1em", color: "#fbbf24", marginBottom: 8 }}>
+                  {"\u26A0\uFE0F"} STAKE TO PLAY
+                </div>
+                <div style={{ fontSize: 13, color: "#fcd34d", lineHeight: 1.6, marginBottom: 12 }}>
+                  This match costs <b>{game.positionAmount ?? 0} tUSDC \u00D7 {game.totalRounds} rounds
+                  {" "} = {(game.positionAmount ?? 0) * game.totalRounds} tUSDC</b>, charged up front in one
+                  approval. You can't fight until it's funded.
+                </div>
+                <button
+                  onClick={() => { ghost.fundGhost().catch((e: any) => console.warn("[ghost] funding failed", e?.message)); }}
+                  disabled={ghost.funding}
+                  style={{
+                    padding: "12px 32px", borderRadius: 8, cursor: ghost.funding ? "wait" : "pointer", fontWeight: 900,
+                    fontSize: 14, letterSpacing: "0.1em", border: "none", color: "#3b2000",
+                    background: "linear-gradient(135deg, #f59e0b, #fbbf24)", opacity: ghost.funding ? 0.7 : 1,
+                  }}
+                >
+                  {ghost.funding ? "FUNDING..." : `\u2694 FUND MATCH \u2014 PAY ${(game.positionAmount ?? 0) * game.totalRounds} tUSDC`}
+                </button>
+                {ghost.error && <div style={{ marginTop: 8, fontSize: 11, color: "#ef4444" }}>{ghost.error}</div>}
+              </div>
+            ) : (
+              <>
+                <div style={{ fontSize: 14, color: "#94a3b8", letterSpacing: "0.1em", marginBottom: 8 }}>
+                  {game.selectedPrediction.question}
+                </div>
 
-            {/* Countdown timer */}
-            <div style={{
-              fontSize: 42, fontWeight: 900, letterSpacing: "0.08em", marginBottom: 16,
-              color: urgency === "critical" ? "#ef4444" : urgency === "urgent" ? "#f59e0b" : "#10b981",
-              textShadow: urgency === "critical" ? "0 0 20px rgba(239,68,68,0.5)" : undefined,
-              animation: urgency === "critical" ? "criticalPulse 0.4s steps(2) infinite" : urgency === "urgent" ? "urgentPulse 0.6s steps(2) infinite" : undefined,
-            }}>
-              {game.timeLeft.toFixed(2)}
-            </div>
+                {/* Countdown timer */}
+                <div style={{
+                  fontSize: 42, fontWeight: 900, letterSpacing: "0.08em", marginBottom: 16,
+                  color: urgency === "critical" ? "#ef4444" : urgency === "urgent" ? "#f59e0b" : "#10b981",
+                  textShadow: urgency === "critical" ? "0 0 20px rgba(239,68,68,0.5)" : undefined,
+                  animation: urgency === "critical" ? "criticalPulse 0.4s steps(2) infinite" : urgency === "urgent" ? "urgentPulse 0.6s steps(2) infinite" : undefined,
+                }}>
+                  {game.timeLeft.toFixed(2)}
+                </div>
 
-            {/* Selection status — always "selected" (repositionable). Never
-                "committed"/locked: there is no lock state until round close. */}
-            {game.playerPrediction && (
-              <div style={{
-                fontSize: 11, letterSpacing: "0.12em", marginBottom: 12, padding: "4px 12px",
-                borderRadius: 4, display: "inline-block",
-                background: "rgba(245,158,11,0.15)",
-                border: "1px solid #f59e0b",
-                color: "#f59e0b",
-              }}>
-                {`${game.playerPrediction === "UP" ? "\u2191" : "\u2193"} ${game.playerPrediction} POSITION SELECTED`}
-              </div>
-            )}
-            {predStatus === "submitting" && (
-              <div style={{
-                fontSize: 11, letterSpacing: "0.12em", marginBottom: 12, padding: "4px 12px",
-                borderRadius: 4, display: "inline-block",
-                background: "rgba(245,158,11,0.15)", border: "1px solid #f59e0b", color: "#f59e0b",
-              }}>
-                SUBMITTING...
-              </div>
-            )}
-            {game.executionStatus === "executing" && (
-              <div style={{
-                fontSize: 11, letterSpacing: "0.12em", marginBottom: 12, padding: "4px 12px",
-                borderRadius: 4, display: "inline-block",
-                background: "rgba(168,85,247,0.15)", border: "1px solid #a855f7", color: "#a855f7",
-              }}>
-                EXECUTING ON DREAMDEX...
-              </div>
-            )}
+                {/* Selection status — always "selected" (repositionable). Never
+                    "committed"/locked: there is no lock state until round close. */}
+                {game.playerPrediction && (
+                  <div style={{
+                    fontSize: 11, letterSpacing: "0.12em", marginBottom: 12, padding: "4px 12px",
+                    borderRadius: 4, display: "inline-block",
+                    background: "rgba(245,158,11,0.15)",
+                    border: "1px solid #f59e0b",
+                    color: "#f59e0b",
+                  }}>
+                    {`${game.playerPrediction === "UP" ? "\u2191" : "\u2193"} ${game.playerPrediction} POSITION SELECTED`}
+                  </div>
+                )}
+                {predStatus === "submitting" && (
+                  <div style={{
+                    fontSize: 11, letterSpacing: "0.12em", marginBottom: 12, padding: "4px 12px",
+                    borderRadius: 4, display: "inline-block",
+                    background: "rgba(245,158,11,0.15)", border: "1px solid #f59e0b", color: "#f59e0b",
+                  }}>
+                    SUBMITTING...
+                  </div>
+                )}
+                {game.executionStatus === "executing" && (
+                  <div style={{
+                    fontSize: 11, letterSpacing: "0.12em", marginBottom: 12, padding: "4px 12px",
+                    borderRadius: 4, display: "inline-block",
+                    background: "rgba(168,85,247,0.15)", border: "1px solid #a855f7", color: "#a855f7",
+                  }}>
+                    EXECUTING ON DREAMDEX...
+                  </div>
+                )}
 
-            {/* Locked call — chosen BEFORE the match, cannot be changed in-match */}
-            <div style={{ display: "flex", gap: 12, justifyContent: "center", alignItems: "center" }}>
-              <div style={{
-                padding: "12px 28px", borderRadius: 8, fontSize: 16, fontWeight: 900, letterSpacing: "0.08em",
-                fontFamily: "'Courier New', monospace",
-                background: (game.lockedCall ?? game.playerPrediction) === "UP" ? "rgba(16,185,129,0.18)" : "rgba(239,68,68,0.18)",
-                border: `2px solid ${(game.lockedCall ?? game.playerPrediction) === "UP" ? "#10b981" : "#ef4444"}`,
-                color: (game.lockedCall ?? game.playerPrediction) === "UP" ? "#10b981" : "#ef4444",
-              }}>
-                {(game.lockedCall ?? game.playerPrediction) === "UP" ? "\u2191" : "\u2193"}
-                {" "}CALL LOCKED
-              </div>
-              <div style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.1em" }}>
-                CANNOT CHANGE IN MATCH
-              </div>
-            </div>
+                {/* Per-round pick — up/down, changeable each round until lock */}
+                <div style={{ display: "flex", gap: 12, justifyContent: "center", alignItems: "center" }}>
+                  <button
+                    onClick={() => { game.actions.makePrediction("UP"); }}
+                    style={{
+                      padding: "12px 28px", borderRadius: 8, fontSize: 16, fontWeight: 900, letterSpacing: "0.08em",
+                      fontFamily: "'Courier New', monospace", cursor: "pointer", border: "none",
+                      background: (game.lockedCall ?? game.playerPrediction) === "UP" ? "rgba(16,185,129,0.18)" : "rgba(15,23,42,0.8)",
+                      borderColor: (game.lockedCall ?? game.playerPrediction) === "UP" ? "#10b981" : "#334155",
+                      boxShadow: (game.lockedCall ?? game.playerPrediction) === "UP" ? "0 0 14px rgba(16,185,129,0.5)" : undefined,
+                    }}
+                  >
+                    {"\u2191"} UP
+                  </button>
+                  <button
+                    onClick={() => { game.actions.makePrediction("DOWN"); }}
+                    style={{
+                      padding: "12px 28px", borderRadius: 8, fontSize: 16, fontWeight: 900, letterSpacing: "0.08em",
+                      fontFamily: "'Courier New', monospace", cursor: "pointer", border: "none",
+                      background: (game.lockedCall ?? game.playerPrediction) === "DOWN" ? "rgba(239,68,68,0.18)" : "rgba(15,23,42,0.8)",
+                      borderColor: (game.lockedCall ?? game.playerPrediction) === "DOWN" ? "#ef4444" : "#334155",
+                      boxShadow: (game.lockedCall ?? game.playerPrediction) === "DOWN" ? "0 0 14px rgba(239,68,68,0.5)" : undefined,
+                    }}
+                  >
+                    {"\u2193"} DOWN
+                  </button>
+                </div>
+                <div style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.1em", marginTop: 6 }}>
+                  PICK PER ROUND \u2014 CHANGE ANYTIME BEFORE THE ROUND CLOSES ({game.positionAmount ?? 0} tUSDC / ROUND)
+                </div>
+              </>
+            )}
           </div>
         )}
 
