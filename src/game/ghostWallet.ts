@@ -153,7 +153,10 @@ function buildGhost(pk: `0x${string}`, onDestroy: () => void): GhostWallet {
         args: [spender, amountRaw],
         account: account,
         chain: EC_CHAIN,
-        gas: 1_000_000n,
+        // Somnia tUSDC approve costs ~1.09M gas; the old 1M cap reverted
+        // out-of-gas, which left the arena permanently "NOT STAKED" after the
+        // player had already paid the deposit relay.
+        gas: 1_500_000n,
       });
       await waitMined(hash);
       return hash;
@@ -166,7 +169,7 @@ function buildGhost(pk: `0x${string}`, onDestroy: () => void): GhostWallet {
         args: [matchKey(matchId, playerAddress)],
         account: account,
         chain: EC_CHAIN,
-        gas: 1_000_000n,
+        gas: 1_500_000n,
       });
       await waitMined(hash);
       return hash;
@@ -179,7 +182,7 @@ function buildGhost(pk: `0x${string}`, onDestroy: () => void): GhostWallet {
         args: [to, amountRaw],
         account: account,
         chain: EC_CHAIN,
-        gas: 1_000_000n,
+        gas: 1_500_000n,
       });
       await waitMined(hash);
       return hash;

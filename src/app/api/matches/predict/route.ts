@@ -55,6 +55,15 @@ const EC_ORACLE_FLAT_BAND = 0.0008;
 // wider than half the ask<=>bid spread is an unambiguous directional print.)
 const EC_ORACLE_SPREAD_FACTOR = 0.5;
 
+// LEVERAGE MULTIPLIER for round resolution. The EC YES mid is a binary probability
+// (0..1) on a thin book, so it drifts only a few bp across a ~10s round while the
+// underlying spot chart moves a lot. That tiny raw drift lands under the FLAT band
+// and every round resolves as a 0-0 draw — "round is always flat even though the
+// chart is moving". Amplifying the measured mid-delta by this factor turns real
+// small directional flow into a decisive UP/DOWN while the honest band logic
+// (flat/spread thresholds) still suppresses true no-movement rounds.
+const EC_RESOLUTION_LEVERAGE = 100;
+
 /**
  * AUTHORITATIVE ROUND RESOLUTION
  * Single entry point for all round outcomes. Server calculates:
@@ -136,7 +145,13 @@ async function resolveRound(match: any, now: Date): Promise<{
   const spreadWidth = quote.bestAsk != null && quote.bestBid != null ? quote.bestAsk - quote.bestBid : 0;
   const band = Math.max(EC_ORACLE_FLAT_BAND, spreadWidth * EC_ORACLE_SPREAD_FACTOR);
 
-  const diff = quote.yesPrice - anchor;
+  const rawDiff = quote.yesPrice - anchor;
+
+  // Apply the leverage multiplier to the measured mid-delta so real directional
+  // flow within a 10s round (tiny in absolute YES-mid terms) crosses the FLAT
+  // band and resolves as a decisive UP/DOWN instead of a perpetual 0-0 draw.
+  const diff = rawDiff * EC_RESOLUTION_LEVERAGE;
+
   const actual: "UP" | "DOWN" | "FLAT" = diff > band ? "UP" : diff < -band ? "DOWN" : "FLAT";
   const startPrice = anchor;
   const endPrice = quote.yesPrice;

@@ -88,6 +88,19 @@ export async function POST(req: NextRequest) {
       return jsonError(402, `insufficient allowance: approved ${allowance} of ${amount}`);
     }
 
+    // Idempotency guard: the ghost key is stable per match, so a re-mount that
+    // re-invokes this route must NOT charge the player a second time. If the
+    // ghost already holds the full stake, it's already funded — no new transfer.
+    const ghostBal = (await pc.readContract({
+      address: TUSDC_ADDRESS,
+      abi: TUSDC_ABI,
+      functionName: "balanceOf",
+      args: [ghostAddress as `0x${string}`],
+    })) as bigint;
+    if (ghostBal >= amount) {
+      return NextResponse.json({ ok: true, alreadyFunded: true, ghostBalance: ghostBal.toString() });
+    }
+
     const wc = adminWallet();
     const tx = await wc.writeContract({
       address: TUSDC_ADDRESS,
@@ -96,7 +109,9 @@ export async function POST(req: NextRequest) {
       args: [playerAddress as `0x${string}`, ghostAddress as `0x${string}`, amount],
       chain: EC_CHAIN,
       account: wc.account!,
-      gas: 1_500_000n,
+      // tUSDC ops on Somnia run hot (~1.1M+); the old 1.5M cap could revert
+      // out-of-gas, leaving the player charged nothing but the arena unfunded.
+      gas: 3_000_000n,
     });
 
     // Wait for the relay to mine so the ghost has funds before the fight starts.
