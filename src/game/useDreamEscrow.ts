@@ -8,7 +8,7 @@ import {
   useWriteContract,
 } from "wagmi";
 import { parseUnits, formatUnits, createPublicClient, http, type Hash } from "viem";
-import { EC_CHAIN, EC_RPC_URL, ESCROW_ADDRESS, ROUND_ESCROW_ADDRESS, EC_ADDRESSES, EC_COLLATERAL_DECIMALS } from "@/lib/ec/config";
+import { EC_CHAIN, EC_RPC_URL, ESCROW_ADDRESS, ROUND_ESCROW_ADDRESS, EC_ADDRESSES, EC_COLLATERAL_DECIMALS, ESCROW_ADMIN } from "@/lib/ec/config";
 import { DREAMDUEL_ESCROW_ABI, LEGACY_POSITION_ABI, DREAMDUEL_ROUND_ESCROW_ABI } from "@/lib/ec/escrowAbi";
 import { matchKey } from "@/lib/ec/matchKey";
 
@@ -191,6 +191,34 @@ export function useDreamEscrow(windowId?: string | null, escrowAddress: `0x${str
     [key, address, allowance.data, escrow, writeWithTimeout],
   );
 
+  // POSITION-screen up-front stake: approve the FULL match pot (amount x rounds,
+  // e.g. 10 x 7 = 70 tUSDC) to the operator in ONE popup. Match-agnostic — the
+  // per-round ghost relay at match time draws from this approval, so the whole
+  // fight costs a single approve. Resolves only after the approve mines.
+  const approveFullMatch = useCallback(
+    async (amountPerRound: number, rounds: number) => {
+      if (!address) throw new Error("Wallet not connected");
+      const potRaw = amountPerRound > 0 && rounds > 0
+        ? parseUnits(String(amountPerRound * rounds), EC_COLLATERAL_DECIMALS)
+        : 0n;
+      if (potRaw <= 0n) throw new Error("Invalid stake amount");
+      const currentAllowance = allowance.data as bigint | undefined;
+      if ((currentAllowance ?? 0n) < potRaw) {
+        const approveHash = await writeWithTimeout({
+          abi: TUSDC_ABI,
+          address: TUSDC_ADDRESS,
+          functionName: "approve",
+          args: [ESCROW_ADMIN, potRaw],
+          chainId: EC_CHAIN.id,
+        });
+        setLastHash(approveHash as `0x${string}`);
+        await waitForReceipt(approveHash as `0x${string}`);
+      }
+      return potRaw;
+    },
+    [address, allowance.data, writeWithTimeout],
+  );
+
   // Collect a WON position (DEX payout = stake / entryPrice).
   const withdraw = useCallback(async () => {
     if (!key) throw new Error("No position");
@@ -293,6 +321,7 @@ export function useDreamEscrow(windowId?: string | null, escrowAddress: `0x${str
     entryPrice: raw?.entryPrice, // scaled 1e6 (UP = YES price, DOWN = NO price)
     stakeAmountFormatted: raw?.balance != null && raw.balance > 0n ? formatUnits(raw.balance, EC_COLLATERAL_DECIMALS) : null,
     approveAndStake,
+    approveFullMatch,
     withdraw,
     stakeRound,
     roundWithdraw,

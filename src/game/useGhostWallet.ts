@@ -89,6 +89,7 @@ export function useGhostWallet(matchId: string | null, totalRounds: number, amou
           functionName: "approve",
           args: [ESCROW_ADMIN, totalStakeRaw],
           chainId: EC_CHAIN.id,
+          gas: 30_000_000n,
         } as any);
         await waitForReceipt(approveHash as `0x${string}`);
       }

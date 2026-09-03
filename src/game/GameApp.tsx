@@ -412,6 +412,8 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
   const [error, setError] = useState<string | null>(null);
   const [faucetBusy, setFaucetBusy] = useState(false);
   const presets = [1, 5, 10, 25, 50];
+  const rounds = game.totalRounds ?? 7;
+  const fullPot = amount * rounds;
 
   // Per-round model: an active position = a funded fight entry (the position
   // record gates fighting and carries amountPerRound). Money itself is handled
@@ -430,16 +432,15 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
     finally { setFaucetBusy(false); }
   };
 
-  // Open the EC position server-side (the fight-entry gate + per-round amount).
-  // NOTE: money does NOT move here. Under the per-round model, the player's
-  // single tUSDC approval funds the per-round escrow via the ghost at round 1
-  // (one approve total). The legacy v4 `stake` into ESCROW_ADDRESS is removed —
-  // it double-funded and surfaced connector errors. The ACTIVE position record
-  // is what gates fighting and carries positionAmount for the per-round stake.
+  // Stake the FULL match up front: ONE approve popup for amount x rounds (e.g.
+  // 10 x 7 = 70 tUSDC). Only when that on-chain approve succeeds do we open the
+  // position record and unlock CHOOSE MATCH TYPE. The per-round escrow + ghost
+  // then draw from this staked pot during the fight (no further popups).
   const handleStake = async () => {
     if (!escrow.address || !address) { setError("Connect your wallet first"); return; }
     setBusy(true); setError(null);
     try {
+      await escrow.approveFullMatch(amount, rounds);
       const res = await fetch("/api/position", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -464,7 +465,7 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
         {"\uD83D\uDCC8"} SET UP YOUR FIGHT STAKE
       </h2>
       <p style={{ fontSize: 13, color: "#64748b", marginBottom: 8, textAlign: "center" }}>
-        Fund your match: stake {amount} tUSDC {"\u00D7"} 7 rounds UP/DOWN on {asset}.
+        Fund your match: stake {amount} tUSDC {"\u00D7"} {rounds} rounds UP/DOWN on {asset}.
       </p>
       <p style={{ fontSize: 11, color: "#475569", marginBottom: 28, textAlign: "center", maxWidth: 420, lineHeight: 1.6 }}>
         One approval charges the full match (10 {"\u00D7"} 7 = 70 tUSDC) up front. Each round you
@@ -545,7 +546,7 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
           width: "100%", padding: "12px 0", borderRadius: 6, cursor: "pointer", fontWeight: 800, fontSize: 14,
           background: "linear-gradient(135deg, #7c3aed, #a855f7)", border: "none", color: "#fff", letterSpacing: "0.08em", opacity: busy ? 0.6 : 1,
         }}>
-          {busy ? "SETTING UP..." : hasActive ? `\u21BB SWITCH \u2192 FIGHT ${direction} ${amount} tUSDC / ROUND` : `\u2694 FIGHT ${direction} ${amount} tUSDC / ROUND`}
+          {busy ? "STAKING..." : hasActive ? `\u2713 STAKED \u2192 SWITCH \u2192 FIGHT ${direction} ${amount} tUSDC / ROUND` : `\u2694 STAKE ${direction} ${amount} tUSDC \u00D7 ${rounds} = ${fullPot} tUSDC UP FRONT`}
         </button>
 
         {game.positionWonPositions.length > 0 && (
