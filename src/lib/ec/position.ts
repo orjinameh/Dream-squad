@@ -72,27 +72,13 @@ export async function openPosition(input: OpenPositionInput) {
   await connectToDatabase();
   const addr = input.address.toLowerCase();
 
-  // Mirror on-chain truth: a DB doc is only a REAL active position if tUSDC is
-  // actually staked/open on-chain for its windowId (`position(windowId)`).
-  // A phantom (browser stake never landed) must NOT lock the wallet — clear it
-  // so the player can simply stake again.
-  const existing = await EcPosition.find({ address: addr, status: "ACTIVE" }).lean();
-  for (const pos of existing) {
-    if (!pos.windowId) continue;
-    // On a read error, assume it's a real stake (never clear a possibly-funded
-    // position) — safe direction.
-    const escrow = await resolvePositionEscrow(pos.windowId as string, pos);
-    const open = await positionOpen(pos.windowId as `0x${string}`, escrow).catch(() => true);
-    if (open) {
-      throw new PositionError(409, "you already have an active EC position. Settle it or switch direction by opening a new one.");
-    }
-  }
-  // We only reach here if none of the wallet's ACTIVE docs are funded on-chain,
-  // so they're all phantoms — remove them so they can't block a fresh stake.
+  // Per-round model: each position is a plain per-match funding record. There's
+  // no single on-chain window to lock the wallet against, so opening (or
+  // switching direction for) a new fight just creates a fresh ACTIVE record.
+  // Any stale ACTIVE records from the legacy model are cleared so they can't
+  // block a new fight.
   await EcPosition.deleteMany({ address: addr, status: "ACTIVE" });
 
-  // Per-round model: create a funding record without requiring a live v4 EC window.
-  // The position is just a gate + amount carrier; money moves via per-round escrow.
   const now = new Date();
   const windowId = `per-round-${addr}-${now.getTime()}`;
 

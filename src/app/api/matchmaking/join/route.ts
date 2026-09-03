@@ -54,7 +54,7 @@ export async function POST(req: Request): Promise<Response> {
     if (!position) {
       return jsonError(409, "no active EC position — stake one first on the POSITION screen");
     }
-    if (!position.windowCloseAt || new Date(position.windowCloseAt) <= new Date()) {
+    if (position.windowCloseAt && new Date(position.windowCloseAt) <= new Date()) {
       return jsonError(409, "your EC position window has ended — open a new position to fight");
     }
 
