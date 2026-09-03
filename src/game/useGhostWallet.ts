@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useAccount, useWriteContract } from "wagmi";
 import { parseUnits, createPublicClient, http } from "viem";
 import { EC_COLLATERAL_DECIMALS, ROUND_ESCROW_ADDRESS, ESCROW_ADMIN, EC_CHAIN, EC_RPC_URL, EC_ADDRESSES } from "@/lib/ec/config";
@@ -55,6 +55,12 @@ export function useGhostWallet(matchId: string | null, totalRounds: number, amou
   const [funded, setFunded] = useState(false);
   const [funding, setFunding] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Track an in-flight, unused allowance grant (approve written but the deposit
+  // never relayed) so it can be auto-revoked after a short window instead of
+  // sitting open on the player's wallet indefinitely.
+  const [grantPending, setGrantPending] = useState(false);
+  const grantAtRef = useRef(0);
+  const revokingRef = useRef(false);
 
   // Create/recover the ghost key for this match in browser memory.
   useEffect(() => {
@@ -109,6 +115,11 @@ export function useGhostWallet(matchId: string | null, totalRounds: number, amou
           } as any);
           await waitForReceipt(approveHash as `0x${string}`);
         }
+        // The grant is now live but not yet consumed. Start the auto-revoke
+        // window so an approve that's never used (fight not started within a few
+        // minutes) is cleared from the wallet instead of sitting open.
+        grantAtRef.current = Date.now();
+        setGrantPending(true);
 
         const res = await fetch("/api/matches/ghost/fund", {
           method: "POST",
@@ -126,6 +137,7 @@ export function useGhostWallet(matchId: string | null, totalRounds: number, amou
         // Ghost approves the round escrow so it can move its own funds per round.
         await ghost.signApproveEscrow(ROUND_ESCROW_ADDRESS, parseUnits("1000000", EC_COLLATERAL_DECIMALS));
         setFunded(true);
+        setGrantPending(false);
         return data;
       })();
 
@@ -138,6 +150,47 @@ export function useGhostWallet(matchId: string | null, totalRounds: number, amou
       setFunding(false);
     }
   }, [matchId, address, ghost, totalStakeRaw, writeContractAsync]);
+
+  // AUTO-REVOKE of an unused allowance grant. A standard ERC-20 approve can't
+  // self-expire, so if the deposit was never relayed within the window we write
+  // approve(0) to clear the open 70 tUSDC grant off the player's wallet instead
+  // of letting it sit indefinitely. Only fires once (per in-flight grant), only
+  // when the grant actually went unused, and only if the allowance still covers
+  // it (so we never revoke an authorization that was already consumed/reduced).
+  useEffect(() => {
+    if (!grantPending || funded || !address || revokingRef.current) return;
+    const REVOKE_AFTER_MS = 5 * 60_000;
+    const startedAt = grantAtRef.current || Date.now();
+    const delay = Math.max(0, REVOKE_AFTER_MS - (Date.now() - startedAt));
+    const t = setTimeout(async () => {
+      if (revokingRef.current) return;
+      if (funded) return;
+      try {
+        revokingRef.current = true;
+        const now = await allowanceOf(address, ESCROW_ADMIN);
+        if (now < totalStakeRaw) {
+          // Grant already consumed or reduced elsewhere — nothing to clear.
+          setGrantPending(false);
+          return;
+        }
+        await writeContractAsync({
+          abi: TUSDC_ABI,
+          address: TUSDC_ADDRESS,
+          functionName: "approve",
+          args: [ESCROW_ADMIN, 0n],
+          chainId: EC_CHAIN.id,
+          gas: 30_000_000n,
+        } as any);
+        setGrantPending(false);
+      } catch (e) {
+        console.warn("[ghost] auto-revoke of unused allowance failed", (e as Error)?.message);
+        // Keep grantPending so the next mount/fund can still attempt cleanup.
+      } finally {
+        revokingRef.current = false;
+      }
+    }, delay);
+    return () => clearTimeout(t);
+  }, [grantPending, funded, address, totalStakeRaw, writeContractAsync]);
 
   /**
    * Stake ONE round on-chain using the ghost key (no popup). Call this when a

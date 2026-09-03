@@ -563,12 +563,13 @@ export function useGameState(): GameHook {
   // Visual countdown only. Server resolves the round via predict endpoint.
   useEffect(() => {
     if (!isBotMatch || phase !== "ROUND_ACTIVE") return;
-    // GHOST FUNDING GATE: the one-time deposit must land before any round clock
-    // runs. If the bot match is explicitly unfunded keep the timer OFF entirely —
-    // the round can never auto-resolve/advance unfunded (the server also refuses).
-    // `funded` is only true once `/api/matches/ghost` confirms on-chain. Missing/
-    // undefined funding info (e.g. offline/test state) is NOT treated as unfunded.
-    if (mp.state.serverState?.funded === false) return;
+    // GHOST FUNDING GATE (hard): the one-time deposit MUST be confirmed before
+    // any round clock can run. Only `serverState.funded === true` (set when
+    // /api/matches/ghost lands) lets the timer start. Anything else — unfunded,
+    // missing matchId, or a stale pre-fix match with no funding info — holds the
+    // round. Because the timer never starts, `attemptSubmit`/`forceLocalAdvance`
+    // can never fabricate a round and auto-advance an unfunded fight.
+    if (mp.state.serverState?.funded !== true) return;
     if (botTimerRef.current) return;
 
     const deadline = Date.now() + ROUND_TIME * 1000;
@@ -831,10 +832,10 @@ export function useGameState(): GameHook {
     // round 1 ACTIVE the instant createMatch runs) — letting the match start
     // before the stake is confirmed.
     if (phase === "READY_UP") return;
-    // GHOST FUNDING GATE: never open a bot round while explicitly unfunded —
-    // hold on the FUND screen until the one-time deposit confirms (server refuses
-    // to resolve anyway). PvP has no ghost and is unaffected.
-    if (isBotMatch && mp.state.serverState?.funded === false && ss.roundPhase === "ACTIVE") return;
+    // GHOST FUNDING GATE: never open a bot round unless funding is confirmed —
+    // hold on the FUND screen until the one-time deposit lands (server refuses to
+    // resolve anyway). PvP has no ghost and is unaffected.
+    if (isBotMatch && mp.state.serverState?.funded !== true && ss.roundPhase === "ACTIVE") return;
     if (ss.roundPhase === "ACTIVE" && !midRound) {
       roundIdentityRef.current = `${isBotMatch ? "bot" : "pvp"}-${ss.currentRound}`;
       activeRoundNumRef.current = ss.currentRound;
@@ -1141,7 +1142,7 @@ export function useGameState(): GameHook {
     // PvP has no ghost and is never held.
     funded: mp.state.serverState?.funded === true,
     fundingHeld: isBotMatch &&
-      mp.state.serverState?.funded === false &&
+      mp.state.serverState?.funded !== true &&
       (phase === "MATCH_INTRO" || phase === "ROUND_START" || phase === "ROUND_ACTIVE" || phase === "ROUND_LOCKED"),
     connectionStatus: connectionDisplay,
     pingMs: mp.state.pingMs,

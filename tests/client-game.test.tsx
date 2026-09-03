@@ -38,6 +38,7 @@ function buildState() {
     rounds: resolveState.rounds,
     winner: "player",
     opponentType: "bot",
+    funded: true,
     playerHP: 100,
     rivalHP: 100,
     playerStreak: 0,
