@@ -6,7 +6,7 @@ import { privateKeyToAccount } from "viem/accounts";
 
 import { POST as createRoute } from "@/app/api/matches/create/route";
 import { POST as predictRoute } from "@/app/api/matches/predict/route";
-import { POST as fundGhostRoute } from "@/app/api/matches/ghost/route";
+import { POST as fundGhostRoute } from "@/app/api/matches/ghost/fund/route";
 import { Match } from "@/db/models/Match";
 import { EcPosition } from "@/db/models/EcPosition";
 import { normalizeAddress } from "@/lib/addresses";
