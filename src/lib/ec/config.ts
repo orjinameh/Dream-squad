@@ -16,17 +16,30 @@ export const EC_RPC_URL = "https://api.infra.testnet.somnia.network";
 export const EC_RPC_WS_URL = "wss://api.infra.testnet.somnia.network/ws";
 export const EC_INDEXER_URL = "https://dev.smk.somnia.host/v1/graphql";
 
-// Fallback RPC mirrors for the Somnia testnet (chain 50312, STT). The primary
-// infra endpoint rate-limits under load ("too many errors, retrying…"), which
-// freezes wallet approve popups (eth_gasPrice) and hides on-chain balance reads.
-// viem `fallback` shifts to an alternate mirror instead of failing hard.
+// Somnia testnet (chain 50312, STT) RPC mirrors, ORDERED MOST-RELIABLE-FIRST.
+// The official infra endpoint (EC_RPC_URL) rate-limits under load and has been
+// seen returning 502/html under stress; dream-rpc is the documented testnet RPC.
+// The thirdweb mirror is the one that actually serves JSON-RPC from serverless
+// environments right now. viem `fallback` shifts to the next mirror on any
+// error, and the SDK's public client reads `http[0]` — so the order here is
+// what keeps the live game resolving when a mirror dies.
 export const EC_RPC_URLS = [
-  EC_RPC_URL,
-  "https://dream-rpc.somnia.network",
   "https://50312.rpc.thirdweb.com",
+  "https://dream-rpc.somnia.network",
+  EC_RPC_URL,
 ] as const;
 
 export const ecHttpTransport = () => fallback(EC_RPC_URLS.map((url) => http(url)));
+
+/**
+ * Explicit legacy gas price for wallet-signed writes (approve / stake). The
+ * player's wallet estimates fees against ITS OWN RPC (api.infra), which
+ * rate-limits eth_gasPrice mid-popup and surfaces "User rejected the request"
+ * even though the user never rejected. Supplying gasPrice inline means neither
+ * viem nor the wallet has to fetch it — the tx is fully priced before the
+ * popup. 10 gwei sits above the current 6 gwei network price (testnet STT).
+ */
+export const EC_TX_GAS_PRICE = 10_000_000_000n;
 
 export const EC_CHAIN = defineChain({
   id: EC_CHAIN_ID,
@@ -34,7 +47,7 @@ export const EC_CHAIN = defineChain({
   nativeCurrency: { name: "STT", symbol: "STT", decimals: 18 },
   rpcUrls: {
     default: {
-      http: [EC_RPC_URL],
+      http: [...EC_RPC_URLS],
       webSocket: [EC_RPC_WS_URL],
     },
   },

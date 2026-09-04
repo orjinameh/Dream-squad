@@ -7,8 +7,8 @@ import {
   useWaitForTransactionReceipt,
   useWriteContract,
 } from "wagmi";
-import { parseUnits, formatUnits, createPublicClient, http, type Hash } from "viem";
-import { EC_CHAIN, EC_RPC_URL, ESCROW_ADDRESS, ROUND_ESCROW_ADDRESS, EC_ADDRESSES, EC_COLLATERAL_DECIMALS, ESCROW_ADMIN } from "@/lib/ec/config";
+import { parseUnits, formatUnits, createPublicClient, type Hash } from "viem";
+import { EC_CHAIN, ESCROW_ADDRESS, ROUND_ESCROW_ADDRESS, EC_ADDRESSES, EC_COLLATERAL_DECIMALS, ESCROW_ADMIN, EC_TX_GAS_PRICE, ecHttpTransport } from "@/lib/ec/config";
 import { DREAMDUEL_ESCROW_ABI, LEGACY_POSITION_ABI, DREAMDUEL_ROUND_ESCROW_ABI } from "@/lib/ec/escrowAbi";
 import { matchKey } from "@/lib/ec/matchKey";
 
@@ -158,7 +158,7 @@ export function useDreamEscrow(windowId?: string | null, escrowAddress: `0x${str
     async (params: Parameters<typeof writeContractAsync>[0]): Promise<`0x${string}`> => {
       if (!writeContractAsync) throw new Error("Wallet not connected");
       return Promise.race([
-        writeContractAsync({ ...params, gas: EC_TX_GAS } as any),
+        writeContractAsync({ ...params, gas: EC_TX_GAS, gasPrice: EC_TX_GAS_PRICE } as any),
         new Promise((_, reject) =>
           setTimeout(() => reject(new Error("Wallet prompt timed out — check your wallet's popup/permission settings")), 90_000),
         ),
@@ -352,7 +352,7 @@ export function useDreamEscrow(windowId?: string | null, escrowAddress: `0x${str
 }
 
 async function waitForReceipt(hash: `0x${string}`) {
-  const pc = createPublicClient({ chain: EC_CHAIN, transport: http(EC_RPC_URL) });
+  const pc = createPublicClient({ chain: EC_CHAIN, transport: ecHttpTransport() });
   for (let i = 0; i < 30; i++) {
     try {
       const r = await pc.getTransactionReceipt({ hash });

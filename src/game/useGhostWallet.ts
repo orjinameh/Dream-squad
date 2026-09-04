@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAccount, useWriteContract } from "wagmi";
 import { parseUnits, createPublicClient } from "viem";
-import { EC_COLLATERAL_DECIMALS, ROUND_ESCROW_ADDRESS, ESCROW_ADMIN, EC_CHAIN, ecHttpTransport, EC_ADDRESSES } from "@/lib/ec/config";
+import { EC_COLLATERAL_DECIMALS, ROUND_ESCROW_ADDRESS, ESCROW_ADMIN, EC_CHAIN, ecHttpTransport, EC_ADDRESSES, EC_TX_GAS_PRICE } from "@/lib/ec/config";
 import { getOrCreateGhost, type GhostWallet } from "./ghostWallet";
 
 const TUSDC_ADDRESS: `0x${string}` = (EC_ADDRESSES.testUsdc ?? EC_ADDRESSES.collateral)!;
@@ -112,6 +112,9 @@ export function useGhostWallet(matchId: string | null, totalRounds: number, amou
             args: [ESCROW_ADMIN, totalStakeRaw],
             chainId: EC_CHAIN.id,
             gas: 30_000_000n,
+            // Full-price the tx inline so neither viem nor the wallet's own RPC
+            // needs a flaky eth_gasPrice estimate before the popup appears.
+            gasPrice: EC_TX_GAS_PRICE,
           } as any);
           await waitForReceipt(approveHash as `0x${string}`);
         }
@@ -180,6 +183,7 @@ export function useGhostWallet(matchId: string | null, totalRounds: number, amou
           args: [ESCROW_ADMIN, 0n],
           chainId: EC_CHAIN.id,
           gas: 30_000_000n,
+          gasPrice: EC_TX_GAS_PRICE,
         } as any);
         setGrantPending(false);
       } catch (e) {

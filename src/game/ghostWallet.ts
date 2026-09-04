@@ -1,8 +1,8 @@
 "use client";
 
-import { createWalletClient, createPublicClient, http, type Hash } from "viem";
+import { createWalletClient, createPublicClient, type Hash } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { EC_CHAIN, EC_RPC_URL, ROUND_ESCROW_ADDRESS, EC_ADDRESSES } from "@/lib/ec/config";
+import { EC_CHAIN, ROUND_ESCROW_ADDRESS, EC_ADDRESSES, ecHttpTransport } from "@/lib/ec/config";
 import { DREAMDUEL_ROUND_ESCROW_ABI } from "@/lib/ec/escrowAbi";
 import { matchKey } from "@/lib/ec/matchKey";
 
@@ -114,9 +114,9 @@ function buildGhost(pk: `0x${string}`, onDestroy: () => void): GhostWallet {
   const wallet = createWalletClient({
     account,
     chain: EC_CHAIN,
-    transport: http(EC_RPC_URL),
+    transport: ecHttpTransport(),
   });
-  const pc = createPublicClient({ chain: EC_CHAIN, transport: http(EC_RPC_URL) });
+  const pc = createPublicClient({ chain: EC_CHAIN, transport: ecHttpTransport() });
   const waitMined = async (hash: Hash) => {
     for (let i = 0; i < 40; i++) {
       try {

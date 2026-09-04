@@ -2,7 +2,7 @@ import { createPublicClient, http, defineChain } from "viem";
 import { SomniaMarkets, upProbability, type MarketOnchain, type UnifiedMarket, type BinaryMarket } from "@somnia-chain/markets-sdk";
 import {
   EC_ADDRESSES, EC_CHAIN, EC_CHAIN_ID, EC_INDEXER_URL, EC_RPC_URL, EC_RPC_WS_URL,
-  EC_COLLATERAL_DECIMALS,
+  EC_COLLATERAL_DECIMALS, ecHttpTransport,
 } from "./config";
 
 /**
@@ -40,7 +40,12 @@ export function ecExchange(): SomniaMarkets {
 
 export function ecPublicClient() {
   if (_publicClient) return _publicClient;
-  _publicClient = createPublicClient({ chain: EC_CHAIN, transport: http(RPC_URL) });
+  // Post-reorder, webSocket[...]/http[0] of EC_CHAIN is the reliable mirror;
+  // the fallback transport keeps all three mirrors warm for the rest.
+  _publicClient = createPublicClient({
+    chain: EC_CHAIN,
+    transport: process.env.SOMNIA_RPC_URL ? http(RPC_URL) : ecHttpTransport(),
+  });
   return _publicClient;
 }
 

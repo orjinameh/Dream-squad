@@ -1,6 +1,6 @@
 import { createPublicClient, createWalletClient, http, type Hash } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { EC_CHAIN, EC_RPC_URL, ESCROW_ADDRESS, ROUND_ESCROW_ADDRESS } from "./config";
+import { EC_CHAIN, ESCROW_ADDRESS, ROUND_ESCROW_ADDRESS, ecHttpTransport } from "./config";
 import { DREAMDUEL_ESCROW_ABI, LEGACY_POSITION_ABI, DREAMDUEL_ROUND_ESCROW_ABI } from "./escrowAbi";
 
 /**
@@ -30,7 +30,7 @@ let _adminWallet: ReturnType<typeof createWalletClient> | null = null;
 
 export function publicClient() {
   if (_public) return _public;
-  _public = createPublicClient({ chain: EC_CHAIN, transport: http(EC_RPC_URL) });
+  _public = createPublicClient({ chain: EC_CHAIN, transport: ecHttpTransport() });
   return _public;
 }
 
@@ -41,7 +41,7 @@ export function adminWallet() {
   _adminWallet = createWalletClient({
     account: privateKeyToAccount(pk as `0x${string}`),
     chain: EC_CHAIN,
-    transport: http(EC_RPC_URL),
+    transport: ecHttpTransport(),
   });
   return _adminWallet;
 }
