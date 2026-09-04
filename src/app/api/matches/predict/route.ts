@@ -529,11 +529,18 @@ export async function POST(req: Request): Promise<Response> {
       }
 
       // We won the claim. Now resolve.
-      // For PvP: check if both have predicted. If not, wait.
+      // For PvP: a round NEVER resolves before its close. The 10s ACTIVE
+      // window is the combat window — the outcome must derive from the full
+      // entry→exit move of the market, not from the instant the last player's
+      // prediction/flip happened to land. Predictions ARE stored above (kept
+      // server-side for the final resolve), but the round stays in ACTIVE until
+      // the deadline. Clients re-submit through ROUND_LOCKED after the close,
+      // and the first post-deadline request claims ACTIVE and resolves.
       if (isPvP) {
-        const bothPredicted = claim.playerPrediction && claim.rivalPrediction;
-        if (!bothPredicted && !isExpired) {
-          // Still waiting — revert to ACTIVE so the other player can predict
+        if (!isExpired) {
+          // Not at the round's close yet — keep the window open. The other
+          // player may still submit or flip; whichever request arrives after
+          // the deadline resolves the round against BOTH final calls.
           await Match.findOneAndUpdate(
             { _id: match._id, roundPhase: "EXECUTING" },
             { $set: { roundPhase: "ACTIVE" } },
