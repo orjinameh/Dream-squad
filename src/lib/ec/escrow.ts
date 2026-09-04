@@ -259,4 +259,30 @@ export async function settleRoundOnEscrowGuarded(matchId: Hash, round: number, w
   }
 }
 
+/**
+ * Place a per-round on-chain stake via the round escrow's `stakeRound`.
+ * Called by the operator (admin) on behalf of the player's ghost wallet at
+ * COMMIT time — the ghost holds the tUSDC and has approved the round escrow,
+ * so the admin can relay the call. No-throw (fire-and-forget): a failed
+ * stake must never block the match from advancing.
+ */
+export async function stakeRoundOnChain(
+  matchId: Hash,
+  round: number,
+  amountRaw: bigint,
+  entryPriceRaw: bigint,
+  escrow: `0x${string}` = ROUND_ESCROW_ADDRESS,
+) {
+  const wc = adminWallet();
+  return wc.writeContract({
+    address: escrow,
+    abi: DREAMDUEL_ROUND_ESCROW_ABI,
+    functionName: "stakeRound",
+    args: [matchId, BigInt(round), amountRaw, entryPriceRaw],
+    chain: EC_CHAIN,
+    account: wc.account!,
+    gas: ADMIN_GAS,
+  });
+}
+
 

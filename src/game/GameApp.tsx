@@ -94,7 +94,7 @@ export default function GameApp() {
       {g.phase === "MATCHMAKING" && <MatchmakingScreen matchmaking={mm} onFightBot={g.actions.fightBotInstead} onHome={g.actions.cancelMatchmaking} />}
       {g.phase === "MATCH_FOUND" && <MatchFoundScreen game={g} />}
       {g.phase === "READY_UP" && <ReadyUpScreen game={g} escrow={escrow} onReady={g.actions.setReady} onStartDuel={g.actions.startDuel} />}
-      {(g.phase === "MATCH_INTRO" || g.phase === "ROUND_START" || g.phase === "ROUND_ACTIVE" || g.phase === "ROUND_LOCKED" || g.phase === "ROUND_EXECUTING" || g.phase === "ROUND_REVEAL" || g.phase === "ROUND_IMPACT") && (
+      {(g.phase === "MATCH_INTRO" || g.phase === "ROUND_START" || g.phase === "ROUND_COMMIT" || g.phase === "ROUND_ACTIVE" || g.phase === "ROUND_LOCKED" || g.phase === "ROUND_EXECUTING" || g.phase === "ROUND_REVEAL" || g.phase === "ROUND_IMPACT") && (
         <ArenaScreen game={g} escrow={escrow} />
       )}
       {g.phase === "MATCH_RESULT" && <MatchResult game={g} onRematch={() => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.rematch(); }} onChangePosition={g.actions.changePosition} onExit={g.actions.goToHome} />}
@@ -1157,7 +1157,7 @@ function ReadyUpScreen({ game, escrow, onReady, onStartDuel }: {
 /** True while the 7-round battle is live — no wallet prompts may appear here.
  *  The single approval (Step 1 of the flow) must be settled before round 1. */
 function isFightPhase(phase: string): boolean {
-  return phase === "ROUND_START" || phase === "ROUND_ACTIVE" || phase === "ROUND_LOCKED"
+  return phase === "ROUND_START" || phase === "ROUND_COMMIT" || phase === "ROUND_ACTIVE" || phase === "ROUND_LOCKED"
     || phase === "ROUND_EXECUTING" || phase === "ROUND_REVEAL" || phase === "ROUND_IMPACT";
 }
 
@@ -1557,7 +1557,7 @@ function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; 
 
         {/* Live chart — sits UNDER the combat. Same real BTC/ETH feed the
             player watched before locking their call. */}
-        {(game.phase === "ROUND_ACTIVE" || game.phase === "ROUND_LOCKED" || game.phase === "ROUND_REVEAL" || game.phase === "ROUND_IMPACT") && (
+        {(game.phase === "ROUND_COMMIT" || game.phase === "ROUND_ACTIVE" || game.phase === "ROUND_LOCKED" || game.phase === "ROUND_REVEAL" || game.phase === "ROUND_IMPACT") && (
           <div style={{ width: "100%", maxWidth: 460, margin: "0 auto 16px" }}>
             <LiveChart asset={game.selectedPrediction?.asset ?? "BTC"} height={180} />
           </div>
@@ -1640,7 +1640,7 @@ function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; 
         borderTop: "2px solid #1e293b",
         background: "rgba(8,8,16,0.95)",
       }}>
-        {game.phase === "ROUND_ACTIVE" && (
+        {(game.phase === "ROUND_COMMIT" || game.phase === "ROUND_ACTIVE") && (
           <div style={{ textAlign: "center" }}>
             {!ghost.funded ? (
               <div style={{ padding: "16px 12px", borderRadius: 10, border: "2px solid #f59e0b", background: "rgba(245,158,11,0.08)" }}>

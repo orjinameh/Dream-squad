@@ -9,22 +9,14 @@ import {
 } from "./useMultiplayer";
 import { useAccount } from "wagmi";
 
-const LOCK_DURATION = 1200;
-const REVEAL_DURATION = 1500;
-const IMPACT_DURATION = 1400;
-const MATCH_INTRO_DURATION = 2000;
-const ROUND_TRANSITION_DELAY = 800;
+// Runtime-overridable timing knob: tests set `globalThis.__KEY__ = ms` via
+// beforeEach to speed up a full bot match. Read at call time (not module load)
+// so overrides apply regardless of import order.
+const OVD = (key: string, def: number) => (globalThis as any)[`__${key}__`] ?? def;
 const ROUND_TIME = (globalThis as any).__ROUND_TIME__ ?? 10;
+const COMMIT_TIME = 5;
 
 const MAX_HP = 100;
-
-const WINDUP_MS = 400;
-const STRIKE_MS = 300;
-const HITSTOP_MS = 80;
-const IMPACT_MS = 300;
-const KNOCKBACK_MS = 300;
-const RECOVERY_MS = 200;
-const CLASH_MS = 600;
 
 // Harmless visual-only randomness — NEVER used for game outcomes
 function visualCoinFlip(): "LEFT" | "RIGHT" {
@@ -394,17 +386,17 @@ export function useGameState(): GameHook {
         setRivalCharState("block");
         setShakeScreen(true);
         scheduleTimer(() => setShakeScreen(false), 200);
-      }, WINDUP_MS / 2);
+      }, OVD("WINDUP_MS", 400) / 2);
       scheduleTimer(() => {
         setCombatPhase("recovery");
         setPlayerCharState("idle");
         setRivalCharState("idle");
-      }, WINDUP_MS / 2 + CLASH_MS);
+      }, OVD("WINDUP_MS", 400) / 2 + OVD("CLASH_MS", 600));
       scheduleTimer(() => {
         setCombatPhase("idle");
         setHitEffect("none");
         proceedToReveal(lastRound.roundNum, totalRounds, knockout, serverPlayerScore, serverRivalScore);
-      }, WINDUP_MS / 2 + CLASH_MS + RECOVERY_MS);
+      }, OVD("WINDUP_MS", 400) / 2 + OVD("CLASH_MS", 600) + OVD("RECOVERY_MS", 200));
     } else {
       const attackerWins = playerCorrect;
       const setAttacker = attackerWins ? setPlayerCharState : setRivalCharState;
@@ -419,7 +411,7 @@ export function useGameState(): GameHook {
         setAttacker("attack");
         setShakeScreen(true);
         scheduleTimer(() => setShakeScreen(false), 150);
-      }, WINDUP_MS);
+      }, OVD("WINDUP_MS", 400));
 
       scheduleTimer(() => {
         setCombatPhase("impact");
@@ -427,27 +419,27 @@ export function useGameState(): GameHook {
         setAttacker("attack");
         setLastDamage({ amount: damage, target: damageTarget, isCritical });
         setHitEffect(attackerWins ? "rival-hit" : "player-hit");
-      }, WINDUP_MS + STRIKE_MS);
+      }, OVD("WINDUP_MS", 400) + OVD("STRIKE_MS", 300));
 
       scheduleTimer(() => {
         setCombatPhase("recovery");
         setDefender("knockback");
         setAttacker("idle");
-      }, WINDUP_MS + STRIKE_MS + HITSTOP_MS + IMPACT_MS);
+      }, OVD("WINDUP_MS", 400) + OVD("STRIKE_MS", 300) + OVD("HITSTOP_MS", 80) + OVD("IMPACT_MS", 300));
 
       scheduleTimer(() => {
         setDefender("idle");
         setCombatPhase("idle");
         setHitEffect("none");
         proceedToReveal(lastRound.roundNum, totalRounds, knockout, serverPlayerScore, serverRivalScore);
-      }, WINDUP_MS + STRIKE_MS + HITSTOP_MS + IMPACT_MS + KNOCKBACK_MS);
+      }, OVD("WINDUP_MS", 400) + OVD("STRIKE_MS", 300) + OVD("HITSTOP_MS", 80) + OVD("IMPACT_MS", 300) + OVD("KNOCKBACK_MS", 300));
     }
   }, [scheduleTimer, mp.state.serverState]);
 
   // --- REVEAL/NEXT-ROUND after combat animation ---
   const proceedToReveal = useCallback((rNum: number, totalRounds: number, ko: boolean, pScore: number, rScore: number) => {
     scheduleTimer(() => setPhase("ROUND_REVEAL"), 200);
-    scheduleTimer(() => { setPhase("ROUND_IMPACT"); setHitEffect("none"); }, 200 + REVEAL_DURATION);
+    scheduleTimer(() => { setPhase("ROUND_IMPACT"); setHitEffect("none"); }, 200 + OVD("REVEAL_DURATION", 1500));
     scheduleTimer(() => {
       roundPhaseRef.current = "RESOLVED";
       if (ko) {
@@ -488,10 +480,10 @@ export function useGameState(): GameHook {
         scheduleTimer(() => {
           roundIdentityRef.current = `${isBotMatch ? "bot" : "pvp"}-${nextRound}`;
           setPlayerCharState("thinking"); setRivalCharState("thinking");
-          setPhase("ROUND_ACTIVE");
-        }, ROUND_TRANSITION_DELAY);
+          setPhase("ROUND_COMMIT");
+        }, OVD("ROUND_TRANSITION_DELAY", 800));
       }
-    }, 200 + REVEAL_DURATION + IMPACT_DURATION);
+    }, 200 + OVD("REVEAL_DURATION", 1500) + OVD("IMPACT_DURATION", 1400));
   }, [scheduleTimer, playerChar, rivalName, isBotMatch]);
 
   // --- ADVANCE AFTER SUBMIT ---
@@ -572,8 +564,9 @@ export function useGameState(): GameHook {
     if (mp.state.serverState?.funded !== true) return;
     if (botTimerRef.current) return;
 
-    const deadline = Date.now() + ROUND_TIME * 1000;
-    setTimeLeft(ROUND_TIME);
+    const roundTime = (globalThis as any).__ROUND_TIME__ ?? ROUND_TIME;
+    const deadline = Date.now() + roundTime * 1000;
+    setTimeLeft(roundTime);
     let resolved = false;
 
     const tick = () => {
@@ -641,6 +634,58 @@ export function useGameState(): GameHook {
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isBotMatch, phase, mp.state.serverState?.funded]);
+
+  // --- BOT COMMIT PHASE TIMER (5s) ---
+  // During the COMMIT phase, the player has 5s to pick Attack (UP) / Defend
+  // (DOWN). At expiry the default/locked call is submitted to the server,
+  // which transitions the round to the 10s ACTIVE combat window.
+  useEffect(() => {
+    if (!isBotMatch || phase !== "ROUND_COMMIT") return;
+    if (mp.state.serverState?.funded !== true) return;
+    if (botTimerRef.current) return;
+
+    const commitTime = (globalThis as any).__COMMIT_TIME__ ?? COMMIT_TIME;
+    const deadline = Date.now() + commitTime * 1000;
+    setTimeLeft(commitTime);
+
+    const tick = () => {
+      const remaining = Math.max(0, (deadline - Date.now()) / 1000);
+      setTimeLeft(+remaining.toFixed(2));
+
+      if (remaining <= 0) {
+        if (botTimerRef.current) { clearInterval(botTimerRef.current); botTimerRef.current = null; }
+        // Submit whatever the player picked (or the default locked call) to
+        // trigger the COMMIT→ACTIVE server transition. Bounded retry: a
+        // transient 500/network failure must not strand the round in COMMIT
+        // forever — the server advance is what opens the ACTIVE window. The
+        // server-synced effect picks up the ACTIVE state on the next poll.
+        const pred = localPredictionRef.current as "UP" | "DOWN" | null;
+        let commitAttempts = 0;
+        const attemptCommit = (): void => {
+          commitAttempts += 1;
+          mp.actions.submitPrediction(pred ?? undefined).then((d) => {
+            if (d && d.roundPhase === "ACTIVE") {
+              roundPhaseRef.current = "WAITING_SERVER";
+            } else if (!d) {
+              roundPhaseRef.current = "LOCKED";
+            }
+            if (!d && commitAttempts < 6) scheduleTimer(attemptCommit, 600);
+          }).catch(() => {
+            if (commitAttempts < 6) scheduleTimer(attemptCommit, 600);
+            else roundPhaseRef.current = "LOCKED";
+          });
+        };
+        attemptCommit();
+      }
+    };
+
+    botTimerRef.current = setInterval(tick, 50) as unknown as ReturnType<typeof setInterval>;
+    return () => {
+      if (botTimerRef.current) { clearInterval(botTimerRef.current); botTimerRef.current = null; }
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isBotMatch, phase, mp.state.serverState?.funded]);
+
   // --- PVP ROUND COUNTDOWN + SUBMIT ---
   // PvP rounds resolve server-authoritatively via the predict route, which
   // claims the round, waiting for both players to submit (or resolving after
@@ -818,11 +863,11 @@ export function useGameState(): GameHook {
       return;
     }
 
-    // Open the current ACTIVE round only when we're NOT already mid-round
-    // (i.e. not currently ROUND_START/ACTIVE/LOCKED/EXECUTING/REVEAL/IMPACT).
+    // Open the current round only when we're NOT already mid-round
+    // (i.e. not currently ROUND_START/COMMIT/ACTIVE/LOCKED/EXECUTING/REVEAL/IMPACT).
     // This covers the fresh first-round open AND mid-match reconnect, while
     // never clobbering proceedToReveal's own advance between rounds.
-    const midRound = phase === "ROUND_START" || phase === "ROUND_ACTIVE" || phase === "ROUND_LOCKED"
+    const midRound = phase === "ROUND_START" || phase === "ROUND_COMMIT" || phase === "ROUND_ACTIVE" || phase === "ROUND_LOCKED"
       || phase === "ROUND_EXECUTING" || phase === "ROUND_REVEAL" || phase === "ROUND_IMPACT";
     // STAKE GATE: while the player is on the READY_UP stake screen, NEVER
     // auto-advance into the fight just because the server already opened round
@@ -835,7 +880,41 @@ export function useGameState(): GameHook {
     // GHOST FUNDING GATE: never open a bot round unless funding is confirmed —
     // hold on the FUND screen until the one-time deposit lands (server refuses to
     // resolve anyway). PvP has no ghost and is unaffected.
-    if (isBotMatch && mp.state.serverState?.funded !== true && ss.roundPhase === "ACTIVE") return;
+    if (isBotMatch && mp.state.serverState?.funded !== true && (ss.roundPhase === "ACTIVE" || ss.roundPhase === "COMMIT")) return;
+
+    // COMMIT→ACTIVE transition: the player submitted their pick during the 5s
+    // commit window and the server advanced the round to ACTIVE. Transition the
+    // client from ROUND_COMMIT to ROUND_ACTIVE (the battle countdown).
+    if (phase === "ROUND_COMMIT" && ss.roundPhase === "ACTIVE") {
+      setPhase("ROUND_ACTIVE");
+      return;
+    }
+
+    // COMMIT phase: 5s commit window where the player picks UP/DOWN.
+    if (ss.roundPhase === "COMMIT" && !midRound) {
+      roundIdentityRef.current = `${isBotMatch ? "bot" : "pvp"}-${ss.currentRound}`;
+      activeRoundNumRef.current = ss.currentRound;
+      roundPhaseRef.current = "LOCKED";
+      setLocalPrediction(storedPredictionRef.current);
+      setPlayerPrediction(storedPredictionRef.current);
+      setLockedPrediction(storedPredictionRef.current);
+      setPredictionUIStatus("idle");
+      setRoundResult(null);
+      setLastDamage(null);
+      setPlayerCharState("thinking");
+      setRivalCharState("thinking");
+      setDisplayRound(ss.currentRound);
+      setIsFinalRound(ss.currentRound >= ss.totalRounds);
+      setPlayerScore(ss.playerScore);
+      setRivalScore(ss.rivalScore);
+
+      const wasIntro = enteredFromIntroRef.current;
+      enteredFromIntroRef.current = false;
+      scheduleTimer(() => setPhase("ROUND_COMMIT"), wasIntro ? OVD("MATCH_INTRO_DURATION", 2000) : OVD("ROUND_TRANSITION_DELAY", 800));
+      return;
+    }
+
+    // ACTIVE phase: 10s combat window — market moves, round resolves at expiry.
     if (ss.roundPhase === "ACTIVE" && !midRound) {
       roundIdentityRef.current = `${isBotMatch ? "bot" : "pvp"}-${ss.currentRound}`;
       activeRoundNumRef.current = ss.currentRound;
@@ -855,14 +934,14 @@ export function useGameState(): GameHook {
 
       const wasIntro = enteredFromIntroRef.current;
       enteredFromIntroRef.current = false;
-      scheduleTimer(() => setPhase("ROUND_ACTIVE"), wasIntro ? MATCH_INTRO_DURATION : ROUND_TRANSITION_DELAY);
+      scheduleTimer(() => setPhase("ROUND_ACTIVE"), wasIntro ? OVD("MATCH_INTRO_DURATION", 2000) : OVD("ROUND_TRANSITION_DELAY", 800));
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mp.state.serverState, phase, isBotMatch, scheduleTimer, playCombatAnimation]);
 
-  // Server-synced countdown for PvP
+  // Server-synced countdown for PvP (both COMMIT and ACTIVE phases)
   useEffect(() => {
-    if (isBotMatch || phase !== "ROUND_ACTIVE") return;
+    if (isBotMatch || (phase !== "ROUND_ACTIVE" && phase !== "ROUND_COMMIT")) return;
     let running = true;
     const getTimeRemaining = mp.actions.getTimeRemaining;
     const tick = () => { if (!running) return; const remaining = getTimeRemaining(); setTimeLeft(+remaining.toFixed(2)); animFrameRef.current = requestAnimationFrame(tick); };
@@ -907,7 +986,7 @@ export function useGameState(): GameHook {
     setHitEffect("none"); setShakeScreen(false);
     setShowStreak(null);
     setPlayerCharState("idle"); setRivalCharState("idle");
-    setTimeLeft(ROUND_TIME);
+    setTimeLeft((globalThis as any).__ROUND_TIME__ ?? ROUND_TIME);
     setDisplayRound(1);
     setIsBotMatch(true);
     setExecutionStatus("idle"); setExecutionError(null); setLastTxHash(null);
@@ -958,11 +1037,11 @@ export function useGameState(): GameHook {
     scheduleTimer(() => {
       setPhase("ROUND_START");
       scheduleTimer(() => {
-        setPhase("ROUND_ACTIVE");
+        setPhase("ROUND_COMMIT");
         setPlayerCharState("thinking");
         setRivalCharState("thinking");
-      }, ROUND_TRANSITION_DELAY);
-    }, MATCH_INTRO_DURATION);
+      }, OVD("ROUND_TRANSITION_DELAY", 800));
+    }, OVD("MATCH_INTRO_DURATION", 2000));
   }, [playerChar, mode, marketSymbol, scheduleTimer, address, mp.actions, positionId]);
   // Advance from the general stake gate into the fight (bot path only — PvP
   // advances via the server round-open once both players READY UP).
@@ -972,11 +1051,11 @@ export function useGameState(): GameHook {
     scheduleTimer(() => {
       setPhase("ROUND_START");
       scheduleTimer(() => {
-        setPhase("ROUND_ACTIVE");
+        setPhase("ROUND_COMMIT");
         setPlayerCharState("thinking");
         setRivalCharState("thinking");
-      }, ROUND_TRANSITION_DELAY);
-    }, MATCH_INTRO_DURATION);
+      }, OVD("ROUND_TRANSITION_DELAY", 800));
+    }, OVD("MATCH_INTRO_DURATION", 2000));
   }, [phase, isBotMatch, scheduleTimer]);
 
   // --- PREDICTION ---
@@ -994,14 +1073,16 @@ export function useGameState(): GameHook {
   // it; changing it here re-submits the NEW call for the CURRENT round to the
   // server (which stores/updates `playerPrediction` while the round is ACTIVE).
   const makePrediction = useCallback((_pred: "UP" | "DOWN") => {
-    if (phase !== "ROUND_ACTIVE") return;
+    if (phase !== "ROUND_ACTIVE" && phase !== "ROUND_COMMIT") return;
     if (localPrediction === _pred) return; // already holding that side
     setLocalPrediction(_pred);
     setPlayerPrediction(_pred);
     setLockedPrediction(_pred);
     setPredictionUIStatus("selected");
 
-    if (!isBotMatch) {
+    // During COMMIT: submit to server immediately to trigger COMMIT→ACTIVE transition.
+    // During ACTIVE: submit for repositioning; the bot countdown will do the final submit at expiry.
+    if (!isBotMatch || phase === "ROUND_COMMIT") {
       mp.actions.submitPrediction(_pred).then((d) => {
         if (d && d.rounds && d.rounds.length) {
           roundPhaseRef.current = "WAITING_SERVER";
@@ -1032,7 +1113,7 @@ export function useGameState(): GameHook {
     setHitEffect("none"); setShakeScreen(false);
     setShowStreak(null);
     setPlayerCharState("idle"); setRivalCharState("idle");
-    setPredictionUIStatus("idle"); setTimeLeft(ROUND_TIME);
+    setPredictionUIStatus("idle"); setTimeLeft((globalThis as any).__ROUND_TIME__ ?? ROUND_TIME);
     setDisplayRound(1);
     setPlayerHP(MAX_HP); setRivalHP(MAX_HP);
     playerHPRef.current = MAX_HP; rivalHPRef.current = MAX_HP;
@@ -1157,7 +1238,7 @@ export function useGameState(): GameHook {
     funded: mp.state.serverState?.funded === true,
     fundingHeld: isBotMatch &&
       mp.state.serverState?.funded !== true &&
-      (phase === "MATCH_INTRO" || phase === "ROUND_START" || phase === "ROUND_ACTIVE" || phase === "ROUND_LOCKED"),
+      (phase === "MATCH_INTRO" || phase === "ROUND_START" || phase === "ROUND_COMMIT" || phase === "ROUND_ACTIVE" || phase === "ROUND_LOCKED"),
     connectionStatus: connectionDisplay,
     pingMs: mp.state.pingMs,
     predictionStatus: mp.state.predictionStatus === "idle" ? predictionUIStatus : mp.state.predictionStatus,

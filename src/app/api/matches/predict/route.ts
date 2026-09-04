@@ -6,7 +6,7 @@ import { jsonError } from "@/lib/utils";
 import { getPvpWinPoints } from "@/lib/rank";
 import { readArenaPrice } from "@/lib/ec/executor";
 import { ecArenaForMatch } from "@/lib/ec/arena";
-import { settleRoundOnEscrowGuarded } from "@/lib/ec/escrow";
+import { settleRoundOnEscrowGuarded, stakeRoundOnChain } from "@/lib/ec/escrow";
 import { matchKey } from "@/lib/ec/matchKey";
 import { z } from "zod";
 import { isAddress } from "viem";
@@ -144,14 +144,20 @@ async function resolveRound(match: any, now: Date): Promise<{
     throw new Error(`EC YES price unavailable for ${arena.marketId}`);
   }
 
-  // ── ROLLING PER-ROUND ANCHOR ───────────────────────────────...
-  // Each round is its OWN position (flippable UP/DOWN, settled per round), so a
-  // round's outcome reflects the live YES mid's movement since the PREVIOUS
-  // round's close — not the frozen window-open seed. The first round anchors to
-  // the window-open price. The spot `priceModel.entryPrice` is a USD price on a
-  // different scale and must NOT be used here — it would misclassify every round.
+  // ── PER-ROUND ANCHOR (commit-time entry price) ──────────────...
+  // The commit phase captures the YES-mid at the moment the player locks their
+  // prediction. That entry price IS the anchor for this round's resolution: the
+  // market's move from entry to exit determines UP/DOWN/FLAT. Falls back to the
+  // rolling previous-round close (or arena open) for rounds resolved without a
+  // commit phase (e.g. test fixtures, legacy matches).
   const arenaOpen = match.priceModel?.arenaOpen;
-  const anchor = prevRound?.endPrice != null && prevRound.endPrice > 0 ? prevRound.endPrice : (arenaOpen && arenaOpen > 0 ? arenaOpen : quote.yesPrice);
+  const cp = (match.priceModel?.checkpoints as any[])?.[roundNumber - 1];
+  const commitEntryPrice = cp?.entryPrice;
+  const anchor = (commitEntryPrice && commitEntryPrice > 0)
+    ? commitEntryPrice
+    : prevRound?.endPrice != null && prevRound.endPrice > 0
+      ? prevRound.endPrice
+      : (arenaOpen && arenaOpen > 0 ? arenaOpen : quote.yesPrice);
 
   // Spread/tick-aware FLAT band. The venue books are thin with ~2-3% spreads and
   // the mid-of-book is stable within a 10s round, so a tiny absolute mid-delta is
@@ -419,16 +425,19 @@ export async function POST(req: Request): Promise<Response> {
       return Response.json({ ...buildState(match, now), fundingPending: true });
     }
 
-    // Store prediction if provided and round is ACTIVE
-    if (input.prediction && match.roundPhase === "ACTIVE" && !deadlinePassed) {
+    // Store prediction if provided and round is COMMIT (5s window) or ACTIVE.
+    // During ACTIVE, allow re-submission so per-round flips (UP↔DOWN) are
+    // captured server-side before the round resolves.
+    if (input.prediction && (match.roundPhase === "COMMIT" || (match.roundPhase === "ACTIVE" && !deadlinePassed))) {
       const predField = isPlayer1 ? "playerPrediction" : "rivalPrediction";
       const existingPred = isPlayer1 ? match.playerPrediction : match.rivalPrediction;
+      const canUpdate = !existingPred || (match.roundPhase === "ACTIVE" && existingPred !== input.prediction);
 
-      if (!existingPred) {
+      if (canUpdate) {
         const updateField: Record<string, "UP" | "DOWN"> = {};
         updateField[predField] = input.prediction;
         const atomicUpdate = await Match.findOneAndUpdate(
-          { _id: match._id, [predField]: null, roundPhase: "ACTIVE" },
+          { _id: match._id, roundPhase: match.roundPhase },
           { $set: updateField },
           { new: true },
         );
@@ -437,6 +446,71 @@ export async function POST(req: Request): Promise<Response> {
           match.rivalPrediction = atomicUpdate.rivalPrediction;
         }
       }
+    }
+
+    // ── COMMIT → ACTIVE TRANSITION ────────────────────────────────────────
+    // The 5s commit window is where the player picks Attack (UP) / Defend
+    // (DOWN). The moment the prediction arrives (or the commit deadline
+    // expires with the default call), the round transitions to the 10s
+    // ACTIVE combat window: the entry YES-mid is locked, and the round
+    // escrow receives an on-chain stakeRound.
+    if (match.roundPhase === "COMMIT") {
+      const commitDeadlinePassed = now.getTime() > match.roundDeadline.getTime();
+      // Hold: neither prediction submitted nor deadline passed yet — the
+      // client shows the commit UI countdown.
+      if (!commitDeadlinePassed && !input.prediction) {
+        return Response.json(buildState(match, now));
+      }
+
+      // Atomic COMMIT → ACTIVE claim (only one request wins)
+      const pred = input.prediction ?? match.playerPrediction ?? "UP";
+      const commitClaim = await Match.findOneAndUpdate(
+        { _id: match._id, roundPhase: "COMMIT", currentRound: match.currentRound, status: "ACTIVE" },
+        {
+          $set: {
+            roundPhase: "ACTIVE",
+            [isPlayer1 ? "playerPrediction" : "rivalPrediction"]: pred,
+            roundDeadline: new Date(now.getTime() + ROUND_TIMINGS.ROUND_DURATION_MS + ROUND_TIMINGS.LOCK_MS),
+          },
+        },
+        { new: true },
+      );
+      if (!commitClaim) {
+        // Another request already claimed — return fresh state
+        const fresh = await Match.findById(match._id);
+        return Response.json(buildState(fresh!, now));
+      }
+
+      // Capture the entry YES-mid for this round from the real EC order book.
+      const asset = (commitClaim.priceModel?.asset ?? commitClaim.predictionAsset ?? "BTC") as "BTC" | "ETH";
+      let entryPrice = 0;
+      try {
+        const arena = await ecArenaForMatch(commitClaim, asset);
+        if (arena) {
+          const q = await readArenaPrice(arena);
+          if (q.yesPrice && q.yesPrice > 0) entryPrice = q.yesPrice;
+        }
+      } catch (err) {
+        console.warn(`[predict] entry price capture failed for commit round ${commitClaim.currentRound}`, err);
+      }
+      // Store the entry price on the match so resolveRound can compare
+      // exit vs entry.
+      await Match.findByIdAndUpdate(match._id, {
+        $set: {
+          [`priceModel.checkpoints.${commitClaim.currentRound - 1}.entryPrice`]: entryPrice,
+        },
+      });
+
+      // Per-round on-chain stake (fire-and-forget): the ghost wallet (or
+      // operator relay) places a stakeRound on the round escrow at the
+      // locked entry price. A failed stake never blocks the match.
+      const onchainMatchId = matchKey(String(match._id), commitClaim.playerAddress);
+      const AMOUNT_PER_ROUND_RAW = BigInt(Math.round((commitClaim.playerAmountPerRound ?? 1) * 1_000_000));
+      const entryPriceRaw = BigInt(Math.round(entryPrice * 1_000_000));
+      stakeRoundOnChain(onchainMatchId, commitClaim.currentRound, AMOUNT_PER_ROUND_RAW, entryPriceRaw).catch(() => {});
+
+      const fresh = await Match.findById(match._id);
+      return Response.json(buildState(fresh!, now));
     }
 
     // ATOMIC ROUND EXECUTION CLAIM
@@ -491,9 +565,9 @@ export async function POST(req: Request): Promise<Response> {
             asset: claim.priceModel?.asset ?? claim.predictionAsset ?? "BTC",
             resolvedAt: now,
           };
-          const nextDeadline = new Date(now.getTime() + ROUND_TIMINGS.ROUND_DURATION_MS + ROUND_TIMINGS.LOCK_MS);
+          const nextDeadline = new Date(now.getTime() + ROUND_TIMINGS.COMMIT_DURATION_MS);
           const nextStatus = claim.currentRound >= claim.totalRounds ? "COMPLETED" : "ACTIVE";
-          const nextRoundPhase: RoundPhase = claim.currentRound >= claim.totalRounds ? "REVEALED" : "ACTIVE";
+          const nextRoundPhase: RoundPhase = claim.currentRound >= claim.totalRounds ? "REVEALED" : "COMMIT";
 
           await Match.findByIdAndUpdate(match._id, {
             $push: { rounds: roundRecord },
@@ -537,9 +611,9 @@ export async function POST(req: Request): Promise<Response> {
           settleRoundOnEscrowGuarded(rivalKey, roundRecord.roundNum, roundRecord.rivalCorrect, claim.player2Address).catch(() => {});
         }
 
-        const nextDeadline = new Date(now.getTime() + ROUND_TIMINGS.ROUND_DURATION_MS + ROUND_TIMINGS.LOCK_MS);
+        const nextDeadline = new Date(now.getTime() + ROUND_TIMINGS.COMMIT_DURATION_MS);
         const nextStatus = matchDecided ? "COMPLETED" : "ACTIVE";
-        const nextRoundPhase: RoundPhase = matchDecided ? "REVEALED" : "ACTIVE";
+        const nextRoundPhase: RoundPhase = matchDecided ? "REVEALED" : "COMMIT";
 
         const allRounds = [...(claim.rounds as any[]), roundRecord];
 
@@ -559,7 +633,7 @@ export async function POST(req: Request): Promise<Response> {
             priceModel: {
               asset: roundRecord.asset ?? claim.priceModel?.asset ?? "BTC",
               entryPrice: claim.priceModel?.entryPrice ?? roundRecord.startPrice ?? 0,
-              checkpoints: [...(claim.priceModel?.checkpoints ?? []), {
+              checkpoints: [...(Array.isArray(claim.priceModel?.checkpoints) ? claim.priceModel.checkpoints : []), {
                 roundNum: roundRecord.roundNum,
                 startPrice: roundRecord.startPrice ?? 0,
                 endPrice: roundRecord.endPrice ?? 0,
@@ -612,8 +686,8 @@ export async function POST(req: Request): Promise<Response> {
 
         const lastRoundNum = match.currentRound;
         const decided = lastRoundNum >= match.totalRounds || (claim.playerHP === 0 && claim.rivalHP === 0);
-        const nextDeadline = new Date(now.getTime() + ROUND_TIMINGS.ROUND_DURATION_MS + ROUND_TIMINGS.LOCK_MS);
-        const nextRoundPhase: RoundPhase = decided ? "REVEALED" : "ACTIVE";
+        const nextDeadline = new Date(now.getTime() + ROUND_TIMINGS.COMMIT_DURATION_MS);
+        const nextRoundPhase: RoundPhase = decided ? "REVEALED" : "COMMIT";
         const nextStatus = decided ? "COMPLETED" : "ACTIVE";
 
         await Match.findByIdAndUpdate(match._id, {

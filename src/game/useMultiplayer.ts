@@ -14,7 +14,7 @@ export interface ServerMatchState {
   mode: string;
   totalRounds: number;
   currentRound: number;
-  roundPhase: "WAITING" | "ACTIVE" | "EXECUTING" | "REVEALED" | "TRANSITIONING";
+  roundPhase: "WAITING" | "COMMIT" | "ACTIVE" | "EXECUTING" | "REVEALED" | "TRANSITIONING";
   roundStartTime: string;
   roundDeadline: string;
   serverTime: string;
@@ -216,7 +216,7 @@ export function useMultiplayer(): UseMultiplayerReturn {
   }, [clockOffsetMs]);
 
   const getTimeRemaining = useCallback(() => {
-    if (!serverState || serverState.roundPhase !== "ACTIVE") return 0;
+    if (!serverState || (serverState.roundPhase !== "ACTIVE" && serverState.roundPhase !== "COMMIT")) return 0;
     const deadline = new Date(serverState.roundDeadline).getTime();
     const now = getServerNow().getTime();
     const remaining = (deadline - now) / 1000;
@@ -314,7 +314,7 @@ export function useMultiplayer(): UseMultiplayerReturn {
         mode: input.mode,
         totalRounds: input.totalRounds,
         currentRound: 1,
-        roundPhase: "ACTIVE",
+        roundPhase: "COMMIT",
         roundStartTime: data.roundStartTime,
         roundDeadline: data.roundDeadline,
         serverTime: data.serverTime,

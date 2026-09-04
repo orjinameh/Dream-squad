@@ -12,12 +12,13 @@ vi.mock("wagmi", () => ({
   useAccount: () => ({ address: PLAYER, isConnected: true, isDisconnected: false }),
 }));
 
-let resolveState: { currentRound: number; roundPhase: string; rounds: any[]; playerScore: number; rivalScore: number } = {
+let resolveState: { currentRound: number; roundPhase: string; rounds: any[]; playerScore: number; rivalScore: number; committed: boolean } = {
   currentRound: 1,
-  roundPhase: "ACTIVE",
+  roundPhase: "COMMIT",
   rounds: [],
   playerScore: 0,
   rivalScore: 0,
+  committed: false,
 };
 
 function buildState() {
@@ -51,6 +52,13 @@ function buildState() {
 }
 
 function resolveNextRound(pred: "UP" | "DOWN") {
+  // Simulate two-call-per-round: COMMIT→ACTIVE (first call), then ACTIVE→resolve (second call)
+  if (!resolveState.committed) {
+    resolveState.committed = true;
+    resolveState.roundPhase = "ACTIVE";
+    return { roundNum: resolveState.currentRound, rounds: resolveState.rounds, currentRound: resolveState.currentRound };
+  }
+  resolveState.committed = false;
   const n = resolveState.currentRound;
   const last = resolveState.rounds[resolveState.rounds.length - 1] ?? null;
   const playerScore = (last?.playerScore ?? 0);
@@ -83,7 +91,7 @@ function resolveNextRound(pred: "UP" | "DOWN") {
   resolveState.rounds = [...resolveState.rounds, rnd];
   resolveState.playerScore = playerScore + (playerCorrect ? 1 : 0);
   resolveState.currentRound = n + 1;
-  resolveState.roundPhase = n >= 7 ? "REVEALED" : "ACTIVE";
+  resolveState.roundPhase = n >= 7 ? "REVEALED" : "COMMIT";
   return { roundNum: n, rounds: resolveState.rounds, currentRound: n + 1 };
 }
 
@@ -91,8 +99,8 @@ function mockFetch() {
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     const path = String(url);
     if (path.includes("/api/matches/create")) {
-      resolveState = { currentRound: 1, roundPhase: "ACTIVE", rounds: [], playerScore: 0, rivalScore: 0 };
-      const body = { matchId: "m-bot-1", serverTime: new Date().toISOString(), roundStartTime: new Date().toISOString(), roundDeadline: new Date().toISOString() };
+      resolveState = { currentRound: 1, roundPhase: "COMMIT", rounds: [], playerScore: 0, rivalScore: 0, committed: false };
+      const body = { matchId: "m-bot-1", serverTime: new Date().toISOString(), roundStartTime: new Date().toISOString(), roundDeadline: new Date(Date.now() + 5_000).toISOString() };
       return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
     }
     if (path.includes("/api/matches/state")) {
@@ -108,7 +116,7 @@ function mockFetch() {
       return new Response(JSON.stringify({
         serverTime: new Date().toISOString(),
         roundPhase: resolveState.roundPhase,
-        roundDeadline: new Date().toISOString(),
+        roundDeadline: new Date(Date.now() + (resolveState.committed ? 5_000 : 10_000)).toISOString(),
         playerScore: resolveState.playerScore,
         rivalScore: resolveState.rivalScore,
         playerPrediction: pred,
@@ -127,6 +135,13 @@ function mockFetch() {
 }
 
 let latest: GameHook | null = null;
+let activeRenderer: any = null;
+function mountProbe() {
+  let r: any;
+  act(() => { r = renderer(<Probe />); });
+  activeRenderer = r;
+  return r;
+}
 function Probe() {
   latest = useGameState();
   return null;
@@ -149,6 +164,8 @@ async function waitFor(pred: (h: GameHook) => boolean, timeoutMs = 60_000, label
 
 // Drive the hook from HOME to a live bot ROUND_ACTIVE via the current screen
 // flow: MARKET -> POSITION (stake opens a position) -> MATCH_TYPE -> BOT.
+// The match now starts in COMMIT phase (5s pick window), then transitions to
+// ACTIVE (10s combat window) after the prediction is submitted.
 async function openToRoundActive(pred: "UP" | "DOWN") {
   act(() => { latest!.actions.selectMarket(DEFAULT_TRADE_MARKET); });
   await waitFor((h) => h.phase === "POSITION", 3000, "POSITION");
@@ -166,24 +183,54 @@ async function openToRoundActive(pred: "UP" | "DOWN") {
   // match starts straight into the intro/fight).
   act(() => { latest!.actions.setMatchPrediction(pred); });
   act(() => { latest!.actions.fightBotInstead(); });
-  await waitFor((h) => h.phase === "ROUND_ACTIVE", 10_000, "first ROUND_ACTIVE");
+  // Wait for COMMIT phase (5s pick window)
+  await waitFor((h) => h.phase === "ROUND_COMMIT", 10_000, "ROUND_COMMIT");
+  // The bot COMMIT timer fires after 5s, submitting the default prediction
+  // and triggering the COMMIT→ACTIVE server transition. Wait for that.
+  await waitFor((h) => h.phase === "ROUND_ACTIVE", 15_000, "first ROUND_ACTIVE");
 }
 
 describe("client bot game full loop", () => {
   beforeEach(() => {
     mockFetch();
-    resolveState = { currentRound: 1, roundPhase: "ACTIVE", rounds: [], playerScore: 0, rivalScore: 0 };
+    resolveState = { currentRound: 1, roundPhase: "COMMIT", rounds: [], playerScore: 0, rivalScore: 0, committed: false };
     latest = null;
+    (globalThis as any).__COMMIT_TIME__ = 1;
+    (globalThis as any).__ROUND_TIME__ = 2;
+    (globalThis as any).__REVEAL_DURATION__ = 10;
+    (globalThis as any).__IMPACT_DURATION__ = 10;
+    (globalThis as any).__MATCH_INTRO_DURATION__ = 50;
+    (globalThis as any).__ROUND_TRANSITION_DELAY__ = 10;
+    (globalThis as any).__WINDUP_MS__ = 10;
+    (globalThis as any).__STRIKE_MS__ = 10;
+    (globalThis as any).__HITSTOP_MS__ = 10;
+    (globalThis as any).__IMPACT_MS__ = 10;
+    (globalThis as any).__KNOCKBACK_MS__ = 10;
+    (globalThis as any).__RECOVERY_MS__ = 5;
+    (globalThis as any).__CLASH_MS__ = 10;
   });
   afterEach(() => {
+    delete (globalThis as any).__COMMIT_TIME__;
+    delete (globalThis as any).__ROUND_TIME__;
+    delete (globalThis as any).__REVEAL_DURATION__;
+    delete (globalThis as any).__IMPACT_DURATION__;
+    delete (globalThis as any).__MATCH_INTRO_DURATION__;
+    delete (globalThis as any).__ROUND_TRANSITION_DELAY__;
+    delete (globalThis as any).__WINDUP_MS__;
+    delete (globalThis as any).__STRIKE_MS__;
+    delete (globalThis as any).__HITSTOP_MS__;
+    delete (globalThis as any).__IMPACT_MS__;
+    delete (globalThis as any).__KNOCKBACK_MS__;
+    delete (globalThis as any).__RECOVERY_MS__;
+    delete (globalThis as any).__CLASH_MS__;
+    try { activeRenderer?.unmount(); } catch { /* ignore */ }
+    activeRenderer = null;
+    latest = null;
     vi.unstubAllGlobals();
   });
 
   it("advances through all 7 rounds and reaches MATCH_RESULT", async () => {
-    let r: any;
-    act(() => {
-      r = renderer(<Probe />);
-    });
+    const r = mountProbe();
 
     // Full bot flow — pick the call up front (locked), then fight the bot.
     await openToRoundActive("UP");
@@ -191,8 +238,9 @@ describe("client bot game full loop", () => {
     // Every round auto-uses the locked pre-match call (no in-match picking).
     await waitFor((h) => h.roundHistory.length >= 1, 30_000, "round 1 resolved");
 
-    // Should advance automatically through the remaining rounds without further taps
-    await waitFor((h) => h.currentRound === 7 && h.phase === "ROUND_ACTIVE", 40_000, "round 7 ACTIVE");
+    // With fast timers (1s), the ROUND_ACTIVE phase is fleeting.
+    // Just check that we've reached the final round (currentRound >= 7).
+    await waitFor((h) => h.currentRound >= 7, 40_000, "reached round 7+");
     await waitFor((h) => h.roundHistory.length >= 7, 40_000, "round 7 resolved");
 
     await waitFor((h) => h.phase === "MATCH_RESULT", 40_000, "MATCH_RESULT");
@@ -206,8 +254,7 @@ describe("client bot game full loop", () => {
   }, 120_000);
 
   it("seeds the round with the pre-match call, which is flippable per-round", async () => {
-    let r: any;
-    act(() => { r = renderer(<Probe />); });
+    const r = mountProbe();
     await openToRoundActive("UP");
 
     // The pre-match call is seeded into the open round for round 1.
@@ -220,7 +267,9 @@ describe("client bot game full loop", () => {
 
     // Per-round model: the call is flippable while the round is live — flipping
     // re-submits the new side for THIS round, which resolves with the new call.
-    act(() => { latest!.actions.makePrediction("DOWN"); });
+    await act(async () => {
+      latest!.actions.makePrediction("DOWN");
+    });
     expect(latest!.playerPrediction).toBe("DOWN");
     expect(latest!.lockedCall).toBe("UP"); // the saved pre-match call is unchanged
 
@@ -245,8 +294,7 @@ describe("client bot game full loop", () => {
       return realFetch(url, init);
     });
 
-    let r: any;
-    act(() => { r = renderer(<Probe />); });
+    const r = mountProbe();
     await openToRoundActive("UP");
 
     // The round auto-submits the locked call; first submit fails (500), retry must succeed.

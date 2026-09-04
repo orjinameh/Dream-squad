@@ -73,10 +73,15 @@ describe("Full bot match against the real EC oracle", () => {
     const { matchId } = await createRes.json();
     expect(matchId).toBeTruthy();
 
-    // Play all 7 rounds. Each predict call submits UP and resolves that round
-    // against the REAL EC order-book YES mid (server-side resolveRound, not mocked).
+    // Bypass the ghost-funding gate for the test: set funded=true directly
+    await Match.findByIdAndUpdate(matchId, { funded: true });
+
+    // Play all 7 rounds. Each round requires two predict calls:
+    // 1) COMMIT→ACTIVE (records prediction, captures entry price)
+    // 2) ACTIVE→resolve (resolves the round against EC order book)
     let finalBody: any;
-    for (let round = 1; round <= 7; round++) {
+    const maxCalls = 7 * 3; // generous upper bound for 7 rounds
+    for (let i = 0; i < maxCalls; i++) {
       const res = await predictRoute(jsonPost("/api/matches/predict", {
         matchId,
         playerAddress: PLAYER,
@@ -84,6 +89,7 @@ describe("Full bot match against the real EC oracle", () => {
       }));
       expect(res.status).toBe(200);
       finalBody = await res.json();
+      if (finalBody.status === "COMPLETED") break;
       // give the arena windows a moment to roll if needed
       await new Promise((r) => setTimeout(r, 300));
     }

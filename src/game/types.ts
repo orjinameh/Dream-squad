@@ -30,6 +30,7 @@ export type GamePhase =
   | "READY_UP"
   | "MATCH_INTRO"
   | "ROUND_START"
+  | "ROUND_COMMIT"
   | "ROUND_ACTIVE"
   | "ROUND_LOCKED"
   | "ROUND_EXECUTING"

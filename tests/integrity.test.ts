@@ -72,7 +72,7 @@ async function createActiveBotMatch(player: string, totalRounds = 3): Promise<st
     mode: "quick",
     totalRounds,
     currentRound: 1,
-    roundPhase: "ACTIVE",
+    roundPhase: "COMMIT",
     roundStartTime: now,
     roundDeadline: new Date(now.getTime() + 60_000),
     status: "ACTIVE",
@@ -100,6 +100,7 @@ describe("Match Integrity — Exploit Tests", () => {
   it("atomic prediction claim resolves round exactly once", async () => {
     const matchId = await createActiveBotMatch(PLAYER_A, 3);
 
+    // First predict: COMMIT→ACTIVE (no round resolved yet)
     const res1 = await predictRoute(jsonPost("/api/matches/predict", {
       matchId,
       playerAddress: PLAYER_A,
@@ -107,35 +108,55 @@ describe("Match Integrity — Exploit Tests", () => {
     }));
     expect(res1.status).toBe(200);
     const body1 = await res1.json();
-    // Round resolved — scores updated, round advanced
-    expect(body1.rounds.length).toBe(1);
-    expect(body1.roundPhase).toBeDefined();
+    expect(body1.rounds.length).toBe(0);
 
-    // Second predict: round already resolved, returns current state
+    // Second predict: ACTIVE→resolve
     const res2 = await predictRoute(jsonPost("/api/matches/predict", {
       matchId,
       playerAddress: PLAYER_A,
       prediction: "DOWN",
     }));
-    expect(res2.status).toBe(200); // Returns state, not error
+    expect(res2.status).toBe(200);
+    const body2 = await res2.json();
+    expect(body2.rounds.length).toBe(1);
+    expect(body2.roundPhase).toBeDefined();
+
+    // Third predict: round already resolved, now in COMMIT for next round
+    const res3 = await predictRoute(jsonPost("/api/matches/predict", {
+      matchId,
+      playerAddress: PLAYER_A,
+      prediction: "DOWN",
+    }));
+    expect(res3.status).toBe(200); // Returns state, not error
   });
 
   // 2. Late prediction — server auto-resolves expired round
   it("server auto-resolves expired bot round via predict", async () => {
     const matchId = await createActiveBotMatch(PLAYER_A, 3);
 
-    // Fast-forward deadline to past
+    // Fast-forward deadline to past (both COMMIT and ACTIVE will see expired)
     await Match.findByIdAndUpdate(matchId, { roundDeadline: new Date(Date.now() - 10_000) });
 
-    const res = await predictRoute(jsonPost("/api/matches/predict", {
+    // First predict: COMMIT deadline expired → transitions to ACTIVE with new deadline
+    const res1 = await predictRoute(jsonPost("/api/matches/predict", {
       matchId,
       playerAddress: PLAYER_A,
       prediction: "UP",
     }));
-    // Server auto-resolves — returns 200 with resolved state
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.rounds.length).toBeGreaterThanOrEqual(1);
+    expect(res1.status).toBe(200);
+    const body1 = await res1.json();
+    // COMMIT→ACTIVE transition happened, no round resolved yet
+    expect(body1.rounds.length).toBe(0);
+
+    // Second predict: ACTIVE → resolves the round
+    const res2 = await predictRoute(jsonPost("/api/matches/predict", {
+      matchId,
+      playerAddress: PLAYER_A,
+      prediction: "UP",
+    }));
+    expect(res2.status).toBe(200);
+    const body2 = await res2.json();
+    expect(body2.rounds.length).toBeGreaterThanOrEqual(1);
   });
 
   // 3. Creating second match while one is active
@@ -162,22 +183,22 @@ describe("Match Integrity — Exploit Tests", () => {
     const matchId = await createActiveBotMatch(PLAYER_A, 5);
     const addr = normalizeAddress(PLAYER_A);
 
-    let roundsPlayed = 0;
-    for (let i = 0; i < 5; i++) {
+    // Drive all rounds: each round needs COMMIT→ACTIVE + ACTIVE→resolve
+    const maxCalls = 5 * 3;
+    for (let i = 0; i < maxCalls; i++) {
       const res = await predictRoute(jsonPost("/api/matches/predict", {
         matchId,
         playerAddress: PLAYER_A,
         prediction: "UP",
       }));
       expect(res.status).toBe(200);
-      roundsPlayed++;
       const body = await res.json();
       if (body.status === "COMPLETED") break;
     }
 
     const matchAfter = await Match.findById(matchId);
     expect(matchAfter!.status).toBe("COMPLETED");
-    expect(matchAfter!.rounds.length).toBe(roundsPlayed);
+    expect(matchAfter!.rounds.length).toBe(5);
     expect(matchAfter!.statsProcessed).toBe("COMPLETE");
   });
 

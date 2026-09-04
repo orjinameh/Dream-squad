@@ -33,8 +33,10 @@ export async function GET(req: Request): Promise<Response> {
     const isViewerP2 = !!(isPvP && viewerAddress && match.player2Address && normalizeAddress(viewerAddress) === normalizeAddress(match.player2Address));
     console.log(`[state] match=${matchId} viewer=${viewerAddress ? viewerAddress.slice(0,6) : "none"} st=${match.status} phase=${match.roundPhase} round=${match.currentRound} p1R=${match.player1Ready} p2R=${match.player2Ready} opponentType=${match.opponentType}`);
 
-    // Auto-resolve expired bot rounds (server-authoritative)
-    if (match.status === "ACTIVE" && match.opponentType === "bot" && match.roundPhase === "ACTIVE" && now.getTime() > match.roundDeadline.getTime()) {
+    // Auto-resolve expired bot rounds (server-authoritative).
+    // Handles both ACTIVE (combat window expired) and COMMIT (commit window
+    // expired without a pick — use default/locked call).
+    if (match.status === "ACTIVE" && match.opponentType === "bot" && (match.roundPhase === "ACTIVE" || match.roundPhase === "COMMIT") && now.getTime() > match.roundDeadline.getTime()) {
       // ── GHOST FUNDING GATE ────────────────────────────────────────────────
       // Never auto-resolve an expired bot round that was never funded — the
       // fight may not advance unfunded. Hold until `/api/matches/ghost` sets
@@ -69,12 +71,12 @@ export async function GET(req: Request): Promise<Response> {
         };
 
         const isLastRound = match.currentRound >= match.totalRounds;
-        const nextDeadline = new Date(now.getTime() + ROUND_TIMINGS.ROUND_DURATION_MS + ROUND_TIMINGS.LOCK_MS);
+        const nextDeadline = new Date(now.getTime() + ROUND_TIMINGS.COMMIT_DURATION_MS);
 
         await Match.findByIdAndUpdate(matchId, {
           $push: { rounds: roundRecord },
           $set: {
-            roundPhase: isLastRound ? "REVEALED" : "ACTIVE",
+            roundPhase: isLastRound ? "REVEALED" : "COMMIT",
             status: isLastRound ? "COMPLETED" : "ACTIVE",
             ...(isLastRound ? { completedAt: now, winner: "draw", statsProcessed: "PENDING" as StatsProcessedStatus } : {
               currentRound: match.currentRound + 1,

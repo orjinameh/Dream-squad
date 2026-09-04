@@ -87,7 +87,7 @@ export async function POST(req: Request): Promise<Response> {
     }
 
     const now = new Date();
-    const deadline = new Date(now.getTime() + ROUND_TIMINGS.ROUND_DURATION_MS + ROUND_TIMINGS.LOCK_MS);
+    const commitDeadline = new Date(now.getTime() + ROUND_TIMINGS.COMMIT_DURATION_MS);
 
     const asset = input.predictionAsset ?? position.market ?? "BTC";
     const matchId = randomUUID();
@@ -102,9 +102,9 @@ export async function POST(req: Request): Promise<Response> {
       mode: input.mode,
       totalRounds: input.totalRounds,
       currentRound: 1,
-      roundPhase: "ACTIVE",
+      roundPhase: "COMMIT",
       roundStartTime: now,
-      roundDeadline: deadline,
+      roundDeadline: commitDeadline,
       status: "ACTIVE",
       opponentType: isBot ? "bot" : "player",
       botDifficulty: input.botDifficulty ?? "normal",
@@ -125,7 +125,7 @@ export async function POST(req: Request): Promise<Response> {
       matchId: match._id,
       serverTime: now.toISOString(),
       roundStartTime: now.toISOString(),
-      roundDeadline: deadline.toISOString(),
+      roundDeadline: commitDeadline.toISOString(),
       positionId: position._id,
       positionDirection: position.direction,
     }, { status: 201 });

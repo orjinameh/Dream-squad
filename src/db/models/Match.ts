@@ -5,7 +5,7 @@ import type { MatchPriceModel } from "@/lib/prices";
 export const MATCH_STATUS = ["ACTIVE", "COMPLETED", "ABANDONED"] as const;
 export type MatchStatus = (typeof MATCH_STATUS)[number];
 
-export const ROUND_PHASE = ["WAITING", "ACTIVE", "EXECUTING", "REVEALED", "TRANSITIONING"] as const;
+export const ROUND_PHASE = ["WAITING", "COMMIT", "ACTIVE", "EXECUTING", "REVEALED", "TRANSITIONING"] as const;
 export type RoundPhase = (typeof ROUND_PHASE)[number];
 
 export type StatsProcessedStatus = "PENDING" | "PROCESSING" | "COMPLETE" | "FAILED";
@@ -24,6 +24,8 @@ export interface RoundRecord {
   endPrice?: number;
   prices?: number[];
   asset?: string;
+  // YES-mid at commit time — the entry price this round resolves against.
+  entryPrice?: number;
   // Trading P&L (per player), in STT
   playerPnL?: number;
   rivalPnL?: number;
@@ -134,6 +136,7 @@ export interface MatchDoc {
 }
 
 const ROUND_DURATION_MS = 10_000;
+const COMMIT_DURATION_MS = 5_000;
 const LOCK_MS = 1_200;
 const REVEAL_MS = 1_500;
 const IMPACT_MS = 1_400;
@@ -151,6 +154,8 @@ const RoundSchema = new Schema<RoundRecord>(
     endPrice: { type: Number },
     prices: { type: [Number] },
     asset: { type: String },
+    // YES-mid captured at commit time — the entry price this round resolves against.
+    entryPrice: { type: Number },
     // Trading P&L (per player), in STT
     playerPnL: { type: Number },
     rivalPnL: { type: Number },
@@ -261,6 +266,6 @@ MatchSchema.index({ playerAddress: 1, createdAt: -1 });
 MatchSchema.index({ player2Address: 1, status: 1 });
 MatchSchema.index({ status: 1 });
 
-export const ROUND_TIMINGS = { ROUND_DURATION_MS, LOCK_MS, REVEAL_MS, IMPACT_MS } as const;
+export const ROUND_TIMINGS = { ROUND_DURATION_MS, COMMIT_DURATION_MS, LOCK_MS, REVEAL_MS, IMPACT_MS } as const;
 
 export const Match = model<MatchDoc>("Match", MatchSchema, "matches");

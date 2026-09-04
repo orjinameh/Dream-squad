@@ -71,13 +71,104 @@ export interface EcArenaMarket {
  * resolves them (isResolved stays false forever), so a position anchored to one
  * could NEVER settle — it would lock the player's tUSDC indefinitely.
  */
+// ─── In-process arena cache ─────────────────────────────────────────────────
+// The arena floor is discovered via a full indexer sweep (`listRegistryMarkets`
+// pages every spot/perp/live-binary market + reads ERC-20 metadata on-chain).
+// That sweep is heavy and repeatedly exceeds the Vercel serverless budget
+// ("RegistryMarkets failed: operation aborted due to timeout") when every match
+// round and every position call re-runs it. The venue rolls binary windows about
+// once a minute, so caching the floor for ARENA_CACHE_TTL_MS (well under a
+// window life) is safe: it never pins a stale window for long, while collapsing
+// the overwhelming majority of concurrent/repeated sweeps. The fallback keeps a
+// last-known-good floor so a transient indexer timeout degrades to "reuse the
+// last live arena" instead of a hard failure / no-op round.
+const ARENA_CACHE_TTL_MS = 30_000;
+const ARENA_FALLBACK_TTL_MS = 5 * 60_000;
+/** Per-request ceiling (ms) for the indexer sweep inside Vercel serverless. */
+const ARENA_SWEEP_TIMEOUT_MS = 8_000;
+
+interface ArenaCacheEntry {
+  floor: EcArenaMarket | null;
+  at: number;
+}
+const arenaCache = new Map<"BTC" | "ETH", ArenaCacheEntry>();
+const arenaSweepInFlight = new Map<"BTC" | "ETH", Promise<EcArenaMarket | null>>();
+
+function cachedArena(asset: "BTC" | "ETH", nowMs: number): ArenaCacheEntry | undefined {
+  const e = arenaCache.get(asset);
+  if (!e) return undefined;
+  if (nowMs - e.at < ARENA_CACHE_TTL_MS) return e;
+  return undefined;
+}
+
 export async function findArenaFloor(
   asset: "BTC" | "ETH",
   minLeftSec = 0,
 ): Promise<EcArenaMarket | null> {
+  if (asset !== "BTC" && asset !== "ETH") return null;
+  const nowMs = Date.now();
+  const cached = cachedArena(asset, nowMs);
+  // Serve the cached floor for ANY minLeftSec when it still has enough life left
+  // (so the (asset, 30) preferred-call is also a cache hit, not just the (0)
+  // fallback). The cached floor carries an `expiry`, so align on its remaining
+  // life rather than assuming the caller's requested margin matches the cache.
+  if (cached?.floor) {
+    const leftSec = Number(cached.floor.expiry) - Math.floor(nowMs / 1000);
+    if (leftSec >= minLeftSec) return cached.floor;
+  }
+
+  // If the sweep is already running for this asset, join it instead of firing a
+  // second (heavy) one — concurrent matches/positions share a single indexer call.
+  const inFlight = arenaSweepInFlight.get(asset);
+  if (inFlight) {
+    try { return await inFlight; }
+    finally { if (arenaSweepInFlight.get(asset) === inFlight) arenaSweepInFlight.delete(asset); }
+  }
+
+  const sweep = sweepArenaFloor(asset, minLeftSec, nowMs);
+  arenaSweepInFlight.set(asset, sweep);
+  try {
+    const floor = await sweep;
+    // Only remember a live floor. A null ("no live window right now") shouldn't
+    // be served as a cache hit, and must not evict a good floor that the fallback
+    // can still reuse.
+    if (floor) arenaCache.set(asset, { floor, at: Date.now() });
+    return floor;
+  } finally {
+    if (arenaSweepInFlight.get(asset) === sweep) arenaSweepInFlight.delete(asset);
+  }
+}
+
+async function sweepArenaFloor(asset: "BTC" | "ETH", minLeftSec: number, nowMs: number): Promise<EcArenaMarket | null> {
+  // Bind the sweep to a generous-but-bounded timeout so a slow/hung indexer
+  // degrades gracefully inside the Vercel serverless budget instead of letting
+  // the SDK's 30s GraphQL timeout blow the function's own limit.
+  let timer: NodeJS.Timeout | undefined;
+  const withBudget = <T,>(p: Promise<T>): Promise<T> =>
+    new Promise<T>((resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(`arena sweep timed out after ${ARENA_SWEEP_TIMEOUT_MS}ms`)), ARENA_SWEEP_TIMEOUT_MS);
+      p.then((v) => { clearTimeout(timer); resolve(v); }, (e) => { clearTimeout(timer); reject(e); });
+    });
+
+  const fresh = await withBudget(discoverArenaFloor(asset, minLeftSec, Math.floor(nowMs / 1000)))
+    .catch((err) => {
+      console.warn(`[arena] sweep failed for ${asset}: ${err instanceof Error ? err.message : String(err)} — falling back to last good floor`);
+      return null;
+    });
+  if (fresh) return fresh;
+
+  // Fallback: reuse the last non-null floor known this process, even if its
+  // cache entry aged out, so a transient indexer outage doesn't kill the round.
+  const lastGood = arenaCache.get(asset)?.floor;
+  if (lastGood && nowMs - (arenaCache.get(asset)?.at ?? 0) < ARENA_FALLBACK_TTL_MS) {
+    return lastGood;
+  }
+  return null;
+}
+
+async function discoverArenaFloor(asset: "BTC" | "ETH", minLeftSec: number, now: number): Promise<EcArenaMarket | null> {
   const prefix = asset === "BTC" ? "BTC-" : "ETH-";
   const exchange = ecExchange();
-  const now = Math.floor(Date.now() / 1000);
 
   let markets: UnifiedMarket[] = Object.values(exchange.markets ?? {});
   if (markets.length === 0) {

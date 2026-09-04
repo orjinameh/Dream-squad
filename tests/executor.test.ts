@@ -85,7 +85,7 @@ async function createActiveBotMatchForPlayer(player: string, totalRounds = 3): P
     mode: "quick",
     totalRounds,
     currentRound: 1,
-    roundPhase: "ACTIVE",
+    roundPhase: "COMMIT",
     roundStartTime: now,
     roundDeadline: new Date(now.getTime() + 60_000),
     status: "ACTIVE",
@@ -94,6 +94,21 @@ async function createActiveBotMatchForPlayer(player: string, totalRounds = 3): P
     player1Ready: true,
   });
   return match._id;
+}
+
+/** Drive the match through all rounds, handling both COMMIT→ACTIVE and ACTIVE→resolve per round. */
+async function playAllRounds(matchId: string, playerAddress: string, totalRounds: number): Promise<void> {
+  const maxCalls = totalRounds * 3; // generous upper bound
+  for (let i = 0; i < maxCalls; i++) {
+    const res = await predictRoute(jsonPost("/api/matches/predict", {
+      matchId,
+      playerAddress,
+      prediction: "UP",
+    }));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    if (body.status === "COMPLETED") return;
+  }
 }
 
 describe("Match Creation", () => {
@@ -142,29 +157,31 @@ describe("Match Creation", () => {
 describe("Round Resolution", () => {
   it("resolves a round and returns match state", async () => {
     const matchId = await createActiveBotMatch(3);
-    const res = await predictRoute(jsonPost("/api/matches/predict", {
+    // Match starts in COMMIT → first call transitions to ACTIVE, second resolves
+    const res1 = await predictRoute(jsonPost("/api/matches/predict", {
       matchId,
       playerAddress: PLAYER,
       prediction: "UP",
     }));
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.rounds.length).toBe(1);
-    expect(body.rounds[0].actual).toBeTruthy();
+    expect(res1.status).toBe(200);
+    const body1 = await res1.json();
+    // COMMIT→ACTIVE: no round resolved yet
+    expect(body1.rounds.length).toBe(0);
+    // ACTIVE→resolve
+    const res2 = await predictRoute(jsonPost("/api/matches/predict", {
+      matchId,
+      playerAddress: PLAYER,
+      prediction: "UP",
+    }));
+    expect(res2.status).toBe(200);
+    const body2 = await res2.json();
+    expect(body2.rounds.length).toBe(1);
+    expect(body2.rounds[0].actual).toBeTruthy();
   });
 
   it("completes match after all rounds", async () => {
     const matchId = await createActiveBotMatch(3);
-    for (let i = 0; i < 3; i++) {
-      const res = await predictRoute(jsonPost("/api/matches/predict", {
-        matchId,
-        playerAddress: PLAYER,
-        prediction: "UP",
-      }));
-      expect(res.status).toBe(200);
-      const body = await res.json();
-      if (body.status === "COMPLETED") break;
-    }
+    await playAllRounds(matchId, PLAYER, 3);
     const match = await Match.findById(matchId);
     expect(match!.status).toBe("COMPLETED");
     expect(match!.statsProcessed).toBe("COMPLETE");
@@ -196,13 +213,7 @@ describe("Player Stats", () => {
   it("tracks wins and P&L after match completion", async () => {
     const STATS_PLAYER = "0x66D913034C8F5A2C096c706C4f437A59ec73f016";
     const matchId = await createActiveBotMatchForPlayer(STATS_PLAYER, 3);
-    for (let i = 0; i < 3; i++) {
-      await predictRoute(jsonPost("/api/matches/predict", {
-        matchId,
-        playerAddress: STATS_PLAYER,
-        prediction: "UP",
-      }));
-    }
+    await playAllRounds(matchId, STATS_PLAYER, 3);
     const addr = normalizeAddress(STATS_PLAYER);
     const stats = await PlayerStats.findById(addr);
     expect(stats).toBeTruthy();
