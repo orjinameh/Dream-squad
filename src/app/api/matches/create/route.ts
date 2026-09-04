@@ -61,13 +61,27 @@ export async function POST(req: Request): Promise<Response> {
     // a second one until the first resolves. Match either address casing (EIP-55
     // checksummed or lowercased) — callers historically varied.
     const checksumAddr = normalizeAddress(input.playerAddress);
-    const activeMatch = await Match.findOne({
+    const activeOwnerFilter = {
       $or: [
         { playerAddress: { $in: [address, checksumAddr] } },
         { player2Address: { $in: [address, checksumAddr] } },
       ],
-      status: "ACTIVE",
-    }).lean();
+    };
+
+    // Prune STALE active matches first. A broken session (page refresh mid-
+    // round, a match stuck before funding existed, an abandoned tab) leaves an
+    // ACTIVE match that never resolves. Its current round's deadline lapses and
+    // stays lapsed — a healthy match always rolls its deadline forward at each
+    // resolved round. Abandon those so a player isn't permanently locked out of
+    // matching by a zombie row. A match with a deadline still in the future is a
+    // LIVE fight and is NOT touched.
+    const staleCutoff = new Date(Date.now() - 20_000);
+    await Match.updateMany(
+      { ...activeOwnerFilter, status: "ACTIVE", roundDeadline: { $lt: staleCutoff } },
+      { $set: { status: "ABANDONED", completedAt: new Date(), funded: true } },
+    );
+
+    const activeMatch = await Match.findOne({ ...activeOwnerFilter, status: "ACTIVE" }).lean();
     if (activeMatch) {
       return jsonError(409, "already in an active match — finish it first");
     }

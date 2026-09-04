@@ -1391,21 +1391,32 @@ function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; 
             alignItems: "center", justifyContent: "center", gap: 18,
             background: "rgba(8,8,16,0.92)",
           }}>
-            <div style={{
-              fontSize: 26, fontWeight: 900, letterSpacing: "0.12em", color: "#fbbf24",
-              textShadow: "2px 2px 0 #92400e",
-            }}>
-              {"\u2694"} FUND TO START
-            </div>
-            <div style={{ fontSize: 13, color: "#e2e8f0", maxWidth: 460, textAlign: "center", lineHeight: 1.6, letterSpacing: "0.03em" }}>
-              The ghost wallet is funded up front with one approval, before the duel — no wallet
-              prompts mid-battle. Your stake auto-settles each round and winnings return to your wallet.
-            </div>
-            <div style={{ fontSize: 15, fontWeight: 800, color: "#38bdf8", letterSpacing: "0.05em" }}>
-              {(game.positionAmount ?? 0)} tUSDC {"\u00D7"} {game.totalRounds} ={" "}
-              <b>{(game.positionAmount ?? 0) * game.totalRounds} tUSDC</b>
-            </div>
-            {ghost.funding ? (
+            {!game.matchId ? (
+              /* No match was created (e.g. still in a stale ACTIVE match) — there
+                 is nothing to fund, so surface the real blocker instead of a fund
+                 button that can never complete. */
+              <>
+                <div style={{
+                  fontSize: 24, fontWeight: 900, letterSpacing: "0.12em", color: "#ef4444",
+                  textShadow: "2px 2px 0 #7f1d1d",
+                }}>
+                  {"\u26A0\uFE0F"} MATCH NOT STARTED
+                </div>
+                <div style={{ fontSize: 13, color: "#e2e8f0", maxWidth: 460, textAlign: "center", lineHeight: 1.6, letterSpacing: "0.03em" }}>
+                  {game.executionError || "A match could not be created — refresh and ensure you have an active EC position, then try again."}
+                </div>
+                <button
+                  onClick={() => game.actions.goToHome()}
+                  style={{
+                    padding: "12px 28px", borderRadius: 8, cursor: "pointer", fontWeight: 900, fontSize: 14,
+                    letterSpacing: "0.06em", border: "none", color: "#0f172a",
+                    background: "linear-gradient(135deg, #94a3b8, #cbd5e1)",
+                  }}
+                >
+                  {"\u2190"} BACK TO HOME
+                </button>
+              </>
+            ) : ghost.funding ? (
               <div style={{ fontSize: 13, fontWeight: 700, color: "#fbbf24", letterSpacing: "0.08em" }}>
                 {"\u231B"} FUNDING... confirming the one-time approval + deposit on-chain
               </div>

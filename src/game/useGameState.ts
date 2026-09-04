@@ -917,7 +917,12 @@ export function useGameState(): GameHook {
     setIsFinalRound((mode?.rounds ?? 7) <= 1);
     enteredFromIntroRef.current = true;
 
-    // Create server-side match — store matchId for bot matches too
+    // Create server-side match — store matchId for bot matches too. If the match
+    // cannot be created (e.g. still in an old ACTIVE match), there is no matchId,
+    // so the ghost has nothing to fund and the fight CANNOT begin. Surface the
+    // error and hold on the start screen instead of silently entering a fight
+    // that can never be funded.
+    let matchCreated = false;
     try {
       const res = await mp.actions.createMatch({
         playerAddress: address || "0x0000000000000000000000000000000000000000",
@@ -932,11 +937,20 @@ export function useGameState(): GameHook {
         positionId: positionId ?? undefined,
       });
       if (res?.matchId) {
-        // Store matchId — bot matches MUST have real matchIds
+        matchCreated = true;
         mp.actions.reconnectToMatch(res.matchId);
       }
-    } catch {
-      // Continue even if server create fails
+    } catch (e) {
+      const msg = (e as Error)?.message || "failed to create match";
+      setExecutionStatus("failed");
+      setExecutionError(msg);
+    }
+
+    if (!matchCreated) {
+      // Hold: no match means no ghost funding, so the duel may not start. Stay on
+      // the start/ready screen where the error is shown; the player must resolve
+      // the blocker (e.g. finish their active match) before fighting.
+      return;
     }
 
     // The EC POSITION is already staked on the POSITION screen (the financial
