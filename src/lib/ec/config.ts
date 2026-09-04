@@ -1,4 +1,4 @@
-import { defineChain } from "viem";
+import { defineChain, fallback, http } from "viem";
 import { PLACE_ORDER_FOR_SELECTOR, CANCEL_ORDER_FOR_SELECTOR, type SomniaMarketsAddresses } from "@somnia-chain/markets-sdk";
 
 /**
@@ -15,6 +15,18 @@ export const EC_CHAIN_ID = 50312;
 export const EC_RPC_URL = "https://api.infra.testnet.somnia.network";
 export const EC_RPC_WS_URL = "wss://api.infra.testnet.somnia.network/ws";
 export const EC_INDEXER_URL = "https://dev.smk.somnia.host/v1/graphql";
+
+// Fallback RPC mirrors for the Somnia testnet (chain 50312, STT). The primary
+// infra endpoint rate-limits under load ("too many errors, retrying…"), which
+// freezes wallet approve popups (eth_gasPrice) and hides on-chain balance reads.
+// viem `fallback` shifts to an alternate mirror instead of failing hard.
+export const EC_RPC_URLS = [
+  EC_RPC_URL,
+  "https://dream-rpc.somnia.network",
+  "https://50312.rpc.thirdweb.com",
+] as const;
+
+export const ecHttpTransport = () => fallback(EC_RPC_URLS.map((url) => http(url)));
 
 export const EC_CHAIN = defineChain({
   id: EC_CHAIN_ID,

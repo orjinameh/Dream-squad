@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAccount, useWriteContract } from "wagmi";
-import { parseUnits, createPublicClient, http } from "viem";
-import { EC_COLLATERAL_DECIMALS, ROUND_ESCROW_ADDRESS, ESCROW_ADMIN, EC_CHAIN, EC_RPC_URL, EC_ADDRESSES } from "@/lib/ec/config";
+import { parseUnits, createPublicClient } from "viem";
+import { EC_COLLATERAL_DECIMALS, ROUND_ESCROW_ADDRESS, ESCROW_ADMIN, EC_CHAIN, ecHttpTransport, EC_ADDRESSES } from "@/lib/ec/config";
 import { getOrCreateGhost, type GhostWallet } from "./ghostWallet";
 
 const TUSDC_ADDRESS: `0x${string}` = (EC_ADDRESSES.testUsdc ?? EC_ADDRESSES.collateral)!;
@@ -32,7 +32,7 @@ const TUSDC_ABI = [
 ] as const;
 
 async function allowanceOf(owner: `0x${string}`, spender: `0x${string}`): Promise<bigint> {
-  const pc = createPublicClient({ chain: EC_CHAIN, transport: http(EC_RPC_URL) });
+  const pc = createPublicClient({ chain: EC_CHAIN, transport: ecHttpTransport() });
   return (await pc.readContract({
     abi: TUSDC_ABI,
     address: TUSDC_ADDRESS,
@@ -266,7 +266,7 @@ export function useGhostWallet(matchId: string | null, totalRounds: number, amou
 }
 
 async function waitForReceipt(hash: `0x${string}`) {
-  const pc = createPublicClient({ chain: EC_CHAIN, transport: http(EC_RPC_URL) });
+  const pc = createPublicClient({ chain: EC_CHAIN, transport: ecHttpTransport() });
   for (let i = 0; i < 40; i++) {
     try {
       const r = await pc.getTransactionReceipt({ hash });

@@ -7,9 +7,10 @@ import {
   darkTheme,
 } from "@rainbow-me/rainbowkit";
 import { injectedWallet, walletConnectWallet } from "@rainbow-me/rainbowkit/wallets";
-import { WagmiProvider, createConfig, http } from "wagmi";
+import { WagmiProvider, createConfig } from "wagmi";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { SOMNIA_CHAIN } from "@/lib/config";
+import { ecHttpTransport } from "@/lib/ec/config";
 import "@rainbow-me/rainbowkit/styles.css";
 
 // Both connect paths:
@@ -32,7 +33,9 @@ const connectors = connectorsForWallets(
 const config = createConfig({
   connectors,
   chains: [SOMNIA_CHAIN],
-  transports: { [SOMNIA_CHAIN.id]: http() },
+  // Fallback across the testnet mirror RPCs so a rate-limited primary never
+  // blocks wallet gas estimation (approve popups) or balance reads.
+  transports: { [SOMNIA_CHAIN.id]: ecHttpTransport() },
   ssr: true,
 });
 

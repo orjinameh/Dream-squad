@@ -208,7 +208,7 @@ function HomeScreen({ address, escrow, game, onEnter, onLeaderboard, onProfile, 
         PREDICT. STRIKE. WIN.
       </p>
 
-      {address && escrow.usdcBalanceFormatted !== null && (
+      {address && (
         <div style={{
           display: "flex", alignItems: "center", gap: 8, marginBottom: 24,
           padding: "8px 18px", borderRadius: 6, border: "1px solid #0ea5e9",
@@ -216,7 +216,7 @@ function HomeScreen({ address, escrow, game, onEnter, onLeaderboard, onProfile, 
         }}>
           <span style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.15em" }}>tUSDC BALANCE</span>
           <span style={{ fontSize: 16, fontWeight: 900, color: "#38bdf8", fontFamily: "'Courier New', monospace" }}>
-            {escrow.usdcBalanceFormatted}
+            {escrow.usdcBalanceFormatted ?? "\u2014"}
           </span>
         </div>
       )}
