@@ -431,7 +431,22 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
     if (!escrow.address) return;
     setFaucetBusy(true);
     setError(null);
-    try { await escrow.getFaucet(parseUnits("1000", EC_COLLATERAL_DECIMALS)); escrow.refetch(); }
+    try {
+      // Server faucet first: the operator mints tUSDC + gas to the wallet, so a
+      // fresh player can play without holding any tokens. Falls back to the
+      // in-wallet `faucet()` mint if the server route is unavailable.
+      const res = await fetch("/api/faucet", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ address: escrow.address }),
+      });
+      if (res.ok) {
+        escrow.refetch();
+      } else {
+        await escrow.getFaucet(parseUnits("1000", EC_COLLATERAL_DECIMALS));
+        escrow.refetch();
+      }
+    }
     catch (e) { setError(e instanceof Error ? e.message : "Faucet failed"); }
     finally { setFaucetBusy(false); }
   };
@@ -491,7 +506,7 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
             width: "100%", marginBottom: 10, padding: "6px 10px", borderRadius: 6, cursor: "pointer",
             border: "1px dashed #f59e0b", background: "rgba(245,158,11,0.08)", color: "#fbbf24", fontWeight: 700, fontSize: 11,
           }}>
-            {faucetBusy ? "MINTING 1000 tUSDC..." : "+ GET 1000 TEST tUSDC"}
+            {faucetBusy ? "GETTING TEST tUSDC + GAS..." : "+ GET 1000 TEST tUSDC + GAS"}
           </button>
         )}
 
