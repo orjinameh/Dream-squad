@@ -2454,6 +2454,25 @@ function MatchDetailScreen({ matchId, address, onBack }: { matchId: string | nul
                       {r.asset ?? "BTC"} {"\u00B7"} {r.startPrice?.toFixed ? r.startPrice.toFixed(r.asset === "SOMI" ? 4 : 2) : r.startPrice} {"\u2192"} {r.endPrice?.toFixed ? r.endPrice.toFixed(r.asset === "SOMI" ? 4 : 2) : r.endPrice}
                     </div>
                   )}
+                  {(r.resolutionSource || r.arena?.symbol) && (
+                    <div style={{ fontSize: 9, color: "#64748b", letterSpacing: "0.08em" }}>
+                      {r.resolutionSource === "resolution" ? "ON-CHAIN RESOLUTION" : r.resolutionSource === "direction" ? "LIVE BOOK DIRECTION" : ""}
+                      {r.arena?.symbol ? ` \u00B7 ${r.arena.symbol}` : ""}
+                      {r.arena?.marketId ? ` \u00B7 ${String(r.arena.marketId).slice(-6)}` : ""}
+                    </div>
+                  )}
+                  {r.stakeTxHash && (
+                    <div style={{ fontSize: 9, color: "#38bdf8", fontFamily: "monospace" }}>
+                      <a
+                        href={`https://shannon-explorer.somnia.network/tx/${r.stakeTxHash}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{ color: "#38bdf8", textDecoration: "underline" }}
+                      >
+                        {"\u2694"} stake tx: {String(r.stakeTxHash).slice(0, 20)}...
+                      </a>
+                    </div>
+                  )}
                   {r.playerPnL != null && (
                     <div style={{ fontSize: 11, fontWeight: 700, color: (r.playerPnL ?? 0) >= 0 ? "#10b981" : "#ef4444" }}>
                       {(r.playerPnL ?? 0) >= 0 ? "+" : ""}{(r.playerPnL ?? 0).toFixed ? (r.playerPnL).toFixed(2) : r.playerPnL} tUSDC

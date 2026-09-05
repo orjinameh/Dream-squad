@@ -70,29 +70,40 @@ export async function GET(req: Request): Promise<Response> {
       knockouts,
       bestStreak,
       // Rounds detail
-      rounds: rounds.map((r) => ({
-        roundNum: r.roundNum,
-        playerPrediction: r.playerPrediction,
-        rivalPrediction: r.rivalPrediction,
-        actual: r.actual,
-        playerCorrect: r.playerCorrect,
-        rivalCorrect: r.rivalCorrect,
-        startPrice: r.startPrice,
-        endPrice: r.endPrice,
-        asset: r.asset,
-        playerPnL: r.playerPnL,
-        rivalPnL: r.rivalPnL,
-        playerExecution: r.playerExecution ? {
-          status: r.playerExecution.status,
-          txHash: r.playerExecution.txHash,
-          direction: r.playerExecution.direction,
-        } : null,
-        rivalExecution: r.rivalExecution ? {
-          status: r.rivalExecution.status,
-          txHash: r.rivalExecution.txHash,
-          direction: r.rivalExecution.direction,
-        } : null,
-      })),
+      rounds: rounds.map((r) => {
+        const cp = match.priceModel?.checkpoints?.[Number(r.roundNum) - 1] ?? null;
+        return {
+          roundNum: r.roundNum,
+          playerPrediction: r.playerPrediction,
+          rivalPrediction: r.rivalPrediction,
+          actual: r.actual,
+          playerCorrect: r.playerCorrect,
+          rivalCorrect: r.rivalCorrect,
+          startPrice: r.startPrice,
+          endPrice: r.endPrice,
+          asset: r.asset,
+          resolutionSource: r.resolutionSource,
+          arena: r.arena ? {
+            marketId: r.arena.marketId,
+            poolAddress: r.arena.poolAddress,
+            symbol: r.arena.symbol,
+            expiry: r.arena.expiry,
+          } : null,
+          stakeTxHash: cp?.stakeTxHash ?? null,
+          playerPnL: r.playerPnL,
+          rivalPnL: r.rivalPnL,
+          playerExecution: r.playerExecution ? {
+            status: r.playerExecution.status,
+            txHash: r.playerExecution.txHash,
+            direction: r.playerExecution.direction,
+          } : null,
+          rivalExecution: r.rivalExecution ? {
+            status: r.rivalExecution.status,
+            txHash: r.rivalExecution.txHash,
+            direction: r.rivalExecution.direction,
+          } : null,
+        };
+      }),
     });
   } catch (err) {
     console.error("match detail failed", err);

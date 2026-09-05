@@ -21,6 +21,10 @@ export interface Checkpoint {
     symbol: string;
     expiry: number;
   };
+  // Real on-chain stake tx for this round (operator's BUY_YES/BUY_NO on the
+  // pinned arena window). Set asynchronously after the commit; null until the
+  // relay confirms a fill.
+  stakeTxHash?: string;
 }
 
 export interface MatchPriceModel {
