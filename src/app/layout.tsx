@@ -36,6 +36,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               color: "#fbbf24", textShadow: "1px 1px 0 #92400e",
               textDecoration: "none",
             }}>DREAMDUEL</a>
+            <span style={{
+              fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", color: "#22d3ee",
+              background: "rgba(34,211,238,0.1)", border: "1px solid rgba(34,211,238,0.4)",
+              padding: "2px 8px", borderRadius: 999,
+            }}>
+              BUILD {process.env.NEXT_PUBLIC_BUILD_TAG ?? "ec-oracle-36a5ad0"}
+            </span>
             <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
               <a href="/" style={{ fontSize: 12, color: "#94a3b8", letterSpacing: "0.1em", textDecoration: "none" }}>ARENA</a>
               <a href="/leaderboard" style={{ fontSize: 12, color: "#94a3b8", letterSpacing: "0.1em", textDecoration: "none" }}>RANKS</a>
