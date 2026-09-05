@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+process.env.DREAMDUEL_FAST_ROUNDS = "1"; // fast tests: skip the 10s ACTIVE hold
 import { MongoMemoryServer } from "mongodb-memory-server";
 import mongoose from "mongoose";
 

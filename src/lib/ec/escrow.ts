@@ -247,12 +247,12 @@ export async function collectRoundLostOnchain(matchId: Hash, round: number, escr
  * settled. No-throw contract (callers fire-and-forget): a missing/unsettled
  * stake must never break a match. `won=true` credits the DEX payout.
  */
-export async function settleRoundOnEscrowGuarded(matchId: Hash, round: number, won: boolean, playerAddress?: string) {
+export async function settleRoundOnEscrowGuarded(matchId: Hash, round: number, won: boolean, playerAddress?: string): Promise<`0x${string}` | false> {
   try {
     const lock = await roundLockInfo(matchId, round);
     if (!lock || lock.amount === 0n || lock.settled) return false;
-    await settleRoundOnchain(matchId, round, won);
-    return true;
+    const hash = await settleRoundOnchain(matchId, round, won);
+    return hash;
   } catch (err) {
     console.error("[round-escrow] guarded settle failed", { matchId: String(matchId), round, won, err });
     return false;

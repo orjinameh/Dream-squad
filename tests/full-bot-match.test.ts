@@ -59,7 +59,8 @@ beforeEach(async () => {
 });
 
 describe("Full bot match against the real EC oracle", () => {
-  it("stakes, plays all 7 rounds, and completes without degenerating to all-FLAT", async () => {
+  it("stakes, plays all 7 rounds, and completes without degenerating to all-FLAT",
+    async () => {
     await seedActivePosition(PLAYER);
     const createRes = await createRoute(jsonPost("/api/matches/create", {
       playerAddress: PLAYER,
@@ -76,11 +77,13 @@ describe("Full bot match against the real EC oracle", () => {
     // Bypass the ghost-funding gate for the test: set funded=true directly
     await Match.findByIdAndUpdate(matchId, { funded: true });
 
-    // Play all 7 rounds. Each round requires two predict calls:
-    // 1) COMMIT→ACTIVE (records prediction, captures entry price)
-    // 2) ACTIVE→resolve (resolves the round against EC order book)
+    // Play all 7 rounds. Each round requires up to three predict calls:
+    // 1) COMMIT→ACTIVE (records prediction, pins the arena, captures entry price)
+    // 2) ACTIVE→EXECUTING (returns msUntilResolve while the ~10s hold elapses)
+    // 3) resolve (ACTIVE claim once the deadline has passed — sees the real
+    //    mid moved over the hold, so rounds resolve directionally)
     let finalBody: any;
-    const maxCalls = 7 * 3; // generous upper bound for 7 rounds
+    const maxCalls = 7 * 3 + 4; // 3 calls/round + budget for poll pacing
     for (let i = 0; i < maxCalls; i++) {
       const res = await predictRoute(jsonPost("/api/matches/predict", {
         matchId,
@@ -90,8 +93,14 @@ describe("Full bot match against the real EC oracle", () => {
       expect(res.status).toBe(200);
       finalBody = await res.json();
       if (finalBody.status === "COMPLETED") break;
-      // give the arena windows a moment to roll if needed
-      await new Promise((r) => setTimeout(r, 300));
+      // Bot rounds hold the full window: the outcome derives from the pinned
+      // arena's REAL protocol resolution at expiry, not a millisecond sample.
+      const msUntil = (finalBody as any).msUntilResolve ?? 0;
+      if (msUntil > 0) await new Promise((r) => setTimeout(r, Math.min(msUntil, 120_000) + 1500));
+      else await new Promise((r) => setTimeout(r, 300));
+      if (i % 3 === 0) {
+        console.log(`[full-bot-match] call=${i} round=${(finalBody as any).currentRound ?? "?"} phase=${(finalBody as any).roundPhase} resolvedRounds=${(finalBody.rounds ?? []).length}`);
+      }
     }
 
     expect(finalBody.winner).toBeDefined();
@@ -112,5 +121,5 @@ describe("Full bot match against the real EC oracle", () => {
     console.log(`FULL BOT MATCH actuals=${JSON.stringify(actuals)} winner=${finalBody.winner} nonFlat=${nonFlat.length}`);
     expect(actuals.length).toBeGreaterThan(0);
     expect(nonFlat.length).toBeGreaterThan(0);
-  }, 180_000);
+  }, 600_000);
 });

@@ -26,6 +26,16 @@ export interface RoundRecord {
   asset?: string;
   // YES-mid at commit time — the entry price this round resolves against.
   entryPrice?: number;
+  // How the round's UP/DOWN was decided: the DreamDEX window's real on-chain
+  // protocol resolution (winningOutcome) or the commit→end price direction.
+  resolutionSource?: "resolution" | "direction";
+  // The pinned DreamDEX window this round's real stake + resolution used.
+  arena?: {
+    marketId: string;
+    poolAddress: string;
+    symbol: string;
+    expiry?: number;
+  };
   // Trading P&L (per player), in STT
   playerPnL?: number;
   rivalPnL?: number;

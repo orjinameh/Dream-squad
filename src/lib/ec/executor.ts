@@ -51,7 +51,19 @@ export function ecPublicClient() {
 
 // ─── Arena floor: the active market window ──────────────────────────────────
 
-export interface EcArenaMarket {
+/**
+ * Minimal arena reference — the fields the game paths need (read a price, check
+ * resolution, place a stake). Persisted per-round on checkpoints; the full
+ * `EcArenaMarket` (below) is the richer object produced by the indexer sweep.
+ */
+export interface ArenaRef {
+  symbol: string; // e.g. "BTC-7812345-30AUG26-1200/tUSDC"
+  marketId: string;
+  pool: string; // runtime value from Mongo — cast to `0x${string}` at write sites
+  expiry: number; // unix seconds
+}
+
+export interface EcArenaMarket extends ArenaRef {
   symbol: string; // e.g. "BTC-7812345-30AUG26-1200/tUSDC"
   marketId: string;
   pool: `0x${string}`;
@@ -360,7 +372,7 @@ export interface EcPriceQuote {
  * the heavy loadMarkets sweep needed by the SDK's fetchOrderBook. Falls back to
  * `fetchOrderBook(symbol)` when the marketId path has no two-sided book.
  */
-export async function readArenaPrice(arena: EcArenaMarket): Promise<EcPriceQuote> {
+export async function readArenaPrice(arena: ArenaRef): Promise<EcPriceQuote> {
   const exchange = ecExchange();
   // The SDK's unified fetchOrderBook reads the venue's LIVE store for the market
   // behind `symbol` — the price the venue actually trades at. Prefer it; fall
@@ -463,23 +475,121 @@ export async function readArenaBalances(addr: string, arena: EcArenaMarket): Pro
  * `isResolved` is the binary settlement flag; `winningOutcome` is 0=YES / 1=NO.
  * Uses the marketId (NOT the pool address — getMarketOnchain keys on marketId).
  */
-export async function readArenaSettlement(arena: EcArenaMarket): Promise<{
+export async function readArenaSettlement(arena: ArenaRef): Promise<{
   isResolved: boolean;
+  isVoided: boolean;
   winningOutcome: number;
   status: number;
 }> {
   const exchange = ecExchange();
-  if (!arena.marketId) return { isResolved: false, winningOutcome: 0, status: 0 };
+  if (!arena.marketId) return { isResolved: false, isVoided: false, winningOutcome: 0, status: 0 };
   try {
     const oc = await exchange.client.getMarketOnchain(arena.marketId as `0x${string}`);
     return {
       isResolved: oc.isResolved,
+      isVoided: !!oc.isVoided,
       winningOutcome: Number(oc.winningOutcome ?? 0),
       status: oc.status,
     };
   } catch {
-    return { isResolved: false, winningOutcome: 0, status: 0 };
+    return { isResolved: false, isVoided: false, winningOutcome: 0, status: 0 };
   }
+}
+
+function floorToTick(price: number, tick: number): number {
+  return Math.floor(price / tick) * tick;
+}
+
+/**
+ * The REAL DreamDEX round judge. A closed window's outcome is decided by the
+ * protocol itself: `winningOutcome` (0 = Up/YES, 1 = Down/NO) is posted on the
+ * binary market once the oracle finalizes the payout vector. When the market has
+ * NOT yet resolved on-chain (oracle grace, or the arena is still live), fall
+ * back to the honest price DIRECTION over the round: exit YES-mid vs the
+ * commit-end entry mid — the "commit end → round end" move.
+ */
+export async function resolveArenaOutcome(
+  arena: ArenaRef,
+  entryYesPrice: number | null,
+  opts: { flatBand?: number } = {},
+): Promise<{ actual: "UP" | "DOWN" | "FLAT"; source: "resolution" | "direction"; winningOutcomeRaw: number | null }> {
+  const nowSec = Math.floor(Date.now() / 1000);
+  // 1. The window closed AND the protocol resolved it → that IS the result.
+  if (arena.expiry <= nowSec) {
+    try {
+      const st = await readArenaSettlement(arena);
+      if (st.isResolved) {
+        // A VOIDED market is a refund, not a win/loss: neither side won
+        // (both redeem 0.5), so the round is FLAT — the docs' settlement rule.
+        if (st.isVoided) return { actual: "FLAT", source: "resolution", winningOutcomeRaw: null };
+        const actual = st.winningOutcome === 1 ? "DOWN" : st.winningOutcome === 0 ? "UP" : "FLAT";
+        if (actual !== "FLAT") {
+          return { actual, source: "resolution", winningOutcomeRaw: st.winningOutcome };
+        }
+      }
+    } catch {
+      /* on-chain read failed — fall through to direction */
+    }
+  }
+  // 2. Direction fallback: exit mid vs commit-end entry mid.
+  const quote = await readArenaPrice(arena);
+  if (quote.yesPrice == null || !(quote.yesPrice > 0) || entryYesPrice == null || !(entryYesPrice > 0)) {
+    return { actual: "FLAT", source: "direction", winningOutcomeRaw: null };
+  }
+  const band = opts.flatBand ?? 0.0008;
+  const diff = quote.yesPrice - entryYesPrice;
+  return diff > band
+    ? { actual: "UP", source: "direction", winningOutcomeRaw: null }
+    : diff < -band
+      ? { actual: "DOWN", source: "direction", winningOutcomeRaw: null }
+      : { actual: "FLAT", source: "direction", winningOutcomeRaw: null };
+}
+
+/**
+ * Size the real per-round stake for the player's direction against the arena's
+ * live top of book. Returns the raw pool `placeBinaryOrder` args (kind, YES-side
+ * protective price, quantity in 1e6 units) escrowed to ~`stakeRaw` collateral.
+ * `price` is ALWAYS the YES price on a binary pool.
+ */
+export async function quoteStake(
+  arena: ArenaRef,
+  prediction: "UP" | "DOWN",
+  stakeRaw: bigint,
+): Promise<{ kind: number; price: bigint; quantity: bigint; effectivePrice: number } | null> {
+  const exchange = ecExchange();
+  let bid: number | null = null;
+  let ask: number | null = null;
+  try {
+    const book = await exchange.fetchOrderBook(arena.symbol, 1);
+    bid = book.bids[0]?.[0] ?? null;
+    ask = book.asks[0]?.[0] ?? null;
+  } catch {
+    /* fall back to the indexer book below */
+  }
+  if (bid == null || ask == null) {
+    const tb = await topOfBook(arena.marketId);
+    if (tb) [bid, ask] = [tb.bid, tb.ask];
+  }
+  if (bid == null || ask == null || !(bid > 0) || !(ask > 0)) return null;
+
+  const tick = 0.0015; // venue tick (1500 / 1e6)
+  const DEC = 1_000_000;
+  let yesPrice: number; // protective YES limit
+  let effective: number; // escrow price in the bought outcome's OWN terms
+  if (prediction === "UP") {
+    // BUY_YES crosses the ask; protective limit sits above it with a cushion.
+    yesPrice = Math.min(0.999, floorToTick(ask + Math.max(ask * 0.03, 0.015), tick));
+    effective = yesPrice;
+  } else {
+    // BUY_NO crosses the resting YES bid (a YES buyer at `bid` pays NO at 1-bid).
+    const noLimit = floorToTick((1 - bid) + Math.max((1 - bid) * 0.03, 0.015), tick);
+    yesPrice = 1 - noLimit;
+    effective = noLimit;
+  }
+  const priceRaw = BigInt(Math.min(DEC - 1, Math.max(1, Math.round(yesPrice * DEC))));
+  const quantity = BigInt(Math.floor(Number(stakeRaw) / Math.max(effective, 0.01)));
+  if (quantity <= 0n) return null;
+  return { kind: prediction === "UP" ? 0 : 2, price: priceRaw, quantity, effectivePrice: effective };
 }
 
 export { EC_COLLATERAL_DECIMALS };

@@ -13,12 +13,26 @@ export interface Checkpoint {
   endPrice: number;
   prices: number[]; // [start, end]
   actual: "UP" | "DOWN" | "FLAT";
+  // Per-round DreamDEX arena window: the pinned binary market THIS round's real
+  // stake was placed on and whose protocol resolution settles the round.
+  arena?: {
+    marketId: string;
+    pool: string;
+    symbol: string;
+    expiry: number;
+  };
 }
 
 export interface MatchPriceModel {
   asset: string;
   entryPrice: number; // real oracle price at match start (before round 1)
   arenaOpen?: number; // fixed match-level reference: first EC order-book mid read
+  arena?: {
+    marketId: string;
+    pool: string;
+    symbol: string;
+    expiry: number;
+  };
   checkpoints: Checkpoint[]; // real resolved rounds, appended by the server
 }
 

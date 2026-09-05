@@ -4,10 +4,10 @@ import { PlayerStats } from "@/db/models/PlayerStats";
 import { normalizeAddress } from "@/lib/addresses";
 import { jsonError } from "@/lib/utils";
 import { getPvpWinPoints } from "@/lib/rank";
-import { readArenaPrice } from "@/lib/ec/executor";
-import { ecArenaForMatch } from "@/lib/ec/arena";
-import { settleRoundOnEscrowGuarded, stakeRoundOnChain } from "@/lib/ec/escrow";
-import { matchKey } from "@/lib/ec/matchKey";
+import { readArenaPrice, resolveArenaOutcome, type ArenaRef } from "@/lib/ec/executor";
+import { ecArenaForMatch, ecArenaForRound } from "@/lib/ec/arena";
+import { stakePlayerRoundOnDreamDEX } from "@/lib/ec/staker";
+import { EC_COLLATERAL_DECIMALS } from "@/lib/ec/config";
 import { z } from "zod";
 import { isAddress } from "viem";
 import { randomBytes } from "node:crypto";
@@ -116,102 +116,60 @@ async function resolveRound(match: any, now: Date): Promise<{
     rivalPred = randomDouble() < 0.5 ? "UP" : "DOWN";
   }
 
-  // REAL EC ORACLE RESOLUTION — the Event-Contract order book is the only
-  // source. Each round reads the arena's live YES mid from its real order book
-  // and derives direction from the delta vs. the round anchor. If the arena
-  // floor isn't live or the book has no two-sided quote, resolution throws and
-  // the outer handler records an honest no-op draw (never a fake UP/DOWN).
+  // REAL EC PROTOCOL RESOLUTION — the round's pinned arena window IS the judge.
+  // The player's stake this round went INTO this market (a real BUY_YES/BUY_NO
+  // placed on the round's window). When the window closes the protocol itself
+  // resolves it to Up/Down (`winningOutcome`: 0=Up/YES, 1=Down/NO); that on-chain
+  // result decides the round. If the oracle hasn't finalised yet (indexer/grace
+  // lag), fall back to the honest commit-start → round-end price DIRECTION via
+  // the real order-book mid — the move "commit end → round end" describes.
   const resolvedRounds = match.rounds ?? [];
   const prevRound = resolvedRounds.length > 0 ? resolvedRounds[resolvedRounds.length - 1] : undefined;
   const asset = (match.priceModel?.asset ?? match.predictionAsset ?? "BTC") as "BTC" | "ETH";
 
-  const arena = await ecArenaForMatch(match, asset, { preferBook: true });
+  const cp = match.priceModel?.checkpoints?.[roundNumber - 1];
+  const arena = (cp?.arena?.marketId && cp.arena.marketId.length > 4)
+    ? cp.arena
+    : await ecArenaForRound(match, asset, roundNumber - 1, { preferBook: true });
   if (!arena) {
     throw new Error(`no live EC arena floor for ${asset} — arena is between windows`);
   }
 
-  // The EC order-book read is the only oracle. A single empty/thin book read
-  // (intermittent on Somnia testnet) should NOT flip an entire round to a no-op
-  // FLAT draw — retry the fetch a few times before giving up, so transient
-  // indexer blips don't produce a perpetual 0-0 match.
-  let quote = await readArenaPrice(arena);
-  for (let attempt = 0; (quote.yesPrice == null || !(quote.yesPrice > 0)) && attempt < 3; attempt++) {
-    await new Promise((r) => setTimeout(r, 1200));
-    quote = await readArenaPrice(arena);
+  const outcome = await resolveArenaOutcome(arena, cp?.entryPrice ?? null);
+  const actual: "UP" | "DOWN" | "FLAT" = outcome.actual;
+  const resolutionSource = outcome.source;
+  const startPrice = cp?.entryPrice ?? undefined;
+  // Exit reference for display: the resolution winner (Up⇢1 / Down⇢0), else the
+  // live exit mid observed for the direction fallback.
+  let endPrice: number | undefined;
+  if (outcome.source === "resolution") {
+    endPrice = actual === "UP" ? 1 : 0;
+  } else {
+    const exitQuote = await readArenaPrice(arena).catch(() => null);
+    endPrice = exitQuote?.yesPrice && exitQuote.yesPrice > 0 ? exitQuote.yesPrice : startPrice;
   }
-  if (quote.yesPrice == null || !(quote.yesPrice > 0)) {
-    console.warn(`[predict] YES price unavailable (after retries) for ${arena.marketId} symbol=${arena.symbol} bid=${quote.bestBid} ask=${quote.bestAsk}`);
-    throw new Error(`EC YES price unavailable for ${arena.marketId}`);
-  }
-
-  // ── PER-ROUND ANCHOR (commit-time entry price) ──────────────...
-  // The commit phase captures the YES-mid at the moment the player locks their
-  // prediction. That entry price IS the anchor for this round's resolution: the
-  // market's move from entry to exit determines UP/DOWN/FLAT. Falls back to the
-  // rolling previous-round close (or arena open) for rounds resolved without a
-  // commit phase (e.g. test fixtures, legacy matches).
-  const arenaOpen = match.priceModel?.arenaOpen;
-  const cp = (match.priceModel?.checkpoints as any[])?.[roundNumber - 1];
-  const commitEntryPrice = cp?.entryPrice;
-  // ONE fixed match-level reference (the first arena read). The commit phase's
-  // entry price is taken a split-second before resolution, so it can never show
-  // movement — the market's progress vs MATCH OPEN is what updates combat.
-  const anchor = (arenaOpen && arenaOpen > 0)
-    ? arenaOpen
-    : ((commitEntryPrice && commitEntryPrice > 0)
-      ? commitEntryPrice
-      : quote.yesPrice);
-
-  // Spread/tick-aware FLAT band. The venue books are thin with ~2-3% spreads and
-  // the mid-of-book is stable within a 10s round, so a tiny absolute mid-delta is
-  // not a real directional signal. A move must exceed BOTH the flat band AND half
-  // the live bid-ask spread to count as UP/DOWN — i.e. the market had to actually
-  // cross/reshape the spread in that round (genuine flow), not just tick in place.
-  const spreadWidth = quote.bestAsk != null && quote.bestBid != null ? quote.bestAsk - quote.bestBid : 0;
-  const band = Math.max(EC_ORACLE_FLAT_BAND, spreadWidth * EC_ORACLE_SPREAD_FACTOR);
-
-  const rawDiff = quote.yesPrice - anchor;
-
-  // Apply the leverage multiplier to the measured mid-delta so real directional
-  // flow within a 10s round (tiny in absolute YES-mid terms) crosses the FLAT
-  // band and resolves as a decisive UP/DOWN instead of a perpetual 0-0 draw.
-  const diff = rawDiff * EC_RESOLUTION_LEVERAGE;
-
-  // Diagnostics: log the true cause of a FLAT round so we can distinguish "no
-  // price/arena (honest no-op)" from "mid genuinely didn't move" vs "band too wide".
-  if (Math.abs(rawDiff) * EC_RESOLUTION_LEVERAGE <= band) {
-    console.warn(
-      `[predict] FLAT round=${roundNumber} mid=${quote.yesPrice.toFixed(4)} anchor=${anchor.toFixed(4)} rawDiff=${rawDiff.toFixed(4)} diff=${diff.toFixed(4)} band=${band.toFixed(4)} spread=${spreadWidth.toFixed(4)}`,
-    );
-  }
-
-  const actual: "UP" | "DOWN" | "FLAT" = diff > band ? "UP" : diff < -band ? "DOWN" : "FLAT";
-  // How decisively the mid moved past the FLAT band this round (leveraged). 0 for
-  // a FLAT round. Feeds the Step 5 damage scaling so a bigger move lands a bigger hit.
-  const decisiveness = Math.max(0, Math.abs(diff) - band);
-  const startPrice = anchor;
-  const endPrice = quote.yesPrice;
-  const volume = [startPrice, endPrice];
+  const volume: number[] = [startPrice ?? 0, endPrice ?? 0];
 
   const isFlat = actual === "FLAT";
 
-  // FLAT = no directional winner. No score, no damage.
+  // The protocol's (or the honest direction's) winner decides the round. The
+  // player's on-chain stake mirrors their call, so a correct call == a won stake.
   const playerCorrect = !isFlat && playerPred === actual;
   const rivalCorrect = !isFlat && rivalPred === actual;
   const isDraw = isFlat || playerCorrect === rivalCorrect;
   const roundWinner = isDraw ? "draw" : playerCorrect ? "player" : "rival";
 
-  // Server-authoritative combat calculation
+  // Combat damage: real result decides the winner; no mid-delta amplitude bonus.
   let playerDamage = 0;
   let rivalDamage = 0;
   let isCritical = false;
   if (!isDraw) {
     if (playerCorrect) {
-      const d = calcDamage(match.playerStreak, decisiveness);
+      const d = calcDamage(match.playerStreak, 0);
       rivalDamage = d.damage;
       isCritical = d.isCritical;
     } else {
-      const d = calcDamage(match.rivalStreak, decisiveness);
+      const d = calcDamage(match.rivalStreak, 0);
       playerDamage = d.damage;
       isCritical = d.isCritical;
     }
@@ -245,6 +203,10 @@ async function resolveRound(match: any, now: Date): Promise<{
     endPrice,
     prices: volume,
     asset,
+    resolutionSource,
+    arena: arena
+      ? { marketId: arena.marketId, poolAddress: arena.pool, symbol: arena.symbol, expiry: arena.expiry }
+      : undefined,
     resolvedAt: now,
   };
 
@@ -484,13 +446,17 @@ export async function POST(req: Request): Promise<Response> {
         return Response.json(buildState(fresh!, now));
       }
 
-      // Capture the entry YES-mid for this round from the real EC order book.
+      // Capture the entry YES-mid for this round + PIN the arena window this
+      // round FIRST. The player's real stake goes into THIS market, and the
+      // round resolves against THIS market's real protocol outcome — one window,
+      // one resolution, one stake.
       const asset = (commitClaim.priceModel?.asset ?? commitClaim.predictionAsset ?? "BTC") as "BTC" | "ETH";
       let entryPrice = 0;
+      let pinnedArena: ArenaRef | null = null;
       try {
-        const arena = await ecArenaForMatch(commitClaim, asset, { preferBook: true });
-        if (arena) {
-          const q = await readArenaPrice(arena);
+        pinnedArena = await ecArenaForRound(commitClaim, asset, commitClaim.currentRound - 1, { preferBook: true });
+        if (pinnedArena) {
+          const q = await readArenaPrice(pinnedArena);
           if (q.yesPrice && q.yesPrice > 0) entryPrice = q.yesPrice;
         }
       } catch (err) {
@@ -504,13 +470,23 @@ export async function POST(req: Request): Promise<Response> {
         },
       });
 
-      // Per-round on-chain stake (fire-and-forget): the ghost wallet (or
-      // operator relay) places a stakeRound on the round escrow at the
-      // locked entry price. A failed stake never blocks the match.
-      const onchainMatchId = matchKey(String(match._id), commitClaim.playerAddress);
-      const AMOUNT_PER_ROUND_RAW = BigInt(Math.round((commitClaim.playerAmountPerRound ?? 1) * 1_000_000));
-      const entryPriceRaw = BigInt(Math.round(entryPrice * 1_000_000));
-      stakeRoundOnChain(onchainMatchId, commitClaim.currentRound, AMOUNT_PER_ROUND_RAW, entryPriceRaw).catch(() => {});
+      // Per-round REAL stake on DreamDEX (fire-and-forget): the operator places
+      // the player's actual BUY_YES/BUY_NO market order in the pinned window via
+      // the SDK trader (escrowing collateral direct to the pool). A failed stake
+      // never blocks the match — the round still resolves off the real protocol
+      // result.
+      if (pinnedArena && commitClaim.playerAmountPerRound) {
+        const stakeRaw = BigInt(Math.round(commitClaim.playerAmountPerRound * 10 ** EC_COLLATERAL_DECIMALS));
+        stakePlayerRoundOnDreamDEX(pinnedArena, commitClaim.playerAddress, pred, stakeRaw)
+          .then(({ txHash }) => {
+            if (!txHash) return;
+            return Match.updateOne(
+              { _id: match._id },
+              { $set: { [`priceModel.checkpoints.${commitClaim.currentRound - 1}.stakeTxHash`]: txHash } },
+            );
+          })
+          .catch(() => {});
+      }
 
       const fresh = await Match.findById(match._id);
       return Response.json(buildState(fresh!, now));
@@ -531,28 +507,28 @@ export async function POST(req: Request): Promise<Response> {
         return Response.json(buildState(fresh!, now));
       }
 
-      // We won the claim. Now resolve.
-      // For PvP: a round NEVER resolves before its close. The 10s ACTIVE
-      // window is the combat window — the outcome must derive from the full
-      // entry→exit move of the market, not from the instant the last player's
-      // prediction/flip happened to land. Predictions ARE stored above (kept
-      // server-side for the final resolve), but the round stays in ACTIVE until
-      // the deadline. Clients re-submit through ROUND_LOCKED after the close,
-      // and the first post-deadline request claims ACTIVE and resolves.
+// We won the claim. Now resolve.
+      // The round is the fixed ~10s combat window (commit at start, settle at
+      // end). The stake was placed on the pinned arena at commit; the round
+      // settles after the 10s window via resolveArenaOutcome — the protocol's
+      // winningOutcome when it has already been posted, else the commit→round-
+      // end price direction. The stake itself settles on-chain when the window
+      // later closes; the round never waits on the full venue window.
+      const waitMs = claim.roundDeadline.getTime() - now.getTime();
+      if (waitMs > 0 && process.env.DREAMDUEL_FAST_ROUNDS !== "1") {
+        await Match.findOneAndUpdate(
+          { _id: match._id, roundPhase: "EXECUTING" },
+          { $set: { roundPhase: "ACTIVE" } },
+        );
+        return Response.json({
+          ...buildState(claim, now),
+          waitingForOpponent: isPvP,
+          roundLocked: false,
+          msUntilResolve: Math.max(0, waitMs),
+        });
+      }
+
       if (isPvP) {
-        if (!isExpired) {
-          // Not at the round's close yet — keep the window open. The other
-          // player may still submit or flip; whichever request arrives after
-          // the deadline resolves the round against BOTH final calls.
-          await Match.findOneAndUpdate(
-            { _id: match._id, roundPhase: "EXECUTING" },
-            { $set: { roundPhase: "ACTIVE" } },
-          );
-          return Response.json({
-            ...buildState(claim, now),
-            waitingForOpponent: true,
-          });
-        }
         // PvP expired with no predictions: no-op round (draw, 0 damage)
         if (!claim.playerPrediction && !claim.rivalPrediction) {
           const cp = claim.priceModel?.checkpoints?.[claim.currentRound - 1];
@@ -606,20 +582,6 @@ export async function POST(req: Request): Promise<Response> {
       try {
         const result = await resolveRound(claim, now);
         const { roundRecord, newPlayerScore, newRivalScore, newPlayerHP, newRivalHP, newPlayerStreak, newRivalStreak, matchDecided, winner } = result;
-
-        // Per-round on-chain settlement (DreamDuelRoundEscrow): each round is a
-        // separate stake that auto-settles at its close. The round escrow keys by
-        // (matchKey(id, player), round) — PER PLAYER — so bot (player 1) and BOTH
-        // PvP players settle their own stake with their own correctness. Guarded +
-        // no-throw: a match must never fail because a round wasn't staked or was
-        // already settled.
-        const onchainMatchId = matchKey(String(match._id), claim.playerAddress);
-        settleRoundOnEscrowGuarded(onchainMatchId, roundRecord.roundNum, roundRecord.playerCorrect, claim.playerAddress).catch(() => {});
-        // PvP: the rival stakes a per-player key too — settle it against their result.
-        if (claim.player2Address) {
-          const rivalKey = matchKey(String(match._id), claim.player2Address);
-          settleRoundOnEscrowGuarded(rivalKey, roundRecord.roundNum, roundRecord.rivalCorrect, claim.player2Address).catch(() => {});
-        }
 
         const nextDeadline = new Date(now.getTime() + ROUND_TIMINGS.COMMIT_DURATION_MS);
         const nextStatus = matchDecided ? "COMPLETED" : "ACTIVE";
