@@ -18,6 +18,7 @@ export interface Checkpoint {
 export interface MatchPriceModel {
   asset: string;
   entryPrice: number; // real oracle price at match start (before round 1)
+  arenaOpen?: number; // fixed match-level reference: first EC order-book mid read
   checkpoints: Checkpoint[]; // real resolved rounds, appended by the server
 }
 

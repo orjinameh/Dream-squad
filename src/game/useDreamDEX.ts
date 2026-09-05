@@ -4,9 +4,11 @@ import { useState, useEffect, useCallback } from "react";
 import { useAccount, useWriteContract, useWaitForTransactionReceipt } from "wagmi";
 import { createPublicClient, http, parseUnits } from "viem";
 import { SOMNIA_CHAIN, SPOT_POOL_ABI, OPERATOR_ADDRESS, OPERATOR_REGISTRY_ABI, SELECTORS } from "@/lib/config";
+import { EC_TX_GAS_PRICE, ecHttpTransport } from "@/lib/ec/config";
 import { MARKETS } from "@/lib/markets";
 
 const RPC_URL = process.env.NEXT_PUBLIC_SOMNIA_RPC_URL ?? "https://dream-rpc.somnia.network";
+const EC_TX_GAS = 30_000_000n;
 
 export interface DreamDEXStatus {
   delegationReady: boolean;
@@ -98,10 +100,14 @@ export function useDreamDEX(marketSymbol: string = "SOMI:tUSDC") {
           [SELECTORS.placeOrderFor, SELECTORS.cancelOrderFor],
           true,
         ],
+        chain: SOMNIA_CHAIN,
+        chainId: SOMNIA_CHAIN.id,
+        gas: EC_TX_GAS,
+        gasPrice: EC_TX_GAS_PRICE,
       });
 
       // Wait for confirmation
-      const pc = createPublicClient({ chain: SOMNIA_CHAIN, transport: http(RPC_URL) });
+      const pc = createPublicClient({ chain: SOMNIA_CHAIN, transport: ecHttpTransport() });
       await pc.waitForTransactionReceipt({ hash });
 
       setStatus((s) => ({ ...s, delegationReady: true }));
@@ -126,9 +132,13 @@ export function useDreamDEX(marketSymbol: string = "SOMI:tUSDC") {
         abi: SPOT_POOL_ABI,
         functionName: "setManualVaultMode",
         args: [true],
+        chain: SOMNIA_CHAIN,
+        chainId: SOMNIA_CHAIN.id,
+        gas: EC_TX_GAS,
+        gasPrice: EC_TX_GAS_PRICE,
       });
 
-      const pc = createPublicClient({ chain: SOMNIA_CHAIN, transport: http(RPC_URL) });
+      const pc = createPublicClient({ chain: SOMNIA_CHAIN, transport: ecHttpTransport() });
       await pc.waitForTransactionReceipt({ hash });
 
       setStatus((s) => ({ ...s, vaultReady: true }));

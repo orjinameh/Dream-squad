@@ -51,6 +51,12 @@ export const EC_CHAIN = defineChain({
       webSocket: [EC_RPC_WS_URL],
     },
   },
+  // viem short-circuits to this and never calls eth_gasPrice (which the
+  // testnet mirrors rate-limit and Somnia rejects), so a wallet approve/stake
+  // is fully priced before the popup. Same value as EC_TX_GAS_PRICE.
+  fees: {
+    estimateFeesPerGas: async ({ type }) => (type === "legacy" ? { gasPrice: EC_TX_GAS_PRICE } : null),
+  },
 });
 
 /** Testnet Event Contract address set (from @somnia-chain/markets-sdk). */

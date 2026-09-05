@@ -91,6 +91,7 @@ const ARENA_CACHE_TTL_MS = 30_000;
 const ARENA_FALLBACK_TTL_MS = 5 * 60_000;
 /** Per-request ceiling (ms) for the indexer sweep inside Vercel serverless. */
 const ARENA_SWEEP_TIMEOUT_MS = 8_000;
+const MIN_EC_BOOK_SPREAD = 1e-4;
 
 interface ArenaCacheEntry {
   floor: EcArenaMarket | null;
@@ -109,6 +110,7 @@ function cachedArena(asset: "BTC" | "ETH", nowMs: number): ArenaCacheEntry | und
 export async function findArenaFloor(
   asset: "BTC" | "ETH",
   minLeftSec = 0,
+  opts: { preferBook?: boolean } = {},
 ): Promise<EcArenaMarket | null> {
   if (asset !== "BTC" && asset !== "ETH") return null;
   const nowMs = Date.now();
@@ -130,7 +132,7 @@ export async function findArenaFloor(
     finally { if (arenaSweepInFlight.get(asset) === inFlight) arenaSweepInFlight.delete(asset); }
   }
 
-  const sweep = sweepArenaFloor(asset, minLeftSec, nowMs);
+  const sweep = sweepArenaFloor(asset, minLeftSec, nowMs, opts);
   arenaSweepInFlight.set(asset, sweep);
   try {
     const floor = await sweep;
@@ -144,7 +146,7 @@ export async function findArenaFloor(
   }
 }
 
-async function sweepArenaFloor(asset: "BTC" | "ETH", minLeftSec: number, nowMs: number): Promise<EcArenaMarket | null> {
+async function sweepArenaFloor(asset: "BTC" | "ETH", minLeftSec: number, nowMs: number, opts: { preferBook?: boolean }): Promise<EcArenaMarket | null> {
   // Bind the sweep to a generous-but-bounded timeout so a slow/hung indexer
   // degrades gracefully inside the Vercel serverless budget instead of letting
   // the SDK's 30s GraphQL timeout blow the function's own limit.
@@ -155,7 +157,7 @@ async function sweepArenaFloor(asset: "BTC" | "ETH", minLeftSec: number, nowMs: 
       p.then((v) => { clearTimeout(timer); resolve(v); }, (e) => { clearTimeout(timer); reject(e); });
     });
 
-  const fresh = await withBudget(discoverArenaFloor(asset, minLeftSec, Math.floor(nowMs / 1000)))
+  const fresh = await withBudget(discoverArenaFloor(asset, minLeftSec, Math.floor(nowMs / 1000), opts))
     .catch((err) => {
       console.warn(`[arena] sweep failed for ${asset}: ${err instanceof Error ? err.message : String(err)} — falling back to last good floor`);
       return null;
@@ -171,7 +173,98 @@ async function sweepArenaFloor(asset: "BTC" | "ETH", minLeftSec: number, nowMs: 
   return null;
 }
 
-async function discoverArenaFloor(asset: "BTC" | "ETH", minLeftSec: number, now: number): Promise<EcArenaMarket | null> {
+async function discoverArenaFloor(asset: "BTC" | "ETH", minLeftSec: number, now: number, opts: { preferBook?: boolean }): Promise<EcArenaMarket | null> {
+  // Combat rounds resolve off the live order book — the ONLY thing that gives
+  // a moving mid. That path runs entirely over the indexer HTTP API (no heavy
+  // loadMarkets sweep, no flaky WebSocket), which keeps serverless cold starts
+  // and every round inside budget. The POSITION flow (preferBook=false) needs
+  // formal settlement, so it keeps the full SDK discovery (real-strike windows).
+  if (opts.preferBook) return discoverLiquidArena(asset, minLeftSec, now);
+  return discoverSettlingArena(asset, minLeftSec, now);
+}
+
+/**
+ * Light, indexer-HTTP-only arena discovery for combat rounds. `listLiveBinaryMarkets`
+ * returns every future-expiry binary window in ~300ms; among the soonest ones we
+ * pick the first with a real two-sided order book (the venue's liquid windows).
+ * No WebSocket, no per-window on-chain probes — deterministic and fast.
+ */
+async function discoverLiquidArena(asset: "BTC" | "ETH", minLeftSec: number, now: number): Promise<EcArenaMarket | null> {
+  const exchange = ecExchange();
+  try {
+    await exchange.loadMarkets(false);
+  } catch {
+    /* registry read failed — fall through to symbol-less indexer book below */
+  }
+
+  const live = await listLiquidWindows(asset);
+  const rows = live
+    .filter((m) => !m.finalized && !m.voided && Number(m.expiry) > now + minLeftSec)
+    .sort((a, b) => Number(a.expiry) - Number(b.expiry));
+
+  for (const r of rows.slice(0, 6)) {
+    const market = Object.values(exchange.markets).find((um) => um.id === r.marketId);
+    const arena: EcArenaMarket = {
+      symbol: market?.symbol ?? `${asset}-${r.strike ?? "0"}-liquid/tUSDC`,
+      marketId: r.marketId,
+      pool: (r.poolAddress ?? EC_ADDRESSES.collateral ?? "0x70a86D8842FB63C4Ad2b7cdddF530eBf1BB25d8E") as `0x${string}`,
+      collateral: (r.collateral ?? EC_ADDRESSES.collateral ?? "0x70a86D8842FB63C4Ad2b7cdddF530eBf1BB25d8E") as `0x${string}`,
+      token: (r.collateral ?? EC_ADDRESSES.collateral ?? "0x70a86D8842FB63C4Ad2b7cdddF530eBf1BB25d8E") as `0x${string}`,
+      yesId: r.yesTokenId != null ? BigInt(String(r.yesTokenId)) : 0n,
+      noId: r.noTokenId != null ? BigInt(String(r.noTokenId)) : 0n,
+      strike: String(r.strike ?? ""),
+      decimals: EC_COLLATERAL_DECIMALS,
+      expiry: Number(r.expiry),
+    };
+    const q = await readArenaPrice(arena);
+    if (q.bestBid != null && q.bestAsk != null && q.yesPrice != null && q.yesPrice > 0) {
+      return arena;
+    }
+  }
+  return null;
+}
+
+interface LiquidWindow {
+  marketId: string;
+  poolAddress: `0x${string}` | null;
+  collateral: `0x${string}` | null;
+  yesTokenId: string | number | null;
+  noTokenId: string | number | null;
+  strike: string | number | null;
+  expiry: string | number;
+  finalized: boolean;
+  voided: boolean;
+}
+
+/**
+ * Future-expiry binary windows for an asset, straight from the indexer GraphQL
+ * (mirrors the SDK's `listLiveBinaryMarkets` query but returns only the fields
+ * round-arena selection needs). Pure HTTP, ~300ms — no WebSocket, no heavy
+ * `loadMarkets` registry sweep.
+ */
+async function listLiquidWindows(asset: string): Promise<LiquidWindow[]> {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const query = `
+    query LiveWindows {
+      Market(where: {marketType: {_eq: "BINARY"}, expiry: {_gt: "${nowSec}"}, asset: {_eq: "${asset}"}}, order_by: {expiry: asc}, limit: 40) {
+        marketId poolAddress collateral yesTokenId noTokenId strike expiry finalized voided
+      }
+    }`;
+  try {
+    const res = await fetch(EC_INDEXER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ query }),
+      signal: AbortSignal.timeout(8_000),
+    });
+    const json = await res.json() as { data?: { Market?: LiquidWindow[] } };
+    return json.data?.Market ?? [];
+  } catch {
+    return [];
+  }
+}
+
+async function discoverSettlingArena(asset: "BTC" | "ETH", minLeftSec: number, now: number): Promise<EcArenaMarket | null> {
   const prefix = asset === "BTC" ? "BTC-" : "ETH-";
   const exchange = ecExchange();
 
@@ -180,25 +273,54 @@ async function discoverArenaFloor(asset: "BTC" | "ETH", minLeftSec: number, now:
     markets = Object.values(await exchange.loadMarkets(true));
   }
 
-  const floors: EcArenaMarket[] = [];
-  for (const m of markets) {
-    if (m.type !== "binary") continue;
-    if (!m.symbol.startsWith(prefix)) continue;
-    if (m.symbol.includes("-0-")) continue; // zero-strike placeholder: never settles
+  // Cheap indexer-side pre-filter: only near-future windows. This bounds the
+  // expensive per-market on-chain probe to the handful of windows potentially
+  // live (the venue keeps rolling fresh ones), instead of RPC-probing all
+  // historical windows on every call (that blew past serverless timeouts).
+  const candidates = markets.filter((m) => {
+    if (m.type !== "binary") return false;
+    if (!m.symbol.startsWith(prefix)) return false;
+    // Zero-strike windows NEVER settle on-chain, so positions (which settle
+    // against the formal winningOutcome) must skip them.
+    if (m.symbol.includes("-0-")) return false;
     const info = m.info as BinaryMarket & { expiry?: string | number };
-    // Cheap indexer-side pre-filter: only near-future windows. This bounds the
-    // expensive per-market on-chain probe to the handful of windows potentially
-    // live (the venue keeps rolling fresh ones), instead of RPC-probing all
-    // historical windows on every call (that blew past serverless timeouts).
-    if (!info.expiry || Number(info.expiry) <= now + minLeftSec) continue;
-    const onchain = await exchange.client
-      .getMarketOnchain(m.id as `0x${string}`)
-      .catch(() => null);
+    return Boolean(info.expiry) && Number(info.expiry) > now + minLeftSec;
+  });
+
+  // Probe every candidate IN PARALLEL, each with a hard per-probe timeout and
+  // one retry. The SDK's on-chain reads ride its WebSocket client, which is
+  // flaky on testnet — a sequential loop of 1-3s WS reads blew the 8s sweep
+  // budget and returned no arena (every round then fell back to FLAT). Parallel
+  // probes with retry keep the sweep inside budget even when a probe stalls.
+  const PROBE_TIMEOUT_MS = 3_500;
+  const probeOnchain = async (id: string): Promise<MarketOnchain | null> => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        return await Promise.race([
+          exchange.client.getMarketOnchain(id as `0x${string}`),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error("onchain probe timed out")), PROBE_TIMEOUT_MS),
+          ),
+        ]);
+      } catch {
+        /* retry once; give up after */
+      }
+    }
+    return null;
+  };
+
+  const results = await Promise.all(
+    candidates.map(async (m) => ({ m, onchain: await probeOnchain(m.id as string) })),
+  );
+
+  const floors: EcArenaMarket[] = [];
+  for (const { m, onchain } of results) {
     if (!onchain) continue;
     if (onchain.status !== 1 || onchain.isResolved) continue; // only live + unsettled
     if (!onchain.expiry || Number(onchain.expiry) <= now) continue;
     const leftSec = Number(onchain.expiry) - now;
     if (leftSec < minLeftSec) continue;
+    const info = m.info as BinaryMarket & { expiry?: string | number };
     floors.push({
       symbol: m.symbol,
       marketId: m.id,
@@ -214,9 +336,8 @@ async function discoverArenaFloor(asset: "BTC" | "ETH", minLeftSec: number, now:
   }
 
   if (floors.length === 0) return null;
-  // Pick the soonest-settling window so the position resolves shortly after
-  // opening (not at a far-future expiry).
   floors.sort((a, b) => a.expiry - b.expiry);
+  // Soonest-settling window so the position resolves shortly after opening.
   return floors[0];
 }
 
@@ -233,25 +354,78 @@ export interface EcPriceQuote {
  * Read the live price of the arena's YES token straight from the market's real
  * order book (mid of best bid/ask). This is the oracle every round resolves on.
  * Returns nulls when the book has no two-sided depth yet.
+ *
+ * PRIMARY source is the indexer's resting-order table (`Order`) read over plain
+ * HTTP by marketId — fast, deterministic, immune to the WebSocket flakiness and
+ * the heavy loadMarkets sweep needed by the SDK's fetchOrderBook. Falls back to
+ * `fetchOrderBook(symbol)` when the marketId path has no two-sided book.
  */
 export async function readArenaPrice(arena: EcArenaMarket): Promise<EcPriceQuote> {
   const exchange = ecExchange();
+  // The SDK's unified fetchOrderBook reads the venue's LIVE store for the market
+  // behind `symbol` — the price the venue actually trades at. Prefer it; fall
+  // back to the indexer's resting-order table when this symbol isn't registered
+  // (a rolling window the registry hasn't picked up yet).
   try {
     const book = await exchange.fetchOrderBook(arena.symbol, 1);
     const bestBid = book.bids[0]?.[0] ?? null;
     const bestAsk = book.asks[0]?.[0] ?? null;
-    const yesPrice =
-      bestBid !== null && bestAsk !== null
-        ? (bestBid + bestAsk) / 2
-        : bestBid ?? bestAsk;
-    return {
-      yesPrice: yesPrice === null ? null : yesPrice,
-      bestBid: bestBid === null ? null : bestBid,
-      bestAsk: bestAsk === null ? null : bestAsk,
-      updatedMs: Date.now(),
-    };
+    if (bestBid != null && bestAsk != null && bestAsk - bestBid >= MIN_EC_BOOK_SPREAD) {
+      return {
+        yesPrice: (bestBid + bestAsk) / 2,
+        bestBid,
+        bestAsk,
+        updatedMs: Date.now(),
+      };
+    }
   } catch {
-    return { yesPrice: null, bestBid: null, bestAsk: null, updatedMs: Date.now() };
+    /* symbol not registered — try the indexer book below */
+  }
+  if (arena.marketId) {
+    const book = await topOfBook(arena.marketId);
+    // Only REAL two-sided depth counts: require a genuine (non-hairline) spread so
+    // stale sub-bps resting rows don't surface as a frozen 0.5000 "quote".
+    if (book && book.ask - book.bid >= MIN_EC_BOOK_SPREAD) {
+      return {
+        yesPrice: (book.bid + book.ask) / 2,
+        bestBid: book.bid,
+        bestAsk: book.ask,
+        updatedMs: Date.now(),
+      };
+    }
+  }
+  return { yesPrice: null, bestBid: null, bestAsk: null, updatedMs: Date.now() };
+}
+
+/**
+ * Best bid/ask straight from the indexer's RESTING-ORDER table, by marketId.
+ * Order prices are collateral-scaled (tUSDC 6dp: price 954000 == 0.954 YES).
+ * Surfaces the real top-of-book without any SDK/realtime/WebSocket dependency.
+ */
+async function topOfBook(marketId: string): Promise<{ bid: number; ask: number } | null> {
+  const safe = marketId.toLowerCase();
+  const query = `
+    query {
+      bids: Order(where: {market_id: {_eq: "${safe}"}, isBid: {_eq: true}, quantityRemaining: {_gt: "0"}}, order_by: {price: desc}, limit: 1) { price }
+      asks: Order(where: {market_id: {_eq: "${safe}"}, isBid: {_eq: false}, quantityRemaining: {_gt: "0"}}, order_by: {price: asc}, limit: 1) { price }
+    }`;
+  try {
+    const res = await fetch(EC_INDEXER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ query }),
+      signal: AbortSignal.timeout(6_000),
+    });
+    const json = await res.json() as { data?: { bids?: { price: string }[]; asks?: { price: string }[] } };
+    const bidRaw = json.data?.bids?.[0]?.price;
+    const askRaw = json.data?.asks?.[0]?.price;
+    if (bidRaw == null || askRaw == null) return null;
+    const bid = Number(bidRaw) / 1_000_000;
+    const ask = Number(askRaw) / 1_000_000;
+    if (!(bid > 0) || !(ask > 0) || bid >= ask) return null;
+    return { bid, ask };
+  } catch {
+    return null;
   }
 }
 

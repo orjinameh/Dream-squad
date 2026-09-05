@@ -125,7 +125,7 @@ async function resolveRound(match: any, now: Date): Promise<{
   const prevRound = resolvedRounds.length > 0 ? resolvedRounds[resolvedRounds.length - 1] : undefined;
   const asset = (match.priceModel?.asset ?? match.predictionAsset ?? "BTC") as "BTC" | "ETH";
 
-  const arena = await ecArenaForMatch(match, asset);
+  const arena = await ecArenaForMatch(match, asset, { preferBook: true });
   if (!arena) {
     throw new Error(`no live EC arena floor for ${asset} — arena is between windows`);
   }
@@ -153,11 +153,14 @@ async function resolveRound(match: any, now: Date): Promise<{
   const arenaOpen = match.priceModel?.arenaOpen;
   const cp = (match.priceModel?.checkpoints as any[])?.[roundNumber - 1];
   const commitEntryPrice = cp?.entryPrice;
-  const anchor = (commitEntryPrice && commitEntryPrice > 0)
-    ? commitEntryPrice
-    : prevRound?.endPrice != null && prevRound.endPrice > 0
-      ? prevRound.endPrice
-      : (arenaOpen && arenaOpen > 0 ? arenaOpen : quote.yesPrice);
+  // ONE fixed match-level reference (the first arena read). The commit phase's
+  // entry price is taken a split-second before resolution, so it can never show
+  // movement — the market's progress vs MATCH OPEN is what updates combat.
+  const anchor = (arenaOpen && arenaOpen > 0)
+    ? arenaOpen
+    : ((commitEntryPrice && commitEntryPrice > 0)
+      ? commitEntryPrice
+      : quote.yesPrice);
 
   // Spread/tick-aware FLAT band. The venue books are thin with ~2-3% spreads and
   // the mid-of-book is stable within a 10s round, so a tiny absolute mid-delta is
@@ -485,7 +488,7 @@ export async function POST(req: Request): Promise<Response> {
       const asset = (commitClaim.priceModel?.asset ?? commitClaim.predictionAsset ?? "BTC") as "BTC" | "ETH";
       let entryPrice = 0;
       try {
-        const arena = await ecArenaForMatch(commitClaim, asset);
+        const arena = await ecArenaForMatch(commitClaim, asset, { preferBook: true });
         if (arena) {
           const q = await readArenaPrice(arena);
           if (q.yesPrice && q.yesPrice > 0) entryPrice = q.yesPrice;
@@ -640,6 +643,11 @@ export async function POST(req: Request): Promise<Response> {
             priceModel: {
               asset: roundRecord.asset ?? claim.priceModel?.asset ?? "BTC",
               entryPrice: claim.priceModel?.entryPrice ?? roundRecord.startPrice ?? 0,
+              // One fixed match-level reference price (the first arena read),
+              // NEVER overwritten, so every round resolves against the SAME
+              // MOVING EC mid — real venue flow produces UP/DOWN instead of a
+              // perpetual mid==anchor draw.
+              arenaOpen: claim.priceModel?.arenaOpen ?? claim.priceModel?.entryPrice ?? roundRecord.startPrice ?? 0,
               checkpoints: [...(Array.isArray(claim.priceModel?.checkpoints) ? claim.priceModel.checkpoints : []), {
                 roundNum: roundRecord.roundNum,
                 startPrice: roundRecord.startPrice ?? 0,

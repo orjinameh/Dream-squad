@@ -157,8 +157,11 @@ export function useDreamEscrow(windowId?: string | null, escrowAddress: `0x${str
   const writeWithTimeout = useCallback(
     async (params: Parameters<typeof writeContractAsync>[0]): Promise<`0x${string}`> => {
       if (!writeContractAsync) throw new Error("Wallet not connected");
+      // `chain` alongside `chainId` guarantees viem's prepare can consult
+      // EC_CHAIN.fees.gasPrice even when the wagmi client has no chain loaded
+      // (that was the "chain: undefined" case that still probed eth_gasPrice).
       return Promise.race([
-        writeContractAsync({ ...params, gas: EC_TX_GAS, gasPrice: EC_TX_GAS_PRICE } as any),
+        writeContractAsync({ ...params, chain: EC_CHAIN, gas: EC_TX_GAS, gasPrice: EC_TX_GAS_PRICE } as any),
         new Promise((_, reject) =>
           setTimeout(() => reject(new Error("Wallet prompt timed out — check your wallet's popup/permission settings")), 90_000),
         ),

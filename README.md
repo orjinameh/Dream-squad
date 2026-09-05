@@ -1,151 +1,84 @@
 # DreamDuel
 
-Retro 1v1 prediction-battle game on Somnia. Two (or one vs a bot) fighters pick UP/DOWN on a live market each round; correct calls land combat damage, streaks and knockouts decide the match, and each round's trade executes on DreamDEX. Supports wallet-to-wallet PvP via matchmaking and a best-of-7 DUEL mode.
+Retro 1v1 prediction-battle game on **Somnia Shannon testnet (chain 50312)**, built for the Somnia × DreamDEX Event Contracts Hackathon.
+
+Two fighters (player vs player, or player vs bot) pick **UP/DOWN** on a live DreamDEX Event-Contract market each round. Correct calls land combat damage; streaks and knockouts decide the best-of-N duel. Every round **resolves against the real Event-Contract order book** — the live YES probability of BTC/ETH binary markets is the only oracle — and each stake **settles on-chain** through the DreamDuel escrow contracts.
+
+```
+fund ──▶ stake position ──▶ fight (UP/DOWN per round) ──▶ round resolves on the real EC order book ──▶ settle on-chain
+wallet    approve          commit (5s) + active (10s)      FLAT / UP / DOWN → damage / HP / KO           escrow
+```
+
+## What the judge sees
+
+- **Real DreamDEX Event-Contract integration.** The arena floor is discovered live via `@somnia-chain/markets-sdk` (`loadMarkets` + on-chain status gate), and each round's outcome derives from the actual order-book YES-mid over the round's entry→exit window (spread/band aware, with retries). Nothing is a simulated price.
+- **Real on-chain settlement.** tUSDC is staked into the DreamDuel round escrow per round; the backend relayer settles each round's stake against the real outcome — win returns the stake, loss forfeits to the house. Wallet-to-wallet PvP settles each player's stake independently.
+- **Robust against testnet RPC flakiness.** All chain traffic tiers across three RPC mirrors (thirdweb → dream-rpc → api.infra) with viem `fallback`; wallet approves carry an explicit gas price so a rate-limited `eth_gasPrice` never blocks the popup.
+- **Server-authoritative combat.** Damage, streaks, criticals, KO, and match completion are computed server-side from the resolved market move; clients are thin renderers with a freeze-proof local-advance fallback.
 
 ## Architecture
 
 ```
-Browser (wagmi) ──────────────────────────────────────────────────────
-  /create  ── POST /api/syndicates/create ──> Batch { OPEN, timer }
-  /squad/* ── POST /api/syndicates/join   ──> Trade { PENDING }
-  /squad/* ── GET  /api/syndicates/:id    ──> Receipts + state
+Browser (wagmi + RainbowKit) ─────────────────────────────────────────────
+  └ 1v1 match flow: CHAR_SELECT → MATCH_TYPE → POSITION/approve → COMMIT(5s)
+     → ACTIVE(10s, flippable UP↔DOWN) → resolve → next round / KO / result
 
-MongoDB ──────────────────────────────────────────────────────────────
-  Batch  { status: OPEN | PROCESSING | EXECUTED | FAILED, expiresAt }
-  Trade  { batchId, userAddress, amount, status, txHash }
-  compound unique index: batchId + userAddress (one intent per user)
+Next.js Route Handlers (server-authoritative)
+  POST /api/matches/create|ready|predict   round machine (COMMIT→ACTIVE→EXECUTING)
+  GET  /api/matches/state|history|detail   state + rehydrate
+  POST /api/position                       EC position (window stake + entry price)
+  POST /api/matches/ghost/fund             bot-match ghost deposit (one approve, then no popups)
+  GET  /api/leaderboard                    stats / rank
+  POST /api/matchmaking/*                  PvP matchmaking
+  GET  /api/health                         liveness
 
-Worker (src/worker/run.ts) ──────────────────────────────────────────
-  pollEvery: 1.5s
-  claimNextBatch(): findOneAndUpdate OPEN -> PROCESSING
-  executeBatch():   sequential IOC orders via operator
-  per-trade try/catch: isolate failures, normalize known reverts
+MongoDB (Mongoose)
+  Match   { players, round machine, rounds[], priceModel{arena, checkpoints}, escrow refs }
+  PlayerStats { wins/losses, streaks, rankPoints (PvP only — bot matches never move rank) }
 
-On-chain (Somnia Shannon Testnet) ───────────────────────────────────
-  0x15C7...  OperatorRegistry   setOperatorApprovalForPool()
-  0x259f...  SpotPool (SOMI)    placeOrderFor() [operator-delegated]
+On-chain (Somnia testnet, 50312)
+  ┌─ @somnia-chain/markets-sdk ── arena discovery + order-book oracle
+  ├─ Escrow (window positions)       0xd068e4b26357239d3ea0fd960c781fcb2512c5c9
+  ├─ Round Escrow (per-round settle) 0x4b5c9d4dec4542a2df02314952cbcc7dae665bdc
+  ├─ Admin / ghost relay EOA         0xdd68998C099f7570E59019ae35469E5603cEDA11
+  └─ Collateral (tUSDC, 6 dp)        0x70a86D8842FB63C4Ad2b7cdddF530eBf1BB25d8E
 ```
 
-### Key Design Decisions
+## Key design decisions
 
-- **Spot-native syndicates** (not event contracts). Event-contract pools gate operators via `OnlyApprovedContracts()`. Spot pools use the registry's `isOperatorAuthorized` selector gate -- fully compatible with EOA operator delegation.
-- **No custody.** Users approve operator once via registry. The operator calls `placeOrderFor` on their behalf. Tokens stay in user vaults.
-- **IOC crossing orders.** BUY sets price=10x quote decimals (crosses all asks), SELL sets price=0.001x (crosses all bids). Immediate-or-cancel unfilled remainder returns to vault.
-- **One intent per user per batch.** Enforced by compound unique index on (batchId, userAddress).
-- **Self-execute fallback.** If operator fails (gas depletion, pool mismatch), users can sign `placeOrderFor` directly from their own wallet.
+- **Event Contracts ARE the oracle.** The DEX's binary markets are the only price source. A round whose YES-mid moved past the (spread-aware) flat band resolves UP/DOWN; otherwise an honest FLAT (no damage). The venue's zero-strike rolling-placeholder windows are deliberately skipped so a stake can never lock forever.
+- **Ghost-funded bot matches.** One wallet `approve` funds the whole match; the server relays player→ghost, and the ghost signs every round (no popups). Unused grants auto-revoke after 5 minutes.
+- **PvP rounds resolve at the close, never early.** A mid-window flip is stored but the round stays ACTIVE until the deadline — the outcome derives from the full entry→exit move, not the instant the last player tapped.
+- **No custody.** Players hold their own tUSDC; the escrow only moves what each round's settled outcome dictates.
 
 ## Stack
 
 | Layer | Technology |
 |-------|-----------|
-| Frontend | Next.js 15 (App Router), wagmi v2, @tanstack/react-query |
-| API | Next.js Route Handlers, Zod validation |
+| Frontend | Next.js 15 (App Router), React 19, wagmi v2 + RainbowKit |
+| API | Next.js Route Handlers, Zod |
 | Database | Mongoose 8 (MongoDB) |
-| On-chain | Viem v2 (Somnia Shannon Testnet) |
+| On-chain | viem v2, @somnia-chain/markets-sdk ^0.28.x (Somnia testnet) |
 | Testing | Vitest, mongodb-memory-server |
 
 ## Setup
 
-### Prerequisites
-
-- Node.js >= 18
-- MongoDB (local or Atlas)
-- Private keys with STT gas on Shannon testnet
-
-### Install
-
 ```bash
 npm install
+cp .env.example .env   # MONGODB_URI + OPERATOR_PRIVATE_KEY (STT-funded, testnet)
+npm run dev            # http://localhost:3100
+npm test               # unit + integration suite
+npm run build          # production build
 ```
 
-### Environment
+Get testnet tUSDC + STT from the Somnia dev group faucet: https://t.me/+XHq0F0JXMyhmMzM0
 
-Copy `.env.example` to `.env` and fill:
+## Repository
 
-```bash
-MONGODB_URI=mongodb://localhost:27017
-MONGODB_DB=dreamsquad
-SOMNIA_RPC_URL=https://dream-rpc.somnia.network
-OPERATOR_PRIVATE_KEY=0x...   # operator key with STT gas
-```
+- `src/app/api/**` — server-authoritative game routes
+- `src/game/**` — client hook (useGameState) + escrow/ghost integrations
+- `src/lib/ec/**` — Event-Contract config, arena discovery, escrow clients, executor
+- `src/db/**` — Mongoose models (Match, PlayerStats)
+- `tests/**` — Vitest: game loop (client), predict / resolution / API, executor, matchmaking
 
-### Run
-
-```bash
-# Development
-npm run dev          # Next.js on :3000
-npm run worker       # executor worker
-
-# Build
-npm run build
-npm start            # production Next.js
-npm run worker       # executor worker
-```
-
-### Test
-
-```bash
-npm test             # all unit + integration tests
-```
-
-### E2E (testnet)
-
-```bash
-# Spins up in-memory MongoDB, exercises full pipeline against Shannon
-OPERATOR_PRIVATE_KEY=0x... npx tsx scripts/e2e-testnet.ts
-```
-
-## Project Structure
-
-```
-src/
-  app/
-    layout.tsx              # dark theme, nav, wallet
-    providers.tsx           # wagmi + react-query
-    create/page.tsx         # creator flow
-    squad/[id]/page.tsx     # invite + lobby + receipt
-    api/syndicates/
-      create/route.ts       # POST create batch
-      join/route.ts         # POST join batch
-      [id]/route.ts         # GET batch status + receipts
-      check-delegation/route.ts  # read isOperatorAuthorized
-      tx-status/route.ts    # read tx receipt
-  components/
-    WalletButton.tsx        # connect / disconnect
-    CountdownTimer.tsx      # live-ticking countdown
-  lib/
-    config.ts               # chain, ABI, operator address, crossing prices
-    markets.ts              # market configs (SOMI, WETH, WBTC)
-    operator.ts             # wallet clients, executeTradeOnChain
-    validation.ts           # zod schemas
-    wagmi.ts                # wagmi config
-    worker.ts               # batch claiming + sequential execution
-  worker/
-    run.ts                  # worker entry point
-scripts/
-  e2e-testnet.ts            # full E2E verification script
-tests/
-  api.test.ts               # API integration tests
-  executor.test.ts          # executor integration tests
-```
-
-## How It Works
-
-1. **Creator** connects wallet, picks market/direction/stake, approves operator delegation (one-time per pool).
-2. **Invite link** generated with `squad-<base>-<random>` slug. Share on X or anywhere.
-3. **Joiners** connect wallet, approve delegation, pledge amount. All intents stored atomically.
-4. **Timer expires.** Worker claims batch (atomic `findOneAndUpdate`), executes sequential IOC orders via operator delegation.
-5. **Receipt.** UI polls for status, shows green checkmarks or red failures with on-chain tx links.
-6. **Fallback.** If operator fails, "Self-Execute Order" button lets users sign `placeOrderFor` directly from their wallet.
-
-## On-Chain Details (Shannon Testnet)
-
-| Contract | Address |
-|----------|---------|
-| OperatorRegistry | `0x15C7e8CE38F021c5b45d098AaD788f63090bF20A` |
-| SOMI:USDso SpotPool | `0x259fD6559214dd5aD3752322426eA9F9fABEFff4` |
-| Operator EOA | `0xdd68998C099f7570E59019ae35469E5603cEDA11` |
-
-## License
-
-MIT
+MIT.

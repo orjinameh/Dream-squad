@@ -111,6 +111,7 @@ export function useGhostWallet(matchId: string | null, totalRounds: number, amou
             functionName: "approve",
             args: [ESCROW_ADMIN, totalStakeRaw],
             chainId: EC_CHAIN.id,
+            chain: EC_CHAIN,
             gas: 30_000_000n,
             // Full-price the tx inline so neither viem nor the wallet's own RPC
             // needs a flaky eth_gasPrice estimate before the popup appears.
@@ -182,6 +183,7 @@ export function useGhostWallet(matchId: string | null, totalRounds: number, amou
           functionName: "approve",
           args: [ESCROW_ADMIN, 0n],
           chainId: EC_CHAIN.id,
+          chain: EC_CHAIN,
           gas: 30_000_000n,
           gasPrice: EC_TX_GAS_PRICE,
         } as any);

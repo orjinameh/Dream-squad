@@ -1,13 +1,21 @@
 import { defineChain, parseUnits, zeroAddress } from "viem";
+import { EC_RPC_URLS, EC_TX_GAS_PRICE } from "@/lib/ec/config";
 
 // ─── Chain ────────────────────────────────────────────────────────────────────
 // Hardcoded to Shannon testnet. The executor never touches mainnet.
 
+// http[0] (NOT dream-rpc) is what MetaMask/wallets store when the dapp auto-
+// adds the chain, and it's the mirror that actually serves JSON-RPC today. The
+// fees.gasPrice override means viem never issues eth_gasPrice (rate-limited
+// here) — every write is fully priced against a fixed 10 gwei before the popup.
 export const SOMNIA_CHAIN = defineChain({
   id: 50312,
   name: "Somnia Testnet",
   nativeCurrency: { name: "STT", symbol: "STT", decimals: 18 },
-  rpcUrls: { default: { http: ["https://dream-rpc.somnia.network"] } },
+  rpcUrls: { default: { http: [...EC_RPC_URLS], webSocket: ["wss://api.infra.testnet.somnia.network/ws"] } },
+  fees: {
+    estimateFeesPerGas: async ({ type }) => (type === "legacy" ? { gasPrice: EC_TX_GAS_PRICE } : null),
+  },
   blockExplorers: {
     default: { name: "Shannon Explorer", url: "https://shannon-explorer.somnia.network" },
   },
