@@ -25,6 +25,20 @@ export interface Checkpoint {
   // pinned arena window). Set asynchronously after the commit; null until the
   // relay confirms a fill.
   stakeTxHash?: string;
+  stakeSide?: "UP" | "DOWN";
+  // Stake size/cost in raw collateral units (1e6 = 1 tUSDC on the 6-dp venue),
+  // as actually filled by the venue pool placement.
+  stakeQty?: string;
+  stakeCostRaw?: string;
+  // On-chain settlement of the round's stake, written once the pinned window
+  // has resolved on the venue (idempotent): WON sides are redeemed 1:1.
+  stakeSettlement?: {
+    won: boolean;
+    voided?: boolean;
+    netPnlRaw: string;
+    redeemTxHash?: string;
+    settledAt: string;
+  };
 }
 
 export interface MatchPriceModel {

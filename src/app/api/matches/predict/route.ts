@@ -380,15 +380,10 @@ export async function POST(req: Request): Promise<Response> {
     const deadlinePassed = now.getTime() > match.roundDeadline.getTime();
     const isExpired = deadlinePassed && match.roundPhase === "ACTIVE";
 
-    // ── GHOST FUNDING GATE (server-authoritative) ─────────────────────────
-    // A bot match MUST have its one-time ghost deposit funded before any round
-    // can resolve. The fight can never run nor advance unfunded. If the relay
-    // hasn't landed yet, hold: return current state without recording the
-    // prediction or advancing the round. The client shows a blocking FUND g
-    // screen; once `/api/matches/ghost` sets `match.funded=true` this lets go.
-    if (isBot && !match.funded) {
-      return Response.json({ ...buildState(match, now), fundingPending: true });
-    }
+    // Per-round financial model: `funded` is authoritative at create (true for
+    // every match — there is no separate player→escrow pre-funding to wait on;
+    // each round's stake custodies through the venue via the operator). A legacy
+    // ghost-funded match retains its flag but is never held by it.
 
     // Store prediction if provided and round is COMMIT (5s window) or ACTIVE.
     // During ACTIVE, allow re-submission so per-round flips (UP↔DOWN) are
@@ -474,16 +469,21 @@ export async function POST(req: Request): Promise<Response> {
       // the player's actual BUY_YES/BUY_NO market order in the pinned window via
       // the SDK trader (escrowing collateral direct to the pool). A failed stake
       // never blocks the match — the round still resolves off the real protocol
-      // result.
+      // result. The full placement (tx, side, qty, cost) is stored on the round's
+      // checkpoint so the on-chain stake history + settlement can surface it.
       if (pinnedArena && commitClaim.playerAmountPerRound) {
         const stakeRaw = BigInt(Math.round(commitClaim.playerAmountPerRound * 10 ** EC_COLLATERAL_DECIMALS));
+        const cpIdx = commitClaim.currentRound - 1;
         stakePlayerRoundOnDreamDEX(pinnedArena, commitClaim.playerAddress, pred, stakeRaw)
-          .then(({ txHash }) => {
+          .then(({ txHash, costRaw, filledQuantity }) => {
             if (!txHash) return;
-            return Match.updateOne(
-              { _id: match._id },
-              { $set: { [`priceModel.checkpoints.${commitClaim.currentRound - 1}.stakeTxHash`]: txHash } },
-            );
+            const $set: Record<string, unknown> = {
+              [`priceModel.checkpoints.${cpIdx}.stakeTxHash`]: txHash,
+              [`priceModel.checkpoints.${cpIdx}.stakeSide`]: pred,
+            };
+            if (filledQuantity != null) $set[`priceModel.checkpoints.${cpIdx}.stakeQty`] = filledQuantity.toString();
+            if (costRaw != null) $set[`priceModel.checkpoints.${cpIdx}.stakeCostRaw`] = costRaw.toString();
+            return Match.updateOne({ _id: match._id }, { $set });
           })
           .catch(() => {});
       }

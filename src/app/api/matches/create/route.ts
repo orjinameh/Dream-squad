@@ -27,6 +27,10 @@ const createMatchSchema = z.object({
   predictionAsset: z.string().optional(),
   // Optional explicit position; defaults to the wallet's active one.
   positionId: z.string().optional(),
+  // The player's own stake size for THIS match (tUSDC per round). Drives the
+  // real per-round DreamDEX pool stakes; persisted so resolve/stake size is
+  // server-authoritative and never defaults silently to 1.
+  amountPerRound: z.number().positive().optional(),
 });
 
 export async function POST(req: Request): Promise<Response> {
@@ -51,10 +55,6 @@ export async function POST(req: Request): Promise<Response> {
 
     if (!position) {
       return jsonError(409, "no active EC position — stake one first on the POSITION screen");
-    }
-    // Per-round positions (no windowCloseAt) don't expire on a v4 window schedule.
-    if (position.windowCloseAt && new Date(position.windowCloseAt) <= new Date()) {
-      return jsonError(409, "your EC position window has ended — open a new position to fight");
     }
 
     // Enforce one active match per wallet: a player with a live match can't open
@@ -90,6 +90,7 @@ export async function POST(req: Request): Promise<Response> {
     const commitDeadline = new Date(now.getTime() + ROUND_TIMINGS.COMMIT_DURATION_MS);
 
     const asset = input.predictionAsset ?? position.market ?? "BTC";
+    const amountPerRound = input.amountPerRound ?? position.amount ?? 1;
     const matchId = randomUUID();
     const isBot = input.opponentType !== "player";
 
@@ -111,7 +112,14 @@ export async function POST(req: Request): Promise<Response> {
       predictionAsset: asset,
       predictionQuestion: `WILL ${asset} GO UP OR DOWN?`,
       marketId: "EC",
-      // Reference the player's active EC position (money lives there, not here).
+      // The per-round financial model: each round stakes the player's amount on
+      // the pinned DreamDEX pool via the operator-relayed venue custody. The
+      // match is stats/rank only; the per-round stakes (and their on-chain
+      // settlement) carry the money. `funded` is therefore always true — there
+      // is no separate player→escrow pre-funding to wait on any more.
+      funded: true,
+      playerAmountPerRound: amountPerRound,
+      // Reference the player's active EC position (authorization/stats only).
       positionId: position._id,
       positionWindowId: position.windowId,
       positionDirection: position.direction,

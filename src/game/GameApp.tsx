@@ -2622,13 +2622,14 @@ const globalCSS = `
 
 function StakeHistoryScreen({ address, onBack }: { address?: string; onBack: () => void }) {
   const [stakes, setStakes] = useState<any[]>([]);
+  const [legacy, setLegacy] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     if (!address) { setLoading(false); return; }
-    fetch(`/api/position?list=1&address=${encodeURIComponent(address)}`)
+    fetch(`/api/stakes?address=${encodeURIComponent(address)}`)
       .then((r) => r.json())
-      .then((d) => { setStakes(d.stakes ?? []); setLoading(false); })
+      .then((d) => { setStakes(d.roundStakes ?? []); setLegacy(d.positionStakes ?? []); setLoading(false); })
       .catch(() => setLoading(false));
   }, [address]);
 
@@ -2642,64 +2643,116 @@ function StakeHistoryScreen({ address, onBack }: { address?: string; onBack: () 
     return `${Math.floor(hours / 24)}d ago`;
   };
 
+  const settledPnl = stakes.reduce<number>((acc, s) => {
+    if (s.status === "ACTIVE" || s.netPnlFormatted == null) return acc;
+    return acc + parseFloat(s.netPnlFormatted);
+  }, 0);
+
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", padding: "40px 20px" }}>
       <h2 style={{ fontSize: 28, fontWeight: 900, letterSpacing: "0.1em", color: "#a855f7", textShadow: "2px 2px 0 #4c1d95", marginBottom: 24 }}>
         {"\uD83C\uDFE6"} EC STAKE HISTORY
       </h2>
-      <p style={{ fontSize: 12, color: "#64748b", letterSpacing: "0.1em", marginBottom: 24, textAlign: "center", maxWidth: 420 }}>
-        YOUR ON-CHAIN FINANCIAL POSITIONS — LOST STAKES ARE FORFEITED, WON STAKES CAN BE COLLECTED FROM THE POOL.
+      <p style={{ fontSize: 12, color: "#64748b", letterSpacing: "0.1em", marginBottom: 24, textAlign: "center", maxWidth: 460 }}>
+        EVERY ROUND STAKES REAL tUSDC ON DREAMDEX — WON STAKES ARE REDEEMED AUTOMATICALLY ON-CHAIN WHEN THE WINDOW SETTLES.
       </p>
 
       {loading && <div style={{ fontSize: 16, color: "#64748b", letterSpacing: "0.1em" }}>LOADING STAKES...</div>}
 
-      {!loading && stakes.length === 0 && (
+      {!loading && stakes.length === 0 && legacy.length === 0 && (
         <div style={{ textAlign: "center", padding: "40px 0" }}>
           <div style={{ fontSize: 18, color: "#64748b", letterSpacing: "0.1em", marginBottom: 8 }}>NO EC STAKES YET</div>
-          <div style={{ fontSize: 13, color: "#475569", letterSpacing: "0.08em", marginBottom: 24 }}>OPEN A POSITION IN THE ARENA TO START EARNING.</div>
+          <div style={{ fontSize: 13, color: "#475569", letterSpacing: "0.08em", marginBottom: 24 }}>FIGHT A DUEL TO STAKES REAL tUSDC PER ROUND ON DREAMDEX.</div>
           <button onClick={onBack} style={ctaButtonStyle}>BACK TO PROFILE</button>
         </div>
       )}
 
-      <div style={{ maxWidth: 500, width: "100%" }}>
+      {!loading && stakes.length > 0 && (
+        <div
+          style={{
+            marginBottom: 16, padding: "10px 18px", borderRadius: 8, border: "1.5px solid #334155",
+            display: "flex", gap: 10, alignItems: "center", fontSize: 13, letterSpacing: "0.08em",
+          }}
+        >
+          <span style={{ color: "#94a3b8", fontWeight: 900 }}>SETTLED P&L</span>
+          <span style={{ fontWeight: 900, color: settledPnl >= 0 ? "#10b981" : "#ef4444" }}>
+            {settledPnl >= 0 ? "+" : ""}{settledPnl.toFixed(4)} tUSDC
+          </span>
+        </div>
+      )}
+
+      <div style={{ maxWidth: 520, width: "100%" }}>
         {stakes.map((s) => {
-          const isWon = s.outcome === "WON";
-          const isLost = s.outcome === "LOST";
-          const borderColor = s.status === "ACTIVE" ? "#a855f7" : isWon ? "#10b981" : isLost ? "#ef4444" : "#64748b";
+          const borderColor =
+            s.status === "ACTIVE" ? "#a855f7" : s.voided ? "#f59e0b" : s.status === "WON" ? "#10b981" : "#ef4444";
+          const pnl = s.netPnlFormatted == null ? null : parseFloat(s.netPnlFormatted);
           return (
             <div key={s.id} style={{ marginBottom: 10, padding: "12px 16px", borderRadius: 8, border: `1.5px solid ${borderColor}`, background: `${borderColor}08` }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <span style={{ fontSize: 16 }}>{s.direction === "UP" ? "\uD83D\uDCC8" : "\uD83D\uDCC9"}</span>
                   <span style={{ fontSize: 14, fontWeight: 900, color: borderColor, letterSpacing: "0.08em" }}>
-                    {s.direction} \u00D7 {s.amount} tUSDC
+                    R{s.roundNum} {s.direction} \u00D7 {s.amount} tUSDC
                   </span>
                   <span style={{
                     fontSize: 9, fontWeight: 900, letterSpacing: "0.1em", padding: "2px 8px", borderRadius: 4,
                     border: `1px solid ${borderColor}`, color: borderColor,
                   }}>
-                    {s.status === "ACTIVE" ? "\u23F3 ACTIVE" : isWon ? "\u2705 WON" : isLost ? "\u274C LOST" : s.status}
+                    {s.status === "ACTIVE" ? "\u23F3 CHAIN PENDING" : s.voided ? "\u21BA VOIDED" : s.status === "WON" ? "\u2705 WON" : "\u274C LOST"}
                   </span>
                 </div>
                 {s.createdAt && <span style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.05em" }}>{timeAgo(s.createdAt)}</span>}
               </div>
-              <div style={{ fontSize: 11, color: "#94a3b8", letterSpacing: "0.05em" }}>
-                {s.market ?? "UNKNOWN"} {s.arenaSymbol ? `\u00B7 ${s.arenaSymbol}` : ""}
+              <div style={{ fontSize: 11, color: "#94a3b8", letterSpacing: "0.05em", marginBottom: 6 }}>
+                {s.market}{s.arena?.symbol ? ` \u00B7 ${s.arena.symbol}` : ""} {s.matchId ? `\u00B7 ${String(s.matchId).slice(0, 8)}\u2026` : ""}
+                {s.status !== "ACTIVE" && s.costFormatted != null && (
+                  <span style={{ color: pnl == null || pnl >= 0 ? "#10b981" : "#ef4444", fontWeight: 900, marginLeft: 8 }}>
+                    {pnl == null ? "" : `${pnl >= 0 ? "+" : ""}${pnl.toFixed(4)} tUSDC`}
+                  </span>
+                )}
               </div>
-              {s.claimable && (
-                <div style={{ marginTop: 8 }}>
-                  <WonPayoutCard won={{
-                    id: s.id, direction: s.direction, market: s.market ?? "", amount: s.amount,
-                    windowId: s.windowId, escrowAddress: s.escrowAddress, stakeAmountFormatted: s.stakeAmountFormatted, claimable: true,
-                  }} onClaimed={() => {
-                    setStakes((prev) => prev.map((p) => p.id === s.id ? { ...p, claimable: false, stakeAmountFormatted: null } : p));
-                  }} />
-                </div>
+              {s.stakeTxHash && (
+                <a
+                  href={`https://shannon-explorer.somnia.network/tx/${s.stakeTxHash}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ fontSize: 11, color: "#a855f7", textDecoration: "underline", letterSpacing: "0.05em", marginRight: 12 }}
+                >
+                  {"\u2694"} stake: {String(s.stakeTxHash).slice(0, 14)}...
+                </a>
+              )}
+              {s.redeemTxHash && (
+                <a
+                  href={`https://shannon-explorer.somnia.network/tx/${s.redeemTxHash}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ fontSize: 11, color: "#10b981", textDecoration: "underline", letterSpacing: "0.05em" }}
+                >
+                  {"\uD83D\uDCB0"} redeem: {String(s.redeemTxHash).slice(0, 14)}...
+                </a>
               )}
             </div>
           );
         })}
       </div>
+
+      {legacy.length > 0 && (
+        <div style={{ maxWidth: 520, width: "100%", marginTop: 12 }}>
+          <div style={{ fontSize: 11, color: "#475569", letterSpacing: "0.12em", marginBottom: 8 }}>LEGACY POSITIONS</div>
+          {legacy.map((s) => {
+            const borderColor = s.status === "ACTIVE" ? "#a855f7" : s.status === "SETTLED" ? "#64748b" : "#334155";
+            return (
+              <div key={s.id} style={{ marginBottom: 6, padding: "8px 14px", borderRadius: 8, border: `1.5px solid ${borderColor}`, background: `${borderColor}08`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ fontSize: 13, fontWeight: 900, color: "#cbd5e1", letterSpacing: "0.06em" }}>
+                  {s.direction === "UP" ? "\uD83D\uDCC8" : "\uD83D\uDCC9"} {s.direction} \u00D7 {s.amount} tUSDC
+                  <span style={{ fontSize: 10, color: "#64748b", marginLeft: 8 }}>{s.market}{s.arenaSymbol ? ` \u00B7 ${s.arenaSymbol}` : ""}</span>
+                </span>
+                <span style={{ fontSize: 9, fontWeight: 900, letterSpacing: "0.1em", color: borderColor }}>{s.status}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       <div style={{ display: "flex", gap: 12, marginTop: 16 }}>
         <button onClick={onBack} style={{ ...ctaButtonStyle, background: "transparent", border: "2px solid #475569", color: "#94a3b8", fontSize: 13, padding: "10px 24px" }}>

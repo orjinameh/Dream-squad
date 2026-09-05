@@ -1,17 +1,18 @@
 import { connectToDatabase } from "@/db/connect";
 import { reconcilePositions } from "@/lib/ec/position";
+import { settleRoundStakes } from "@/lib/ec/settleRoundStakes";
 
 /**
  * DreamDuel settlement worker.
  *
- * The match game-loop resolves live inside the API (predict route reads the real
- * EC order-book oracle and completes matches). Combat matches are stats/rank
- * only — they never move money. The ONLY financial layer is the EC POSITION,
- * and this worker owns its on-chain reconciliation:
+ * Two financial layers are reconciled here against the REAL on-chain EC venue:
  *
  *   - `reconcilePositions()` settles each active/expired EC position once from
  *     the real on-chain EC resolution (win → stake back in full, loss →
  *     forfeited to admin) and marks it in the DB.
+ *   - `settleRoundStakes()` settles each per-round match stake whose pinned
+ *     arena window RESOLVED on-chain: won/refunded sides are redeemed 1:1/0.5
+ *     via the operator, net P&L is stored on the round's checkpoint.
  *
  * Runs as: npm run worker
  */
@@ -21,7 +22,8 @@ const SWEEP_INTERVAL_MS = 15_000;
 async function runOnce(): Promise<void> {
   await connectToDatabase();
   await reconcilePositions();
-  console.log(`[worker] sweep complete @ ${new Date().toISOString()}`);
+  const settled = await settleRoundStakes();
+  console.log(`[worker] sweep complete @ ${new Date().toISOString()}` + (settled > 0 ? ` (settled ${settled} round stake(s))` : ""));
 }
 
 async function main(): Promise<void> {
