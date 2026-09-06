@@ -77,8 +77,18 @@ export const EC_ADDRESSES: SomniaMarketsAddresses = {
 /** Collateral is tUSDC on testnet — 6 decimal-places. */
 export const EC_COLLATERAL_DECIMALS = 6;
 
-/** Flat-band threshold: rounds with |YES-delta| below this are FLAT (no hit). */
+/** Flat-band threshold: legacy absolute YES-delta band (kept for compat/tests).
+ *  The live judge no longer uses it by default — see EC_ORACLE_EPSILON. */
 export const EC_ORACLE_FLAT_BAND = 0.0008;
+
+/**
+ * EC-only judge epsilon: any genuine tick movement in the YES-mid between the
+ * Second-5 entry and the Second-15 exit decides the round. FLAT then means
+ * exactly one honest thing — the book was literally untouched across the
+ * round (identical resting quotes), a voided market, or an unreadable book.
+ * The house settles on this same book, so the book judges.
+ */
+export const EC_ORACLE_EPSILON = 1e-9;
 
 /** Selectors the operator needs granted to trade a user's vault. */
 export const EC_ORDER_SELECTORS = [PLACE_ORDER_FOR_SELECTOR, CANCEL_ORDER_FOR_SELECTOR] as `0x${string}`[];

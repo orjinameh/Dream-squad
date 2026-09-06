@@ -2,7 +2,7 @@ import { createPublicClient, http, fallback, defineChain } from "viem";
 import { SomniaMarkets, upProbability, type MarketOnchain, type UnifiedMarket, type BinaryMarket } from "@somnia-chain/markets-sdk";
 import {
   EC_ADDRESSES, EC_CHAIN, EC_CHAIN_ID, EC_INDEXER_URL, EC_RPC_URL, EC_RPC_URLS, EC_RPC_WS_URL,
-  EC_COLLATERAL_DECIMALS, EC_ORACLE_FLAT_BAND, EC_TICK, ecHttpTransport,
+  EC_COLLATERAL_DECIMALS, EC_ORACLE_EPSILON, EC_TICK, ecHttpTransport,
 } from "./config";
 
 /**
@@ -513,12 +513,14 @@ function floorToTick(price: number, tick: number): number {
 }
 
 /**
- * The REAL DreamDEX round judge. A closed window's outcome is decided by the
- * protocol itself: `winningOutcome` (0 = Up/YES, 1 = Down/NO) is posted on the
- * binary market once the oracle finalizes the payout vector. When the market has
- * NOT yet resolved on-chain (oracle grace, or the arena is still live), fall
- * back to the honest price DIRECTION over the round: exit YES-mid vs the
- * commit-end entry mid — the "commit end → round end" move.
+ * The REAL DreamDEX round judge (EC-book only). A closed window's outcome is
+ * decided by the protocol itself: `winningOutcome` (0 = Up/YES, 1 = Down/NO)
+ * is posted on the binary market once the oracle finalizes the payout vector.
+ * When the market has NOT yet resolved on-chain (the usual case — venue
+ * windows outlive our 10s round), the round is decided by the YES-mid MOVE
+ * from the Second-5 entry to the Second-15 exit: any genuine tick movement
+ * counts (epsilon band, not the legacy 0.0008 flat band). A flat book across
+ * the round is an honest FLAT draw — the same book the house settles on.
  */
 export async function resolveArenaOutcome(
   arena: ArenaRef,
@@ -543,12 +545,20 @@ export async function resolveArenaOutcome(
       /* on-chain read failed — fall through to direction */
     }
   }
-  // 2. Direction fallback: exit mid vs commit-end entry mid.
-  const quote = await readArenaPrice(arena);
+  // 2. Direction fallback: exit mid vs commit-end entry mid. One quick retry
+  // before declaring a null-book FLAT, so a transient indexer hiccup at
+  // Second 15 doesn't donate a draw.
+  let quote = await readArenaPrice(arena);
+  if ((quote.yesPrice == null || !(quote.yesPrice > 0)) && entryYesPrice != null && entryYesPrice > 0) {
+    await new Promise((r) => setTimeout(r, 1500));
+    quote = await readArenaPrice(arena);
+  }
   if (quote.yesPrice == null || !(quote.yesPrice > 0) || entryYesPrice == null || !(entryYesPrice > 0)) {
     return { actual: "FLAT", source: "direction", winningOutcomeRaw: null };
   }
-  const band = opts.flatBand ?? EC_ORACLE_FLAT_BAND;
+  // Epsilon band: every real tick move decides. FLAT ⟺ the book was literally
+  // untouched between entry and exit (identical resting quotes).
+  const band = opts.flatBand ?? EC_ORACLE_EPSILON;
   const diff = quote.yesPrice - entryYesPrice;
   return diff > band
     ? { actual: "UP", source: "direction", winningOutcomeRaw: null }

@@ -2,7 +2,7 @@ import { connectToDatabase } from "@/db/connect";
 import { Match } from "@/db/models/Match";
 import { readArenaPrice } from "@/lib/ec/executor";
 import { ecArenaForMatch } from "@/lib/ec/arena";
-import { EC_ORACLE_FLAT_BAND } from "@/lib/ec/config";
+import { EC_ORACLE_EPSILON } from "@/lib/ec/config";
 import { jsonError } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
@@ -60,8 +60,9 @@ export async function GET(req: Request) {
 
     let direction: "UP" | "DOWN" | "FLAT" | null = null;
     if (yesPrice !== null && arenaOpen !== null) {
+      // Same epsilon judge as round resolution: any real tick move counts.
       const diff = yesPrice - arenaOpen;
-      const band = EC_ORACLE_FLAT_BAND;
+      const band = EC_ORACLE_EPSILON;
       direction = diff > band ? "UP" : diff < -band ? "DOWN" : "FLAT";
     }
 

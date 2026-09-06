@@ -8,7 +8,7 @@ import { readArenaPrice, resolveArenaOutcome, type ArenaRef } from "@/lib/ec/exe
 import { ecArenaForMatch, ecArenaForRound } from "@/lib/ec/arena";
 import { stakePlayerRoundOnDreamDEX } from "@/lib/ec/staker";
 import { payoutTusdc } from "@/lib/ec/payout";
-import { EC_COLLATERAL_DECIMALS, EC_ORACLE_FLAT_BAND } from "@/lib/ec/config";
+import { EC_COLLATERAL_DECIMALS } from "@/lib/ec/config";
 import { z } from "zod";
 import { isAddress } from "viem";
 import { randomBytes } from "node:crypto";
@@ -23,12 +23,9 @@ const MAX_HP = 100;
 const BASE_DAMAGE = 15;
 const STREAK_BONUS: Record<number, number> = { 0: 0, 1: 0, 2: 3, 3: 10 };
 
-// Step 5 of the game flow: the tiny 10-second price fluctuation is multiplied
-// into COMBAT DAMAGE. A round that moved decisively past the FLAT band lands a
-// harder hit than a barely-directional round. `decisiveness` is the leveraged
-// YES-mid delta minus the FLAT band (how far the move overshot "no movement").
-// A move past ~MOVE_DAMAGE_REF yields the full bonus; marginal rounds stay close
-// to BASE_DAMAGE. Streak bonuses still fold on top.
+// Combat damage model: BASE_DAMAGE plus streak bonuses (critical at streak 3+).
+// Resolved rounds currently pass decisiveness 0, so damage is 15 / 18 / 25 by
+// streak — the move-amplitude bonus below stays dormant until wired.
 const MAX_MOVE_DAMAGE = 15;
 const MOVE_DAMAGE_REF = 0.4;
 
@@ -55,28 +52,14 @@ function computeLongestStreak(rounds: Array<{ playerCorrect: boolean }>): number
   return max;
 }
 
-// Flat band for the EC YES-price oracle (probability scale 0..1). Any round
-// whose YES mid moves by less than this is judged FLAT.
-// EC_ORACLE_FLAT_BAND imported from @/lib/ec/config
-// A round must move past HALF the live bid-ask spread (in addition to the flat
-// band) to count as UP/DOWN. The venue books are thin with ~2-3% spreads and the
-// mid-of-book is stable within a 10s round, so a tiny absolute mid-delta is not a
-// real directional signal — but a move that crosses/reshapes the spread is. This
-// makes rounds resolve against genuine flow instead of a frozen mid. (A move
-// wider than half the ask<=>bid spread is an unambiguous directional print.)
+// EC judge note: rounds are decided by the EC YES-mid MOVE (Second-15 exit vs
+// Second-5 entry) with an epsilon band — any genuine tick movement counts, and
+// a literally untouched book is an honest FLAT draw (stake back). See
+// resolveArenaOutcome in @/lib/ec/executor.
 // Maximum time the COMMIT handler will wait for the operator's stake
 // transaction to confirm before giving up (client holds on the COMMIT screen
 // with a staking overlay until then — the battle must not start unconfirmed).
 const STAKE_GATE_TIMEOUT_MS = 60_000;
-
-// LEVERAGE MULTIPLIER for round resolution. The EC YES mid is a binary probability
-// (0..1) on a thin book, so it drifts only a few bp across a ~10s round while the
-// underlying spot chart moves a lot. That tiny raw drift lands under the FLAT band
-// and every round resolves as a 0-0 draw — "round is always flat even though the
-// chart is moving". Amplifying the measured mid-delta by this factor turns real
-// small directional flow into a decisive UP/DOWN while the honest band logic
-// (flat/spread thresholds) still suppresses true no-movement rounds.
-const EC_RESOLUTION_LEVERAGE = 100;
 
 /**
  * AUTHORITATIVE ROUND RESOLUTION

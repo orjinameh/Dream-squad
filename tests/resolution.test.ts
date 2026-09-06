@@ -16,8 +16,10 @@ vi.mock("@/lib/operator", () => ({
 
 // Scripted EC oracle: a fake arena whose YES mid advances monotonically in
 // small steps (~0.006-0.008/tick, the real magnitude measured on the live book).
-// This simulates the user's scenario where the mid IS moving but rounds must
-// still resolve directionally instead of collapsing to a 0-0 draw.
+// EC-only judge with an epsilon band: EVERY genuine tick move decides the
+// round, so a moving book must resolve directionally instead of collapsing to
+// a 0-0 draw. (A literally frozen book still draws honestly — see
+// frozen-book.test.ts.)
 let midIndex = -1;
 const mids = [0.30, 0.306, 0.313, 0.319, 0.326, 0.332, 0.339, 0.345, 0.352, 0.358];
 
@@ -28,10 +30,6 @@ vi.mock("@/lib/ec/executor", async (importOriginal) => {
     readArenaPrice: vi.fn(async () => {
       midIndex += 1;
       const yesPrice = mids[Math.min(midIndex, mids.length - 1)];
-      // Real EC spread is wide (~0.028, half = 0.014) relative to the raw per-round
-      // mid tick (~0.007). So rawDiff lies UNDER the spread band and would resolve
-      // FLAT without leverage — exactly the user's all-FLAT 0-0 bug. Leverage must
-      // amplify rawDiff past the band to resolve directionally.
       const halfSpread = 0.014;
       return { yesPrice, bestBid: yesPrice - halfSpread, bestAsk: yesPrice + halfSpread, updatedMs: Date.now() };
     }),
@@ -114,7 +112,7 @@ beforeEach(() => {
   midIndex = -1;
 });
 
-describe("Round resolution leverage (all-FLAT regression)", () => {
+describe("Round resolution (moving book must not draw)", () => {
   it("resolves a moving EC mid to UP/DOWN, not a perpetual 0-0 draw", async () => {
     const matchId = await seedMatch(5);
     const observed: string[] = [];
@@ -137,7 +135,8 @@ describe("Round resolution leverage (all-FLAT regression)", () => {
     const resolved = observed.filter(Boolean);
     // The user's bug: every round resolves FLAT (0-0) even though the mid moves.
     // With a monotonically-moving mid, at least one (really most) rounds MUST
-    // resolve directionally. All-FLAT here means the leverage/banding regressed.
+    // resolve directionally under the epsilon judge. All-FLAT here means the
+    // judge regressed to banding away real moves.
     const nonFlat = resolved.filter((a) => a !== "FLAT");
     expect(resolved.length).toBeGreaterThan(0);
     expect(nonFlat.length).toBeGreaterThan(0);

@@ -38,7 +38,7 @@ Every round enforces a rigid, server-authoritative 15-second mechanical split th
 
 3. **Phase 3: RESOLUTION & Paper Credit (At Second 15)**
    * The countdown hits zero and triggers a temporary calculation freeze overlay.
-   * The system computes the micro-value delta of the contract shares from the exact entry stamp to the exit stamp.
+   * The system computes the micro-value delta of the contract shares from the exact entry stamp to the exit stamp — judged on the **EC order book itself** (Second-15 YES-mid vs Second-5 YES-mid): any genuine tick movement decides the round, exactly the book the house settles on. A book that sat literally untouched across the round is an honest FLAT draw (stake back, no damage).
    * **The Optimization:** to completely bypass slow, erratic block latency mid-match, the engine logs wins/losses instantly as an **off-chain paper credit** inside the MongoDB match document (`match.playerBalance`), releasing the hit animations and updating health bars at lightning speed.
 
 4. **Phase 4: GAME OVER & Final Payout**
