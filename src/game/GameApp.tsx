@@ -11,8 +11,6 @@ import { useMatchmaking } from "./useMatchmaking";
 import { useAccount } from "wagmi";
 import { useDreamDEX } from "./useDreamDEX";
 import { useDreamEscrow, useRoundEscrow } from "./useDreamEscrow";
-import { useGhostWallet } from "./useGhostWallet";
-import { useEcPosition } from "./useEcPosition";
 import { parseUnits, formatUnits } from "viem";
 import { EC_COLLATERAL_DECIMALS, ESCROW_ADDRESS, ROUND_ESCROW_ADDRESS } from "@/lib/ec/config";
 
@@ -1169,12 +1167,9 @@ function ReadyUpScreen({ game, escrow, onReady, onStartDuel }: {
   );
 }
 
-/** True while the 7-round battle is live — no wallet prompts may appear here.
- *  The single approval (Step 1 of the flow) must be settled before round 1. */
-function isFightPhase(phase: string): boolean {
-  return phase === "ROUND_START" || phase === "ROUND_COMMIT" || phase === "ROUND_ACTIVE" || phase === "ROUND_LOCKED"
-    || phase === "ROUND_EXECUTING" || phase === "ROUND_REVEAL" || phase === "ROUND_IMPACT";
-}
+/** True while the 7-round battle is live — the UI renders zero wallet prompts
+ *  here; all round money is placed server-side by the operator in the predict
+ *  route (no approval needed from the player's wallet). */
 
 function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; escrow: ReturnType<typeof useDreamEscrow> }) {
   const [countdown, setCountdown] = useState(3);
@@ -1182,57 +1177,12 @@ function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; 
   const [revealText, setRevealText] = useState("");
   const [impactText, setImpactText] = useState("");
 
-  // Ghost (ephemeral) wallet + live EC feed drive per-round on-chain staking.
-  const ghost = useGhostWallet(game.matchId, game.totalRounds, game.positionAmount ?? 0);
-  const { pos } = useEcPosition(game.matchId);
-  const [roundStaked] = useState(() => new Set<string>());
-  const [autoFundAttempted, setAutoFundAttempted] = useState(false);
-
-  // THE one popup of the match: as soon as the match exists (pre-round-1), fund
-  // the ghost with a single approve for the FULL match stake (amount x rounds,
-  // e.g. 10 x 7 = 70 tUSDC); the server relays player->ghost. After that every
-  // round is signed by the ghost (no popup). Play is blocked until funded.
-  // Only fires once the ghost wallet is actually created (ghost.address present).
-  // On failure we do NOT hot-loop-retry (that left the UI stuck on a perpetual
-  // "⌛ FUNDING..." spinner); we surface the error and let the user retry via the
-  // FUND MATCH button, which calls fundGhost manually.
-  useEffect(() => {
-    if (!game.matchId || !ghost.address || ghost.funded || autoFundAttempted) return;
-    setAutoFundAttempted(true);
-    ghost.fundGhost().catch((e: any) => {
-      console.warn("[ghost] funding not confirmed", e?.message);
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [game.matchId, ghost.address, ghost.funded, autoFundAttempted]);
-
-  // Stake the current round on-chain once it opens (best-effort, no popup —
-  // the ghost signs with its in-memory key). The server settles every round.
-  useEffect(() => {
-    if (!game.matchId || game.phase !== "ROUND_ACTIVE" || !ghost.funded) return;
-    const key = `${game.matchId}:${game.currentRound}`;
-    if (roundStaked.has(key)) return;
-    if (!game.positionAmount || game.positionAmount <= 0) return;
-    roundStaked.add(key);
-    const yesPrice = pos?.yesPrice;
-    const entry = yesPrice != null && yesPrice > 0
-      ? Math.min(1_000_000, Math.max(10_000, Math.round(yesPrice * 1_000_000)))
-      : 500_000;
-    ghost.stakeRound(game.currentRound, BigInt(entry)).catch((e: any) => {
-      console.warn("[ghost] round stake not confirmed", e?.message);
-    });
-  }, [game.matchId, game.currentRound, game.phase, game.positionAmount, ghost.funded, ghost, roundStaked, pos?.yesPrice]);
-
-  // End of fight: forward the ghost's winnings back to the primary wallet and
-  // fully reset funding state. Runs whenever a ghost exists for this match (even
-  // if funding partially failed), so money is never stranded and state always
-  // reverts before the next match.
-  useEffect(() => {
-    if (!game.matchId || game.phase !== "MATCH_RESULT" || !ghost.address) return;
-    ghost.settleAndForward().catch((e: any) => {
-      console.warn("[ghost] payout forward failed", e?.message);
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [game.phase, ghost.address]);
+  // Live EC feed drives the real-time market chart only (LiveChart below). The
+  // ACTUAL per-round money (the player's `playerAmountPerRound` tUSDC as a real
+  // BUY_YES/BUY_NO on the pinned DreamDEX window) is placed server-side by the
+  // operator in the predict route — zero wallet popups and nothing to pre-fund.
+  // The legacy browser ghost wallet has been removed; there is no separate
+  // deposit step.
 
   useEffect(() => {
     if (game.phase === "MATCH_INTRO") {
@@ -1335,52 +1285,16 @@ function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; 
         </div>
       </div>
 
-      {/* Persistent per-round stake status */}
-      <div style={{
-        padding: "10px 24px", borderBottom: "2px solid #1e293b",
-        background: ghost.funded
-          ? "rgba(16,185,129,0.08)"
-          : ghost.funding
-            ? "rgba(245,158,11,0.08)"
-            : "rgba(239,68,68,0.08)",
-      }}>
+      {/* Persistent per-round stake status (server-side venue stake) */}
+      <div style={{ padding: "10px 24px", borderBottom: "2px solid #1e293b", background: "rgba(16,185,129,0.08)" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, flexWrap: "wrap" }}>
-          <span style={{ fontSize: 12, fontWeight: 900, letterSpacing: "0.08em", color: ghost.funded ? "#34d399" : ghost.funding ? "#fbbf24" : "#f87171" }}>
-            {ghost.funded ? "\u2705" : ghost.funding ? "\u231B" : "\u26A0\uFE0F"} {ghost.funded ? "STAKED" : ghost.funding ? "FUNDING..." : "NOT STAKED"}
+          <span style={{ fontSize: 12, fontWeight: 900, letterSpacing: "0.08em", color: "#34d399" }}>
+            {"\u2705"} STAKING {game.playerAmountPerRound ?? game.positionAmount ?? 0} tUSDC / ROUND
           </span>
           <span style={{ fontSize: 12, color: "#94a3b8", letterSpacing: "0.03em" }}>
-            {game.positionAmount ?? 0} tUSDC \u00D7 {game.totalRounds} = <b style={{ color: "#e2e8f0" }}>{(game.positionAmount ?? 0) * game.totalRounds} tUSDC</b> funded up front \u00B7 auto-settles each round \u00B7 winnings return to your wallet
+            {game.playerAmountPerRound ?? game.positionAmount ?? 0} tUSDC \u00D7 {game.totalRounds} = <b style={{ color: "#e2e8f0" }}>{(game.playerAmountPerRound ?? game.positionAmount ?? 0) * game.totalRounds} tUSDC</b> on DreamDEX \u00B7 auto-settles each round \u00B7 no wallet prompts
           </span>
         </div>
-        {!ghost.funded && !ghost.funding && (
-          <div style={{ textAlign: "center", marginTop: 4 }}>
-            {isFightPhase(game.phase) ? (
-              /* The ONE approval must happen RIGHT BEFORE the duel begins (Step 1
-                 of the match flow). During an active round the match MUST NOT offer
-                 a wallet prompt — keep this a non-interactive notice so there are
-                 zero popups in the middle of the 7-round battle. */
-              <div style={{ fontSize: 11, color: "#f87171", letterSpacing: "0.08em" }}>
-                {"\u26A0\uFE0F"} One-time approval pending \u2014 it should be confirmed on the ready screen before round 1.
-              </div>
-            ) : (
-              <button
-                onClick={() => { ghost.fundGhost().catch((e: any) => console.warn("[ghost] funding failed", e?.message)); }}
-                style={{
-                  padding: "8px 22px", borderRadius: 6, cursor: "pointer", fontWeight: 900, fontSize: 13,
-                  letterSpacing: "0.08em", border: "none", color: "#3b2000",
-                  background: "linear-gradient(135deg, #f59e0b, #fbbf24)",
-                }}
-              >
-                {"\u2694"} FUND MATCH \u2014 PAY {(game.positionAmount ?? 0) * game.totalRounds} tUSDC
-              </button>
-            )}
-            {ghost.error && (
-              <div style={{ marginTop: 6, fontSize: 11, color: "#ef4444", maxWidth: 480, marginLeft: "auto", marginRight: "auto", wordBreak: "break-word" }}>
-                {ghost.error}
-              </div>
-            )}
-          </div>
-        )}
       </div>
 
       {/* Arena */}
@@ -1392,77 +1306,7 @@ function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; 
         <div style={{
           position: "absolute", inset: 0, pointerEvents: "none",
           background: "linear-gradient(180deg, rgba(168,85,247,0.03) 0%, rgba(6,182,212,0.02) 50%, transparent 100%)",
-        }} />
-
-        {/* GHOST FUNDING GATE — the fight is HARD BLOCKED until the one-time
-            ghost deposit is funded on-chain. The server refuses to resolve any
-            round of an unfunded bot match; here we hold the arena closed and
-            surface the single approve+fund action the player must complete
-            before round 1, so the battle literally cannot run unfunded. */}
-        {game.fundingHeld && (
-          <div style={{
-            position: "absolute", inset: 0, zIndex: 80,
-            display: "flex", flexDirection: "column",
-            alignItems: "center", justifyContent: "center", gap: 18,
-            background: "rgba(8,8,16,0.92)",
-          }}>
-            {!game.matchId ? (
-              /* No match was created (e.g. still in a stale ACTIVE match) — there
-                 is nothing to fund, so surface the real blocker instead of a fund
-                 button that can never complete. */
-              <>
-                <div style={{
-                  fontSize: 24, fontWeight: 900, letterSpacing: "0.12em", color: "#ef4444",
-                  textShadow: "2px 2px 0 #7f1d1d",
-                }}>
-                  {"\u26A0\uFE0F"} MATCH NOT STARTED
-                </div>
-                <div style={{ fontSize: 13, color: "#e2e8f0", maxWidth: 460, textAlign: "center", lineHeight: 1.6, letterSpacing: "0.03em" }}>
-                  {game.executionError || "A match could not be created — refresh and ensure you have an active EC position, then try again."}
-                </div>
-                <button
-                  onClick={() => game.actions.goToHome()}
-                  style={{
-                    padding: "12px 28px", borderRadius: 8, cursor: "pointer", fontWeight: 900, fontSize: 14,
-                    letterSpacing: "0.06em", border: "none", color: "#0f172a",
-                    background: "linear-gradient(135deg, #94a3b8, #cbd5e1)",
-                  }}
-                >
-                  {"\u2190"} BACK TO HOME
-                </button>
-              </>
-            ) : ghost.funding ? (
-              <div style={{ fontSize: 13, fontWeight: 700, color: "#fbbf24", letterSpacing: "0.08em" }}>
-                {"\u231B"} FUNDING... confirming the one-time approval + deposit on-chain
-              </div>
-            ) : (
-              <>
-                <button
-                  onClick={() => { ghost.fundGhost().catch((e: any) => console.warn("[ghost] funding failed", e?.message)); }}
-                  disabled={!!ghost.error}
-                  style={{
-                    padding: "14px 34px", borderRadius: 8, cursor: "pointer", fontWeight: 900, fontSize: 15,
-                    letterSpacing: "0.08em", border: "none", color: "#3b2000",
-                    background: "linear-gradient(135deg, #f59e0b, #fbbf24)",
-                    boxShadow: "0 0 24px rgba(245,158,11,0.4)",
-                  }}
-                >
-                  {"\u2705"} APPROVE + DEPOSIT FULL STAKE
-                </button>
-                {ghost.error && (
-                  <div style={{ marginTop: 6, fontSize: 11, color: "#ef4444", maxWidth: 480, textAlign: "center", wordBreak: "break-word" }}>
-                    {ghost.error}
-                  </div>
-                )}
-                {!ghost.address && (
-                  <div style={{ fontSize: 11, color: "#94a3b8", letterSpacing: "0.04em" }}>
-                    preparing ghost wallet...
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-        )}
+        }}         />
 
         {/* KO Overlay */}
         {game.koOverlay && (
@@ -1657,19 +1501,6 @@ function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; 
       }}>
         {(game.phase === "ROUND_COMMIT" || game.phase === "ROUND_ACTIVE") && (
           <div style={{ textAlign: "center" }}>
-            {!ghost.funded ? (
-              <div style={{ padding: "16px 12px", borderRadius: 10, border: "2px solid #f59e0b", background: "rgba(245,158,11,0.08)" }}>
-                <div style={{ fontSize: 16, fontWeight: 900, letterSpacing: "0.1em", color: "#fbbf24", marginBottom: 8 }}>
-                  {"\u26A0\uFE0F"} FUNDING PENDING
-                </div>
-                <div style={{ fontSize: 13, color: "#fcd34d", lineHeight: 1.6 }}>
-                  This match costs <b>{game.positionAmount ?? 0} tUSDC \u00D7 {game.totalRounds} rounds
-                  {" "} = {(game.positionAmount ?? 0) * game.totalRounds} tUSDC</b>, charged up front in one
-                  approval on the ready screen. The fight is in progress \u2014 no wallet prompt can appear now.
-                </div>
-              </div>
-            ) : (
-              <>
                 <div style={{ fontSize: 14, color: "#94a3b8", letterSpacing: "0.1em", marginBottom: 8 }}>
                   {game.selectedPrediction.question}
                 </div>
@@ -1746,8 +1577,6 @@ function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; 
                 <div style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.1em", marginTop: 6 }}>
                   PICK PER ROUND \u2014 CHANGE ANYTIME BEFORE THE ROUND CLOSES ({game.positionAmount ?? 0} tUSDC / ROUND)
                 </div>
-              </>
-            )}
           </div>
         )}
 

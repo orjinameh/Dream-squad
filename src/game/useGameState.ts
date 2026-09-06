@@ -555,13 +555,12 @@ export function useGameState(): GameHook {
   // Visual countdown only. Server resolves the round via predict endpoint.
   useEffect(() => {
     if (!isBotMatch || phase !== "ROUND_ACTIVE") return;
-    // GHOST FUNDING GATE (hard): the one-time deposit MUST be confirmed before
-    // any round clock can run. Only `serverState.funded === true` (set when
-    // /api/matches/ghost lands) lets the timer start. Anything else — unfunded,
-    // missing matchId, or a stale pre-fix match with no funding info — holds the
-    // round. Because the timer never starts, `attemptSubmit`/`forceLocalAdvance`
-    // can never fabricate a round and auto-advance an unfunded fight.
-    if (mp.state.serverState?.funded !== true) return;
+    // Per-round financial model: money custodies via the venue through the
+    // operator; there is no separate player→escrow ghost deposit to wait for.
+    // The round clock therefore runs unconditionally — no `funded` hold (the
+    // legacy flag would freeze bot rounds forever for pre-fix matches). The
+    // timer drives `attemptSubmit` so the server advances cleanly round to
+    // round.
     if (botTimerRef.current) return;
 
     const roundTime = (globalThis as any).__ROUND_TIME__ ?? ROUND_TIME;
@@ -641,7 +640,6 @@ export function useGameState(): GameHook {
   // which transitions the round to the 10s ACTIVE combat window.
   useEffect(() => {
     if (!isBotMatch || phase !== "ROUND_COMMIT") return;
-    if (mp.state.serverState?.funded !== true) return;
     if (botTimerRef.current) return;
 
     const commitTime = (globalThis as any).__COMMIT_TIME__ ?? COMMIT_TIME;
@@ -877,11 +875,10 @@ export function useGameState(): GameHook {
     // round 1 ACTIVE the instant createMatch runs) — letting the match start
     // before the stake is confirmed.
     if (phase === "READY_UP") return;
-    // GHOST FUNDING GATE: never open a bot round unless funding is confirmed —
-    // hold on the FUND screen until the one-time deposit lands (server refuses to
-    // resolve anyway). PvP has no ghost and is unaffected.
-    if (isBotMatch && mp.state.serverState?.funded !== true && (ss.roundPhase === "ACTIVE" || ss.roundPhase === "COMMIT")) return;
-
+    // Per-round financial model: no separate ghost deposit to wait for — the
+    // venue custodians all per-round stakes via the operator. Bot rounds may
+    // open unconditionally (never hold on a legacy `funded` flag that would
+    // freeze pre-fix matches forever).
     // COMMIT→ACTIVE transition: the player submitted their pick during the 5s
     // commit window and the server advanced the round to ACTIVE. Transition the
     // client from ROUND_COMMIT to ROUND_ACTIVE (the battle countdown).
