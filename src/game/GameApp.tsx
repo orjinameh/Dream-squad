@@ -423,6 +423,13 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
   const hasActive = Boolean(game.positionWindowId && game.positionDirection) && onchainApproved;
   const activeDirection = game.positionDirection;
   const activeAmount = game.positionAmount;
+  // Replay without re-funding: the operator approval is spend-free (nothing
+  // moves it except an explicit relay), so an existing approval covering this
+  // pot stays valid across matches. If the picked side/amount already matches
+  // the active position, advance directly — no redundant approve popup, no
+  // position re-POST.
+  const allowanceKnown = !escrow.loading;
+  const sameAsActive = hasActive && direction === activeDirection && amount === activeAmount;
 
   const handleFaucet = async () => {
     if (!escrow.address) return;
@@ -484,8 +491,9 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
         Fund your match: stake {amount} tUSDC {"\u00D7"} {rounds} rounds UP/DOWN on {asset}.
       </p>
       <p style={{ fontSize: 11, color: "#475569", marginBottom: 28, textAlign: "center", maxWidth: 420, lineHeight: 1.6 }}>
-        One approval charges the full match (10 {"\u00D7"} 7 = 70 tUSDC) up front. Each round you
-        flip UP/DOWN and it auto-settles on-chain; winnings return to your wallet at match end.
+        One approval covers the full match (10 {"\u00D7"} 7 = 70 tUSDC). Each round you
+        lock UP/DOWN in a 5s commit, then a 10s locked trade runs; paper P&L credits
+        your match balance, one final payout at game over.
       </p>
 
       <div style={{ width: "100%", maxWidth: 440, marginBottom: 20 }}>
@@ -552,17 +560,17 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
           <div style={{ marginBottom: 12, padding: "12px 14px", borderRadius: 8, border: "1px solid #334155", background: "rgba(30,41,59,0.25)" }}>
             <div style={{ fontSize: 12, color: "#94a3b8", lineHeight: 1.6 }}>
               <b style={{ color: "#cbd5e1" }}>Per-round staking model:</b> open a position (one approval), then each
-              round you stake {amount} tUSDC UP/DOWN and it auto-settles on-chain against the live market. Winnings are
-              returned to your wallet at match end. No per-window escrow lock-up.
+              round you lock {amount} tUSDC UP/DOWN in commit and it paper-settles against the live market. Net P&L pays
+              out once at game over. No per-window escrow lock-up.
             </div>
           </div>
         )}
 
-        <button onClick={handleStake} disabled={busy || !escrow.address} style={{
+        <button onClick={sameAsActive ? onNext : handleStake} disabled={busy || !escrow.address || !allowanceKnown} style={{
           width: "100%", padding: "12px 0", borderRadius: 6, cursor: "pointer", fontWeight: 800, fontSize: 14,
           background: "linear-gradient(135deg, #7c3aed, #a855f7)", border: "none", color: "#fff", letterSpacing: "0.08em", opacity: busy ? 0.6 : 1,
         }}>
-          {busy ? "APPROVING..." : hasActive ? `\u2713 APPROVED \u2192 SWITCH \u2192 FIGHT ${direction} ${amount} tUSDC / ROUND` : `\u2694 APPROVE ${direction} ${amount} tUSDC \u00D7 ${rounds} = ${amount * rounds} tUSDC (stakes per round)`}
+          {busy ? "APPROVING..." : !allowanceKnown ? "CHECKING APPROVAL..." : sameAsActive ? `\u2713 APPROVED \u2192 FIGHT ${direction} ${amount} tUSDC / ROUND` : hasActive ? `\u2713 APPROVED \u2192 SWITCH \u2192 FIGHT ${direction} ${amount} tUSDC / ROUND` : `\u2694 APPROVE ${direction} ${amount} tUSDC \u00D7 ${rounds} = ${amount * rounds} tUSDC (stakes per round)`}
         </button>
 
         {game.positionWonPositions.length > 0 && (
@@ -1691,13 +1699,16 @@ function MatchResult({ game, onRematch, onChangePosition, onExit }: { game: Retu
   const won = game.playerScore > game.rivalScore;
   const draw = game.playerScore === game.rivalScore;
 
-  // Per-round on-chain settlement: the server settles each round against the
-  // live YES-mid and credits wins via direct tUSDC transfer. Compute total PnL
-  // from the round history (the authoritative source) instead of reading from
-  // the unused round escrow contract.
+  // Match P&L — server-authoritative NET from MongoDB balances
+  // (playerBalance − playerStartBalance). Never sum the local round history:
+  // it can miss auto-resolved rounds and would disagree with the DB ledger
+  // that the single final payout is computed from.
   const [withdrawing, setWithdrawing] = useState(false);
-  const totalPnL = game.roundHistory.reduce((sum, r) => sum + (r.playerPnL ?? 0), 0);
+  const totalPnL = (game.playerBalance ?? game.playerStartBalance ?? 0) - (game.playerStartBalance ?? 0);
   const roundsWon = game.roundHistory.filter((r) => r.playerPnL != null && r.playerPnL > 0).length;
+  const payoutTx = game.finalPayoutTxHash;
+  const payoutPending = payoutTx === "PENDING";
+  const payoutDone = !!payoutTx && !payoutPending;
 
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "40px 20px" }}>
@@ -1756,7 +1767,7 @@ function MatchResult({ game, onRematch, onChangePosition, onExit }: { game: Retu
         <div style={{ fontSize: 12, color: "#64748b", letterSpacing: "0.1em", marginBottom: 8, textAlign: "center" }}>ROUND HISTORY</div>
         <div style={{ display: "flex", gap: 4, justifyContent: "center", flexWrap: "wrap" }}>
           {game.roundHistory.map((r, i) => (
-            <div key={i} style={{
+            <div key={i} title={r.isDraw ? `Round ${r.roundNum}: draw (no damage)` : r.playerCorrect ? `Round ${r.roundNum}: won (+${r.playerPnL ?? 0} tUSDC)` : `Round ${r.roundNum}: lost (${r.playerPnL ?? 0} tUSDC)`} style={{
               width: 36, height: 36, borderRadius: 4,
               display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
               fontSize: 10, fontWeight: 700, lineHeight: 1.2,
@@ -1765,18 +1776,16 @@ function MatchResult({ game, onRematch, onChangePosition, onExit }: { game: Retu
               color: r.isDraw ? "#fbbf24" : r.playerCorrect ? "#10b981" : "#ef4444",
             }}>
                   {r.isDraw ? "\u2694" : r.playerCorrect ? "\u2713" : "\u2717"}
-                  {!r.isDraw && (
-                    <span style={{ fontSize: 8, opacity: 0.8 }}>
-                      {r.playerCorrect ? `-${r.rivalDamage ?? 0}` : `-${r.playerDamage ?? 0}`}
-                    </span>
-                  )}
+                  <span style={{ fontSize: 8, opacity: 0.8 }}>
+                    {r.playerPnL == null ? "" : r.playerPnL > 0 ? `+${r.playerPnL}` : `${r.playerPnL}`}
+                  </span>
             </div>
           ))}
         </div>
       </div>
 
-      {/* FIGHT STAKE — funded up front for all rounds; each round stakes and
-          settles on-chain separately. */}
+      {/* FIGHT STAKE — one approval covers all rounds; each round stakes and
+          paper-settles separately, single final payout at game over. */}
       <div style={{
         background: "rgba(15,23,42,0.9)", border: "2px solid #1e293b", borderRadius: 8,
         padding: "12px 20px", marginBottom: 24, textAlign: "center", maxWidth: 340, width: "100%",
@@ -1788,35 +1797,42 @@ function MatchResult({ game, onRematch, onChangePosition, onExit }: { game: Retu
           {(game.positionAmount ?? 0) * (game.totalRounds ?? 7)} tUSDC ALLOCATED
         </div>
         <div style={{ fontSize: 10, color: "#64748b", marginTop: 4 }}>
-          {game.positionAmount ?? 0} tUSDC staked each round and settled on-chain;
-          winnings from winning rounds return to your wallet.
+          {game.positionAmount ?? 0} tUSDC staked each round; wins/losses paper-credit
+          to your match balance, one final tUSDC payout at game over.
         </div>
       </div>
 
-      {/* Per-round on-chain settlement — computed from round history PnL. */}
+      {/* Match settlement — server-authoritative net + single final payout. */}
       {game.matchId && (
         <div style={{
           background: "rgba(4,120,87,0.12)", border: `2px solid ${totalPnL > 0 ? "#10b981" : "#1e293b"}`, borderRadius: 8,
           padding: "12px 20px", marginBottom: 24, textAlign: "center", maxWidth: 340, width: "100%",
         }}>
           <div style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.1em", marginBottom: 6 }}>
-            PER-ROUND ON-CHAIN SETTLEMENT
+            MATCH SETTLEMENT
           </div>
-          <div style={{ fontSize: 22, fontWeight: 900, color: totalPnL > 0 ? "#10b981" : "#94a3b8", letterSpacing: "0.05em" }}>
-            {totalPnL > 0 ? `+${totalPnL.toFixed(2)} tUSDC WON` : totalPnL < 0 ? `${totalPnL.toFixed(2)} tUSDC` : "0 tUSDC P&L"}
+          <div style={{ fontSize: 22, fontWeight: 900, color: totalPnL > 0 ? "#10b981" : totalPnL < 0 ? "#ef4444" : "#94a3b8", letterSpacing: "0.05em" }}>
+            {totalPnL > 0 ? `+${totalPnL.toFixed(2)} tUSDC NET` : totalPnL < 0 ? `${totalPnL.toFixed(2)} tUSDC NET` : "0 tUSDC NET"}
           </div>
           <div style={{ fontSize: 10, color: "#64748b", marginTop: 4, lineHeight: 1.5 }}>
             {roundsWon > 0
-              ? `${roundsWon} round${roundsWon > 1 ? "s" : ""} won — winnings transferred to your wallet instantly.`
-              : "Each round settles on-chain against the live YES-mid."}
+              ? `${roundsWon} round${roundsWon > 1 ? "s" : ""} won — paper-credited to your match balance.`
+              : "No winning rounds this match."}
+            {totalPnL > 0 && (
+              payoutDone
+                ? ` Final payout sent to your wallet (tx ${payoutTx!.slice(0, 10)}...).`
+                : payoutPending
+                  ? " Final payout on the way to your wallet..."
+                  : " Final payout on the way to your wallet..."
+            )}
           </div>
         </div>
       )}
 
       <div style={{ marginBottom: 24, width: "100%", maxWidth: 340 }}>
         <div style={{ fontSize: 11, color: "#94a3b8", lineHeight: 1.5, textAlign: "center", marginTop: 4 }}>
-          Rounds track the real Event Contract window. Your stake settles on-chain
-          once the window closes. DUEL AGAIN to keep riding the same position, or
+          Rounds track the real Event Contract window. The operator recoups venue
+          shares off-line after the match. DUEL AGAIN to keep riding the same position, or
           CHANGE POSITION to restake a new one.
         </div>
       </div>

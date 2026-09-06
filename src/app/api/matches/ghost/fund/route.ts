@@ -63,15 +63,24 @@ export async function POST(req: NextRequest) {
 
     // Guard: only fund the ghost for a match owned by the requesting player.
     // Accept player 1 OR player 2 (PvP) as a legitimate owner of this match.
+    // (No zero-address bypass: legacy zero-owner rows must never authorize a
+    // drain of someone else's approval.)
     const pl = playerAddress.toLowerCase();
     const p1 = (match.playerAddress ?? "").toString().toLowerCase();
     const p2 = (match.player2Address ?? "").toString().toLowerCase();
     const isOwner =
       (p1 && p1 === pl) ||
-      (p2 && p2 === pl) ||
-      p1 === "0x0000000000000000000000000000000000000000";
+      (p2 && p2 === pl);
     if (!isOwner) {
       return jsonError(403, "not your match");
+    }
+
+    // Cap the relay to this match's real pot (amount/round × rounds). An
+    // unbounded client-supplied totalStakeRaw would let anyone drain the full
+    // operator approval to an arbitrary ghost address.
+    const expectedPot = BigInt(Math.round((match.playerAmountPerRound ?? 1) * 1_000_000)) * BigInt(match.totalRounds ?? 7);
+    if (amount > expectedPot) {
+      return jsonError(400, `amount exceeds this match's pot (${expectedPot})`);
     }
 
     const pc = publicClient();
@@ -90,6 +99,22 @@ export async function POST(req: NextRequest) {
 
     const wc = adminWallet();
 
+    // Idempotency guard FIRST: the ghost key is stable per match, so a re-mount
+    // that re-invokes this route must NOT charge the player a second time — and
+    // must not drip more STT either. If the ghost already holds the full stake,
+    // it's already funded — no new transfer.
+    const ghostBal = (await pc.readContract({
+      address: TUSDC_ADDRESS,
+      abi: TUSDC_ABI,
+      functionName: "balanceOf",
+      args: [ghostAddress as `0x${string}`],
+    })) as bigint;
+    if (ghostBal >= amount) {
+      // Already funded: mark the match funded (idempotent re-mount).
+      await Match.updateOne({ _id: match._id }, { $set: { funded: true, ghostAddress } });
+      return NextResponse.json({ ok: true, alreadyFunded: true, ghostBalance: ghostBal.toString() });
+    }
+
     // The ghost is a fresh EOA with no native STT — yet it must sign its own
     // per-round `stakeRound`/`approve`/`withdraw`. tUSDC alone can't pay gas, so
     // top the ghost up with native STT from the operator so the per-round writes
@@ -98,8 +123,8 @@ export async function POST(req: NextRequest) {
     //
     // Somnia runs hot: a single `stakeRound` costs ~0.02+ STT (3M gas @ 6-7gwei),
     // so 7 rounds + approve + withdraw need well over 0.15 STT. 0.03 left the
-    // ghost dry mid-match. Budget 1 STT. This runs on EVERY fund call (idempotent:
-    // only tops up the shortfall) so it also keeps a re-funded ghost funded.
+    // ghost dry mid-match. Budget 1 STT. Only reached when a real relay follows
+    // (see idempotency guard above), so repeat calls can't drip STT on their own.
     const GHOST_GAS_STT = 1_000_000_000_000_000_000n; // 1.0 STT
     const ghostNative = await pc.getBalance({ address: ghostAddress as `0x${string}` });
     if (ghostNative < GHOST_GAS_STT) {
@@ -113,21 +138,6 @@ export async function POST(req: NextRequest) {
       // below; otherwise both txs could share one pending nonce and one gets
       // dropped ("relay tx did not confirm in time").
       await waitMined(sttTx);
-    }
-
-    // Idempotency guard: the ghost key is stable per match, so a re-mount that
-    // re-invokes this route must NOT charge the player a second time. If the
-    // ghost already holds the full stake, it's already funded — no new transfer.
-    const ghostBal = (await pc.readContract({
-      address: TUSDC_ADDRESS,
-      abi: TUSDC_ABI,
-      functionName: "balanceOf",
-      args: [ghostAddress as `0x${string}`],
-    })) as bigint;
-    if (ghostBal >= amount) {
-      // Already funded: mark the match funded (idempotent re-mount).
-      await Match.updateOne({ _id: match._id }, { $set: { funded: true, ghostAddress } });
-      return NextResponse.json({ ok: true, alreadyFunded: true, ghostBalance: ghostBal.toString() });
     }
 
     const tx = await wc.writeContract({

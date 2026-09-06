@@ -228,11 +228,14 @@ async function resolveRound(match: any, now: Date): Promise<{
   const winner = newPlayerScore > newRivalScore ? "player"
     : newRivalScore > newPlayerScore ? "rival" : "draw";
 
-    // Instant per-round P&L: player wins stake amount on correct call, loses on wrong.
+    // Instant per-round P&L (paper credit in MongoDB — no on-chain movement
+    // here). A correct call wins the stake; a wrong call loses it; an honest
+    // FLAT (no market move) is a push — stake back, 0. FLAT must never drain
+    // the balance, or every no-move round silently taxes the player.
     const stakeAmount = match.playerAmountPerRound ?? 1;
     const rivalStakeAmount = match.rivalAmountPerRound ?? 1;
-    const playerPnL = playerCorrect ? stakeAmount : -stakeAmount;
-    const rivalPnL = rivalCorrect ? rivalStakeAmount : -rivalStakeAmount;
+    const playerPnL = isFlat ? 0 : playerCorrect ? stakeAmount : -stakeAmount;
+    const rivalPnL = isFlat ? 0 : rivalCorrect ? rivalStakeAmount : -rivalStakeAmount;
     const prevPlayerBalance = match.playerBalance ?? match.playerStartBalance ?? 100;
     const prevRivalBalance = match.rivalBalance ?? match.rivalStartBalance ?? 100;
     const newPlayerBalance = Math.max(0, prevPlayerBalance + playerPnL);
@@ -401,11 +404,18 @@ async function maybeFinalPayout(matchId: string): Promise<void> {
       if (rNet > 1e-6) jobs.push({ key: "rivalFinalPayoutTxHash", amountKey: "rivalFinalPayoutAmount", addr: m.player2Address, net: rNet });
     }
     for (const job of jobs) {
+      // The payout MUST go to the match's recorded player wallet — never the
+      // operator, never a ghost, never zero. Validate before signing.
+      if (!isAddress(job.addr) || job.addr === "0x0000000000000000000000000000000000000000") {
+        console.error(`[payout] match=${matchId} refusing payout to invalid address ${job.addr}`);
+        continue;
+      }
       const claimed = await Match.updateOne(
         { _id: matchId, [job.key]: { $exists: false } },
         { $set: { [job.key]: "PENDING", [job.amountKey]: job.net } },
       );
       if (claimed.modifiedCount !== 1) continue; // already paid / in flight
+      console.log(`[payout] match=${matchId} paying ${job.net} tUSDC to player ${job.addr}`);
       payoutTusdc(job.addr as `0x${string}`, job.net)
         .then(({ txHash, error }) => {
           if (error || !txHash) {

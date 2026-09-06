@@ -100,6 +100,9 @@ export interface ServerMatchState {
   rivalBalance: number;
   playerStartBalance: number;
   rivalStartBalance: number;
+  // GAME OVER single final payout (tUSDC tx hash once mined, "PENDING" in flight)
+  finalPayoutTxHash?: string | null;
+  finalPayoutAmount?: number | null;
   // Per-player independent trade amount (STT) — each player's own stake.
   playerAmountPerRound?: number;
   rivalAmountPerRound?: number;
@@ -400,6 +403,8 @@ export function useMultiplayer(): UseMultiplayerReturn {
           currentRound: data.currentRound,
           playerAmountPerRound: (data as any).playerAmountPerRound ?? prev.playerAmountPerRound,
           rivalAmountPerRound: (data as any).rivalAmountPerRound ?? prev.rivalAmountPerRound,
+          finalPayoutTxHash: (data as any).finalPayoutTxHash ?? prev.finalPayoutTxHash,
+          finalPayoutAmount: (data as any).finalPayoutAmount ?? prev.finalPayoutAmount,
         };
       });
 

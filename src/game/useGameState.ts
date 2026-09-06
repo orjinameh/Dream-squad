@@ -113,6 +113,9 @@ export interface GameHook {
   rivalBalance: number;
   playerStartBalance: number;
   rivalStartBalance: number;
+  // GAME OVER single final payout (tUSDC tx hash once mined, "PENDING" in flight)
+  finalPayoutTxHash: string | null;
+  finalPayoutAmount: number | null;
   // Per-player independent trade amount (STT) — each player's own stake.
   playerAmountPerRound?: number;
   rivalAmountPerRound?: number;
@@ -1243,6 +1246,8 @@ export function useGameState(): GameHook {
     rivalStartBalance: mp.state.serverState?.rivalStartBalance ?? 100,
     playerAmountPerRound: mp.state.serverState?.playerAmountPerRound ?? 1,
     rivalAmountPerRound: mp.state.serverState?.rivalAmountPerRound ?? 1,
+    finalPayoutTxHash: mp.state.serverState?.finalPayoutTxHash ?? null,
+    finalPayoutAmount: mp.state.serverState?.finalPayoutAmount ?? null,
     selectedMatchId,
     positionWindowId,
     positionDirection,
