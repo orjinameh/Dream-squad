@@ -1,22 +1,13 @@
-# DreamDuel
+# ⚔️ DreamDuel
+### *The 15-Second Web3 Combat Arcade Powered by dreamDEX Event Contracts*
 
-Retro 1v1 prediction-battle game on **Somnia Shannon testnet (chain 50312)**, built for the Somnia × DreamDEX Event Contracts Hackathon.
+DreamDuel turns high-velocity crypto event-speculation into a fast-paced, 1v1 retro fighting game. Built natively on the high-throughput **Somnia Network (Chain 50312)** for the **Somnia × dreamDEX Event Contracts Hackathon**, two gladiators (Player vs Player or Player vs Bot) leverage real-time order-book probability shifts to land bone-crushing combat strikes.
 
-Two fighters (player vs player, or player vs bot) pick **UP/DOWN** on a live DreamDEX Event-Contract market each round. Correct calls land combat damage; streaks and knockouts decide the best-of-N duel. Every round **resolves against the real Event-Contract order book** — the live YES probability of BTC/ETH binary markets is the only oracle — and each round **settles instantly** via direct tUSDC transfer to the winner's wallet.
+By engineering a **Hybrid State Engine with EOA Operator Delegation**, DreamDuel compresses complex, intimidating terminal grids into a frictionless gameplay loop — allowing casual players to trade real on-chain prediction tokens entirely through raw gaming inputs with **zero wallet popups mid-match**.
 
-```
-fund ──▶ stake position ──▶ fight (UP/DOWN per round) ──▶ round resolves on the real EC order book ──▶ instant tUSDC payout
-wallet    approve          commit (5s) + active (10s)      FLAT / UP / DOWN → damage / HP / KO           ERC20 transfer
-```
+---
 
-## What the judge sees
-
-- **Real DreamDEX Event-Contract integration.** The arena floor is discovered live via `@somnia-chain/markets-sdk` (`loadMarkets` + on-chain status gate), and each round's outcome derives from the actual order-book YES-mid over the round's entry→exit window (spread/band aware, with retries). Nothing is a simulated price.
-- **Instant per-round tUSDC payouts.** When a round resolves, the server immediately transfers the winner's payout directly to their wallet via `payoutTusdc()` — no manual withdraw needed. The operator auto-mints shortfall from the public faucet and recoups later via `settleRoundStakes()`.
-- **Server-authoritative combat.** Damage, streaks, criticals, KO, and match completion are computed server-side from the resolved market move; clients are thin renderers with a freeze-proof local-advance fallback.
-- **Robust against testnet RPC flakiness.** All chain traffic tiers across three RPC mirrors (thirdweb → dream-rpc → api.infra) with viem `fallback`.
-
-## Architecture
+## 🔄 System Architecture & Data Flow
 
 ```
 Browser (wagmi + RainbowKit) ─────────────────────────────────────────────
@@ -24,41 +15,47 @@ Browser (wagmi + RainbowKit) ─────────────────
      → ACTIVE(10s locked trade) → resolve → DB paper credit → next round / KO / result → ONE final tUSDC payout
 
 Next.js Route Handlers (server-authoritative)
-  POST /api/matches/create|predict            round machine (COMMIT→ACTIVE→EXECUTING)
-  GET  /api/matches/state|history|detail      state + rehydrate + per-round PnL
-  POST /api/position                          EC position (window stake + entry price)
-  GET  /api/leaderboard                       stats / rank
-  POST /api/matchmaking/*                     PvP matchmaking
-  GET  /api/cron/sweep                        Vercel daily sweep
-  GET  /api/health                            liveness
-
-MongoDB (Mongoose)
-  Match   { players, rounds[], priceModel, escrow refs, playerBalance, rivalBalance }
-  PlayerStats { wins/losses, streaks, rankPoints }
-
-On-chain (Somnia testnet, 50312)
-  ┌─ @somnia-chain/markets-sdk ── arena discovery + order-book oracle
-  ├─ Round Escrow (per-round settle)  0x4b5c9d4dec4542a2df02314952cbcc7dae665bdc
-  ├─ Operator EOA                     0xdd68998C099f7570E59019ae35469E5603cEDA11
-  └─ Collateral (tUSDC, 6 dp)        0x70a86D8842FB63C4Ad2b7cdddF530eBf1BB25d8E
+  POST /api/matches/create|predict       Round lifecycle state machine (COMMIT→ACTIVE→EXECUTING)
+  GET  /api/matches/state|history        State rehydration + round-by-round contract delta log
+  POST /api/position                     EC position configuration (window stake + entry price)
+  GET  /api/leaderboard                  Global LP/Elo mapping pipeline
 ```
 
-## Key design decisions
+---
 
-- **Event Contracts ARE the oracle.** The DEX's binary markets are the only price source. A round whose YES-mid moved past the (spread-aware) flat band resolves UP/DOWN; otherwise an honest FLAT (no damage).
-- **Instant payouts, no custody.** Each round win transfers tUSDC directly to the player's wallet via `payoutTusdc()`. The player always holds their own funds — no withdraw flow needed.
-- **Ghost-funded bot matches.** One wallet `approve` funds the whole match; the server relays player→ghost, and the ghost signs every round (no popups). Unused grants auto-revoke after 5 minutes.
-- **PvP rounds resolve at the close, never early.** The outcome derives from the full entry→exit move, not the instant the last player tapped.
+## ⏱️ The 15-Second Round Lifecycle
 
-## Stack
+Every round enforces a rigid, server-authoritative 15-second mechanical split that matches true binary-options trading parameters:
 
-| Layer | Technology |
-|-------|-----------|
-| Frontend | Next.js 15 (App Router), React 19, wagmi v2 + RainbowKit |
-| API | Next.js Route Handlers, Zod |
-| Database | Mongoose 8 (MongoDB) |
-| On-chain | viem v2, @somnia-chain/markets-sdk ^0.28.x (Somnia testnet) |
-| Testing | Vitest, mongodb-memory-server |
+1. **Phase 1: COMMIT & Stake (0s – 5s) `[The Single Blocking Gate]`**
+   * A 5-second countdown prompts player inputs. Clicking **"Attack"** maps to a dreamDEX Event Contract **YES order**, while clicking **"Defend"** maps to a **NO order**.
+   * The background operator wallet automatically places the order on the dreamDEX router via the markets SDK trader.
+   * **The Hard Gate:** the serverless handler enforces a strict await-confirmation lock on the stake receipt. The 10-second battle clock is pinned to the confirmation timestamp, eliminating nonce congestion and multi-round queue jams. If a stake fails, the server holds COMMIT with a `502` to force a clean client retry instead of fighting unstaked.
+
+2. **Phase 2: BATTLE & Locked Trade (5s – 15s) `[Zero UI Popups]`**
+   * Inputs are entirely frozen (`LOCKED — TRADE RUNNING`). Characters run clashing/charging animation loops while the embedded live chart streams ticks from the Somnia price oracle.
+   * The trade position is locked on-chain, tracking the live implied-probability shifts of the player's YES/NO shares on the dreamDEX order book.
+
+3. **Phase 3: RESOLUTION & Paper Credit (At Second 15)**
+   * The countdown hits zero and triggers a temporary calculation freeze overlay.
+   * The system computes the micro-value delta of the contract shares from the exact entry stamp to the exit stamp.
+   * **The Optimization:** to completely bypass slow, erratic block latency mid-match, the engine logs wins/losses instantly as an **off-chain paper credit** inside the MongoDB match document (`match.playerBalance`), releasing the hit animations and updating health bars at lightning speed.
+
+4. **Phase 4: GAME OVER & Final Payout**
+   * Upon round 7 completion or a total knockout, the system calculates the player's final net earnings from the MongoDB ledger.
+   * The operator wallet fires **exactly one real on-chain tUSDC transfer**, sending total match net-winnings directly to the player's primary wallet. An independent background worker sweeps and redeems the operator's contract shares off-line via `settleRoundStakes()`.
+
+---
+
+## 🛠️ The Production Stack
+
+* **Frontend:** Next.js 15 (App Router), React 19, `wagmi v2` + RainbowKit.
+* **Database & Ledger:** MongoDB via Mongoose 8. Atomic COMMIT→ACTIVE claims plus idempotency keys (`processedMatches`, per-round payout records) structurally guarantee exactly one locked position and one final payout per match.
+* **On-Chain Infrastructure:** deployed natively on **Somnia Shannon Testnet (50312)**:
+  * `OperatorRegistry` (`0x15C7...`): secures the one-time, non-custodial delegation permission profile.
+  * `dreamDEX Router/CLOB` (`0x259f...`): processes immediate-or-cancel (IOC) contract token purchases crossing the live Event Contract order books.
+  * `Collateral Vault (tUSDC)` (`0x70a8...`): 6-decimal testnet dollar standard.
+  * `Round Escrow` (`0x4b5c...`): per-round on-chain settlement; `Operator EOA` (`0xdd68...`) relays stakes and the final payout.
 
 ## Setup
 
