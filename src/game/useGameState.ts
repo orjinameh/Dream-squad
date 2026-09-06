@@ -517,22 +517,6 @@ export function useGameState(): GameHook {
     );
   }, [playCombatAnimation, playerHP, rivalHP, playerScore, rivalScore]);
 
-  // --- FORCED LOCAL ADVANCE (freeze-proof fallback) ---
-  // If the server predict fails/hangs, never leave the round stuck on
-  // "predictions locked". The SERVER is authoritative — never fabricate a FLAT
-  // draw and mark the round processed (that would shadow the real server round
-  // forever on rehydrate). Instead surface the failure and unlock the UI so the
-  // player can retry; the next successful predict resolves authoritatively.
-  const forceLocalAdvance = useCallback(() => {
-    if (roundPhaseRef.current !== "SUBMITTING") return;
-    if (roundProcessedRef.current.includes(activeRoundNumRef.current)) return;
-    // Do NOT push to roundProcessedRef and do NOT synthesize a round — leave
-    // the round unresolved so the server's real resolution still applies.
-    roundPhaseRef.current = "LOCKED";
-    setExecutionStatus("failed");
-    setExecutionError("Round submit failed — check connection and retry. Your pick is kept.");
-  }, []);
-
   // --- BOT ROUND TIMER (10s locked trade duration) ---
   // Traditional binary: ACTIVE is the locked trade — the side was fixed at the
   // COMMIT lock and must NOT be re-sent here. At expiry we call predict with NO
@@ -567,33 +551,26 @@ export function useGameState(): GameHook {
         setRivalCharState("locked");
 
         // Resolve the LOCKED trade — no prediction payload (flips forbidden).
-        // Use a BOUNDED retry so a transient network/5xx failure cannot leave
-        // the round frozen at ROUND_LOCKED.
+        // Confirm-or-keep-trying: retry until the server confirms, so the
+        // round can never freeze on CALCULATING.
         setExecutionStatus("executing");
+        setExecutionError(null);
         roundPhaseRef.current = "SUBMITTING";
-
-        let submitAttempts = 0;
-        const retryOrForce = (): void => {
-          submitAttempts += 1;
-          if (submitAttempts >= 6) {
-            forceLocalAdvance();
-            return;
-          }
-          scheduleTimer(attemptSubmit, 600);
-        };
 
         const attemptSubmit = (): void => {
           mp.actions.submitPrediction(undefined).then((d) => {
             if (d && d.rounds && d.rounds.length) {
               setExecutionStatus("success");
+              setExecutionError(null);
               roundPhaseRef.current = "WAITING_SERVER";
               advanceAfterSubmit(d);
             } else if (roundPhaseRef.current === "SUBMITTING") {
-              retryOrForce();
+              scheduleTimer(attemptSubmit, 2000);
             }
           }).catch(() => {
             if (roundPhaseRef.current === "SUBMITTING") {
-              retryOrForce();
+              setExecutionError("Confirming round on server — retrying...");
+              scheduleTimer(attemptSubmit, 2000);
             }
           });
         };
@@ -634,6 +611,7 @@ export function useGameState(): GameHook {
         if (botCommitTimerRef.current) { clearInterval(botCommitTimerRef.current); botCommitTimerRef.current = null; }
         const pred = localPredictionRef.current as "UP" | "DOWN" | null;
         setExecutionStatus("executing");
+        setExecutionError(null);
         let commitAttempts = 0;
         const attemptCommit = (): void => {
           commitAttempts += 1;
@@ -641,13 +619,26 @@ export function useGameState(): GameHook {
             if (d && d.roundPhase === "ACTIVE") {
               roundPhaseRef.current = "WAITING_SERVER";
               setExecutionStatus("success");
+              setExecutionError(null);
             } else if (!d) {
               roundPhaseRef.current = "LOCKED";
             }
             if (!d && commitAttempts < 6) scheduleTimer(attemptCommit, 600);
+            else if (!d) {
+              // Gate did not confirm (stake 502 / network). Stay in COMMIT and
+              // SAY so — tapping UP/DOWN re-submits and re-enters the gate.
+              // Never auto-advance: the battle must not start unconfirmed.
+              roundPhaseRef.current = "LOCKED";
+              setExecutionStatus("failed");
+              setExecutionError("Stake not confirmed — tap UP or DOWN to retry the commit.");
+            }
           }).catch(() => {
             if (commitAttempts < 6) scheduleTimer(attemptCommit, 600);
-            else { roundPhaseRef.current = "LOCKED"; setExecutionStatus("failed"); }
+            else {
+              roundPhaseRef.current = "LOCKED";
+              setExecutionStatus("failed");
+              setExecutionError("Stake not confirmed — tap UP or DOWN to retry the commit.");
+            }
           });
         };
         attemptCommit();
@@ -1059,7 +1050,10 @@ export function useGameState(): GameHook {
   // open. Once locked to ACTIVE the call is final for that 10s trade.
   const makePrediction = useCallback((_pred: "UP" | "DOWN") => {
     if (phase !== "ROUND_COMMIT") return;
-    if (localPrediction === _pred) return; // already holding that side
+    // Same-side taps are no-ops EXCEPT after a failed commit — there the tap
+    // is an explicit retry of the stake gate, so it must re-submit.
+    const isRetry = executionStatus === "failed";
+    if (localPrediction === _pred && !isRetry) return; // already holding that side
     setLocalPrediction(_pred);
     setPlayerPrediction(_pred);
     setLockedPrediction(_pred);
@@ -1068,6 +1062,7 @@ export function useGameState(): GameHook {
     // Submit immediately to record the pick + trigger the COMMIT stake gate
     // (server places the order + awaits receipt before opening the battle).
     setExecutionStatus("executing");
+    setExecutionError(null);
     mp.actions.submitPrediction(_pred).then((d) => {
       if (d && d.rounds && d.rounds.length) {
         roundPhaseRef.current = "WAITING_SERVER";
@@ -1076,9 +1071,9 @@ export function useGameState(): GameHook {
         roundPhaseRef.current = "LOCKED";
       }
     }).catch(() => {
-      roundPhaseRef.current = "LOCKED";
-    });
-  }, [phase, localPrediction, mp.actions]);
+        roundPhaseRef.current = "LOCKED";
+      });
+  }, [phase, localPrediction, executionStatus, mp.actions]);
 
   const rematch = useCallback(() => {
     clearAllTimers();

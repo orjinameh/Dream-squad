@@ -5,6 +5,7 @@ import { EcPosition } from "@/db/models/EcPosition";
 import { normalizeAddress } from "@/lib/addresses";
 import { jsonError } from "@/lib/utils";
 import { expireStaleWaitingMatches } from "@/lib/matchExpiry";
+import { assertMatchFunding } from "@/lib/ec/funding";
 import { randomUUID } from "node:crypto";
 import { isAddress } from "viem";
 import { CHARACTERS } from "@/game/characters";
@@ -63,6 +64,15 @@ export async function POST(req: Request): Promise<Response> {
     }
     if (position.windowCloseAt && new Date(position.windowCloseAt) <= new Date()) {
       return jsonError(409, "your EC position window has ended — open a new position to fight");
+    }
+
+    // CONFIRM FUND BEFORE QUEUEING: PvP matches stake 1 tUSDC/round. Verify the
+    // on-chain operator approval covers it — a DB position alone is not proof.
+    const fund = await assertMatchFunding(addr, 1, rounds!);
+    if (!fund.ok) {
+      return fund.reason === "insufficient"
+        ? jsonError(402, `operator approval ${fund.allowance} below match pot ${fund.required} — approve on the POSITION screen first`)
+        : jsonError(503, "could not verify on-chain funding — retry");
     }
 
     // Ensure the player has a fresh "searching" queue entry (create if missing,

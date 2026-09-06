@@ -1,6 +1,12 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import mongoose from "mongoose";
+
+// Funding gate reads live chain allowance — bypass in unit tests (no RPC).
+vi.mock("@/lib/ec/funding", () => ({
+  matchPotRaw: (a: number, r: number) => BigInt(Math.round(a * 1_000_000)) * BigInt(r),
+  assertMatchFunding: vi.fn(async () => ({ ok: true })),
+}));
 
 import { POST as joinRoute } from "@/app/api/matchmaking/join/route";
 import { POST as leaveRoute } from "@/app/api/matchmaking/leave/route";

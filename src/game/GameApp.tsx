@@ -1631,7 +1631,7 @@ function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; 
               CALCULATING RESULT...
             </div>
             <div style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.08em" }}>
-              Freezing Second-15 contract value {"\u2014"} crediting paper PnL to match balance
+              {game.executionError ?? "Freezing Second-15 contract value — crediting paper PnL to match balance"}
             </div>
           </div>
         )}

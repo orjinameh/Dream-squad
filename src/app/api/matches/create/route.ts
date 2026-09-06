@@ -4,6 +4,7 @@ import { Match, ROUND_TIMINGS } from "@/db/models/Match";
 import { EcPosition } from "@/db/models/EcPosition";
 import { normalizeAddress } from "@/lib/addresses";
 import { jsonError } from "@/lib/utils";
+import { assertMatchFunding } from "@/lib/ec/funding";
 import { z } from "zod";
 import { isAddress } from "viem";
 
@@ -93,6 +94,17 @@ export async function POST(req: Request): Promise<Response> {
 
     const asset = input.predictionAsset ?? position.market ?? "BTC";
     const amountPerRound = input.amountPerRound ?? position.amount ?? 1;
+
+    // CONFIRM FUND BEFORE OPENING MATCH: a DB position record alone is not
+    // proof. Re-verify the player's on-chain operator approval covers this
+    // match's full pot before the first round may open.
+    const fund = await assertMatchFunding(address, amountPerRound, input.totalRounds);
+    if (!fund.ok) {
+      return fund.reason === "insufficient"
+        ? jsonError(402, `operator approval ${fund.allowance} below match pot ${fund.required} — approve on the POSITION screen first`)
+        : jsonError(503, "could not verify on-chain funding — retry");
+    }
+
     const matchId = randomUUID();
     const isBot = input.opponentType !== "player";
 

@@ -496,7 +496,13 @@ export async function readArenaSettlement(arena: ArenaRef): Promise<{
   const exchange = ecExchange();
   if (!arena.marketId) return { isResolved: false, isVoided: false, winningOutcome: 0, status: 0 };
   try {
-    const oc = await exchange.client.getMarketOnchain(arena.marketId as `0x${string}`);
+    // Bounded: the underlying WS/RPC read has no timeout of its own, and this
+    // runs in the Second-15 resolution path — a hang here freezes the client on
+    // CALCULATING forever. On timeout treat as unresolved (direction fallback).
+    const oc = await Promise.race([
+      exchange.client.getMarketOnchain(arena.marketId as `0x${string}`),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("settlement read timed out")), 8_000)),
+    ]);
     return {
       isResolved: oc.isResolved,
       isVoided: !!oc.isVoided,
@@ -582,7 +588,13 @@ export async function quoteStake(
   let bid: number | null = null;
   let ask: number | null = null;
   try {
-    const book = await exchange.fetchOrderBook(arena.symbol, 1);
+    // Bounded like readArenaPrice: a hung book read must not eat the COMMIT
+    // stake-gate budget (the gate has its own 60s cap, but fail fast so the
+    // mint-a-pair path still gets its chance).
+    const book = await Promise.race([
+      exchange.fetchOrderBook(arena.symbol, 1),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("orderbook timed out")), 5_000)),
+    ]);
     bid = book.bids[0]?.[0] ?? null;
     ask = book.asks[0]?.[0] ?? null;
   } catch {
