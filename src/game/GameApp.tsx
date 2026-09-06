@@ -428,7 +428,17 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
   // pot stays valid across matches. If the picked side/amount already matches
   // the active position, advance directly — no redundant approve popup, no
   // position re-POST.
-  const allowanceKnown = !escrow.loading;
+  // Backstop: testnet RPC reads can hang with no timeout. If the allowance
+  // state hasn't settled within 10s, stop blocking the button — the approve
+  // call itself re-reads the live allowance first, so a tap can never fire a
+  // redundant popup off stale data.
+  const [allowanceStale, setAllowanceStale] = useState(false);
+  useEffect(() => {
+    if (!escrow.loading) { setAllowanceStale(false); return; }
+    const t = setTimeout(() => setAllowanceStale(true), 10_000);
+    return () => clearTimeout(t);
+  }, [escrow.loading]);
+  const allowanceKnown = !escrow.loading || allowanceStale;
   const sameAsActive = hasActive && direction === activeDirection && amount === activeAmount;
 
   const handleFaucet = async () => {

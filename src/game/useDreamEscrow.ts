@@ -58,6 +58,31 @@ const TUSDC_ABI = [
 ] as const;
 
 /**
+ * Fresh on-chain allowance read with a hard timeout. The wagmi hook cache can
+ * be stale or still hanging on a flaky testnet RPC at click time — approving
+ * off a stale `0n` would fire a redundant wallet popup (the "fund again every
+ * match" complaint). Returns null on timeout/failure so callers fall back to
+ * the cached value instead of hanging the UI.
+ */
+async function allowanceOfNow(owner: `0x${string}`, spender: `0x${string}`): Promise<bigint | null> {
+  try {
+    const pc = createPublicClient({ chain: EC_CHAIN, transport: ecHttpTransport() });
+    const read = pc.readContract({
+      abi: TUSDC_ABI,
+      address: TUSDC_ADDRESS,
+      functionName: "allowance",
+      args: [owner, spender],
+    }) as Promise<bigint>;
+    const timeout = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("allowance read timed out")), 10_000),
+    );
+    return await Promise.race([read, timeout]);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Client (browser) interface to the deployed DreamDuel escrow for an EC POSITION
  * (a single tUSDC stake for a 15-minute window). The player's own wallet
  * approves tUSDC and calls `stake(windowId, amount, entryPrice)` — money only
@@ -70,6 +95,10 @@ export function useDreamEscrow(windowId?: string | null, escrowAddress: `0x${str
   const { address } = useAccount();
   const key = (windowId ?? undefined) as Hash | undefined;
   const escrow = escrowAddress ?? ESCROW_ADDRESS;
+  // Per-round funding records use text IDs (`per-round-…`), NOT on-chain
+  // bytes32 slots. Never send those to the contract — the ABI encoding throws
+  // and the read never settles. Only real 32-byte window IDs hit the chain.
+  const isOnchainKey = !!key && /^0x[0-9a-fA-F]{64}$/.test(key);
 
   const usdc = useReadContract({
     abi: TUSDC_ABI,
@@ -83,7 +112,7 @@ export function useDreamEscrow(windowId?: string | null, escrowAddress: `0x${str
     abi: TUSDC_ABI,
     address: TUSDC_ADDRESS,
     functionName: "allowance",
-    args: address && key ? [address, escrow] : undefined,
+    args: address && isOnchainKey ? [address, escrow] : undefined,
     chainId: EC_CHAIN.id,
   });
 
@@ -103,9 +132,9 @@ export function useDreamEscrow(windowId?: string | null, escrowAddress: `0x${str
     abi: DREAMDUEL_ESCROW_ABI,
     address: escrow,
     functionName: "position",
-    args: key ? [key] : undefined,
+    args: isOnchainKey ? [key] : undefined,
     chainId: EC_CHAIN.id,
-    query: { enabled: !!key },
+    query: { enabled: isOnchainKey },
   });
 
   // Legacy (pre-v3) escrows return a 6-field struct that throws the current ABI
@@ -115,9 +144,9 @@ export function useDreamEscrow(windowId?: string | null, escrowAddress: `0x${str
     abi: LEGACY_POSITION_ABI,
     address: escrow,
     functionName: "position",
-    args: key ? [key] : undefined,
+    args: isOnchainKey ? [key] : undefined,
     chainId: EC_CHAIN.id,
-    query: { enabled: !!key && pos.isError },
+    query: { enabled: isOnchainKey && pos.isError },
   });
 
   // Allowance to the per-round escrow (spender = roundEscrow). stakeRound must
@@ -233,7 +262,13 @@ export function useDreamEscrow(windowId?: string | null, escrowAddress: `0x${str
       if (potRaw <= 0n) throw new Error("Invalid stake amount");
       // Check the OPERATOR allowance (spender = ESCROW_ADMIN), not the
       // position-escrow allowance — approveFullMatch approves ESCROW_ADMIN.
-      const currentAllowance = opAllowance.data as bigint | undefined;
+      // Fresh-read first: the hook cache may be stale/hung on a flaky RPC, and
+      // approving off a stale 0n fires a redundant popup every match.
+      let currentAllowance = opAllowance.data as bigint | undefined;
+      try {
+        const fresh = await allowanceOfNow(address, ESCROW_ADMIN);
+        if (fresh != null) currentAllowance = fresh;
+      } catch { /* keep cached */ }
       if ((currentAllowance ?? 0n) < potRaw) {
         const approveHash = await writeWithTimeout({
           abi: TUSDC_ABI,
@@ -279,8 +314,12 @@ export function useDreamEscrow(windowId?: string | null, escrowAddress: `0x${str
       const mid = matchId == null ? undefined : matchKey(String(matchId), address);
       if (!mid || !address) throw new Error("Wallet not connected");
       // Check the ROUND escrow allowance (spender = roundEscrow), not the
-      // position-escrow allowance.
-      const curAllowance = roundAllowance.data as bigint | undefined;
+      // position-escrow allowance. Fresh-read first (see approveFullMatch).
+      let curAllowance = roundAllowance.data as bigint | undefined;
+      try {
+        const fresh = await allowanceOfNow(address, roundEscrow);
+        if (fresh != null) curAllowance = fresh;
+      } catch { /* keep cached */ }
       if ((curAllowance ?? 0n) < amountRaw) {
         const approveHash = await writeWithTimeout({
           abi: TUSDC_ABI,
