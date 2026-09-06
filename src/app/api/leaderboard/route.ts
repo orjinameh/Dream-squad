@@ -9,7 +9,7 @@ type SortField = "rank" | "wins" | "accuracy" | "streak";
 
 export async function GET(req: Request): Promise<Response> {
   const url = new URL(req.url);
-  const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "20", 10), 100);
+  const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "20", 10) || 20, 100);
   const address = url.searchParams.get("address");
   const sort = (url.searchParams.get("sort") ?? "rank") as SortField;
 

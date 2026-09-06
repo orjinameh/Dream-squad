@@ -26,7 +26,7 @@ export interface ServerMatchState {
     roundNum: number;
     playerPrediction: "UP" | "DOWN" | null;
     rivalPrediction: "UP" | "DOWN" | null;
-    actual: "UP" | "DOWN";
+    actual: "UP" | "DOWN" | "FLAT";
     playerCorrect: boolean;
     rivalCorrect: boolean;
     roundWinner?: "player" | "rival" | "draw";

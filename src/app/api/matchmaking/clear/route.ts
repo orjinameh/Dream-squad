@@ -16,11 +16,12 @@ export const dynamic = "force-dynamic";
  */
 export async function POST(req: Request): Promise<Response> {
   const adminToken = process.env.ADMIN_TOKEN;
-  if (adminToken) {
-    const provided = req.headers.get("x-admin-token");
-    if (provided !== adminToken) {
-      return Response.json({ cleared: false, error: "unauthorized" }, { status: 401 });
-    }
+  if (!adminToken) {
+    return Response.json({ cleared: false, error: "ADMIN_TOKEN not configured — endpoint disabled" }, { status: 503 });
+  }
+  const provided = req.headers.get("x-admin-token");
+  if (provided !== adminToken) {
+    return Response.json({ cleared: false, error: "unauthorized" }, { status: 401 });
   }
 
   try {

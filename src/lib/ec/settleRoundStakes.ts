@@ -61,7 +61,7 @@ export async function settleRoundStakes(skipMatchIds?: string[]): Promise<number
         redeemTxHash = r?.txHash ?? undefined;
       }
 
-      const netPnlRaw = won ? qty - cost : voided ? qty / 2n - cost : -cost;
+      const netPnlRaw = won ? qty - cost : voided ? (qty + 1n) / 2n - cost : -cost;
       const settledAt = new Date().toISOString();
 
       // Write once (the `$exists: false` guard makes a concurrent duplicate

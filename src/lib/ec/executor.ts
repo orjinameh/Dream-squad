@@ -2,7 +2,7 @@ import { createPublicClient, http, defineChain } from "viem";
 import { SomniaMarkets, upProbability, type MarketOnchain, type UnifiedMarket, type BinaryMarket } from "@somnia-chain/markets-sdk";
 import {
   EC_ADDRESSES, EC_CHAIN, EC_CHAIN_ID, EC_INDEXER_URL, EC_RPC_URL, EC_RPC_WS_URL,
-  EC_COLLATERAL_DECIMALS, ecHttpTransport,
+  EC_COLLATERAL_DECIMALS, EC_ORACLE_FLAT_BAND, ecHttpTransport,
 } from "./config";
 
 /**
@@ -536,7 +536,7 @@ export async function resolveArenaOutcome(
   if (quote.yesPrice == null || !(quote.yesPrice > 0) || entryYesPrice == null || !(entryYesPrice > 0)) {
     return { actual: "FLAT", source: "direction", winningOutcomeRaw: null };
   }
-  const band = opts.flatBand ?? 0.0008;
+  const band = opts.flatBand ?? EC_ORACLE_FLAT_BAND;
   const diff = quote.yesPrice - entryYesPrice;
   return diff > band
     ? { actual: "UP", source: "direction", winningOutcomeRaw: null }

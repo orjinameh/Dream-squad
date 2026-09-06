@@ -1654,25 +1654,12 @@ function MatchResult({ game, onRematch, onChangePosition, onExit }: { game: Retu
   const draw = game.playerScore === game.rivalScore;
 
   // Per-round on-chain settlement: the server settles each round against the
-  // live YES-mid and credits wins to the round escrow. Read that on-chain truth
-  // and let the player collect it — the client consumes what the server/chain
-  // actually committed, never a local guess.
-  const roundEscrow = useRoundEscrow(game.matchId);
+  // live YES-mid and credits wins via direct tUSDC transfer. Compute total PnL
+  // from the round history (the authoritative source) instead of reading from
+  // the unused round escrow contract.
   const [withdrawing, setWithdrawing] = useState(false);
-  const roundEscrowWrites = useDreamEscrow(null, ROUND_ESCROW_ADDRESS);
-  const roundWonUsd = roundEscrow.withdrawable > 0n ? Number(roundEscrow.withdrawable) : 0;
-  const handleRoundWithdraw = async () => {
-    if (!game.matchId || roundWonUsd <= 0) return;
-    setWithdrawing(true);
-    try {
-      await roundEscrowWrites.roundWithdraw(game.matchId);
-      roundEscrow.refetch();
-    } catch (e) {
-      console.error("[round-escrow] withdraw failed", e);
-    } finally {
-      setWithdrawing(false);
-    }
-  };
+  const totalPnL = game.roundHistory.reduce((sum, r) => sum + (r.playerPnL ?? 0), 0);
+  const roundsWon = game.roundHistory.filter((r) => r.playerPnL != null && r.playerPnL > 0).length;
 
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "40px 20px" }}>
@@ -1768,36 +1755,23 @@ function MatchResult({ game, onRematch, onChangePosition, onExit }: { game: Retu
         </div>
       </div>
 
-      {/* Per-round on-chain settlement — read from the round escrow that the
-          server settled every round against, then collect here. */}
+      {/* Per-round on-chain settlement — computed from round history PnL. */}
       {game.matchId && (
         <div style={{
-          background: "rgba(4,120,87,0.12)", border: `2px solid ${roundWonUsd > 0 ? "#10b981" : "#1e293b"}`, borderRadius: 8,
+          background: "rgba(4,120,87,0.12)", border: `2px solid ${totalPnL > 0 ? "#10b981" : "#1e293b"}`, borderRadius: 8,
           padding: "12px 20px", marginBottom: 24, textAlign: "center", maxWidth: 340, width: "100%",
         }}>
           <div style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.1em", marginBottom: 6 }}>
             PER-ROUND ON-CHAIN SETTLEMENT
           </div>
-          <div style={{ fontSize: 22, fontWeight: 900, color: roundWonUsd > 0 ? "#10b981" : "#94a3b8", letterSpacing: "0.05em" }}>
-            {roundWonUsd > 0 ? `${roundWonUsd} tUSDC WON` : "0 tUSDC WON"}
+          <div style={{ fontSize: 22, fontWeight: 900, color: totalPnL > 0 ? "#10b981" : "#94a3b8", letterSpacing: "0.05em" }}>
+            {totalPnL > 0 ? `+${totalPnL.toFixed(2)} tUSDC WON` : totalPnL < 0 ? `${totalPnL.toFixed(2)} tUSDC` : "0 tUSDC P&L"}
           </div>
           <div style={{ fontSize: 10, color: "#64748b", marginTop: 4, lineHeight: 1.5 }}>
-            Each round settles on-chain against the live YES-mid. Wins are waiting
-            in the round escrow.
+            {roundsWon > 0
+              ? `${roundsWon} round${roundsWon > 1 ? "s" : ""} won — winnings transferred to your wallet instantly.`
+              : "Each round settles on-chain against the live YES-mid."}
           </div>
-          {roundWonUsd > 0 && (
-            <button
-              onClick={handleRoundWithdraw}
-              disabled={withdrawing || !roundEscrow.isMine}
-              style={{
-                marginTop: 10, padding: "10px 22px", fontSize: 13, fontWeight: 700,
-                borderRadius: 6, border: "none", cursor: roundEscrow.isMine ? "pointer" : "not-allowed",
-                color: "#042f2e", background: "linear-gradient(135deg, #34d399, #10b981)",
-              }}
-            >
-              {withdrawing ? "WITHDRAWING..." : !roundEscrow.isMine ? "NOT YOURS" : `\u2192 WITHDRAW ${roundWonUsd} tUSDC`}
-            </button>
-          )}
         </div>
       )}
 

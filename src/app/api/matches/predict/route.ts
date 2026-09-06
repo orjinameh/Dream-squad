@@ -8,7 +8,7 @@ import { readArenaPrice, resolveArenaOutcome, type ArenaRef } from "@/lib/ec/exe
 import { ecArenaForMatch, ecArenaForRound } from "@/lib/ec/arena";
 import { stakePlayerRoundOnDreamDEX } from "@/lib/ec/staker";
 import { payoutTusdc } from "@/lib/ec/payout";
-import { EC_COLLATERAL_DECIMALS } from "@/lib/ec/config";
+import { EC_COLLATERAL_DECIMALS, EC_ORACLE_FLAT_BAND } from "@/lib/ec/config";
 import { z } from "zod";
 import { isAddress } from "viem";
 import { randomBytes } from "node:crypto";
@@ -57,7 +57,7 @@ function computeLongestStreak(rounds: Array<{ playerCorrect: boolean }>): number
 
 // Flat band for the EC YES-price oracle (probability scale 0..1). Any round
 // whose YES mid moves by less than this is judged FLAT.
-const EC_ORACLE_FLAT_BAND = 0.0008;
+// EC_ORACLE_FLAT_BAND imported from @/lib/ec/config
 // A round must move past HALF the live bid-ask spread (in addition to the flat
 // band) to count as UP/DOWN. The venue books are thin with ~2-3% spreads and the
 // mid-of-book is stable within a 10s round, so a tiny absolute mid-delta is not a
@@ -232,8 +232,8 @@ async function resolveRound(match: any, now: Date): Promise<{
     const rivalPnL = rivalCorrect ? rivalStakeAmount : -rivalStakeAmount;
     const prevPlayerBalance = match.playerBalance ?? match.playerStartBalance ?? 100;
     const prevRivalBalance = match.rivalBalance ?? match.rivalStartBalance ?? 100;
-    const newPlayerBalance = prevPlayerBalance + playerPnL;
-    const newRivalBalance = prevRivalBalance + rivalPnL;
+    const newPlayerBalance = Math.max(0, prevPlayerBalance + playerPnL);
+    const newRivalBalance = Math.max(0, prevRivalBalance + rivalPnL);
 
     // Stamp P&L and live balance onto the round record for display.
     roundRecord.playerPnL = playerPnL;
@@ -538,6 +538,8 @@ export async function POST(req: Request): Promise<Response> {
       // later closes; the round never waits on the full venue window.
       const waitMs = claim.roundDeadline.getTime() - now.getTime();
       if (waitMs > 0 && process.env.DREAMDUEL_FAST_ROUNDS !== "1") {
+        // Reset to ACTIVE so the predict loop can re-claim once the deadline
+        // passes. The atomic findOneAndUpdate claim prevents concurrent execution.
         await Match.findOneAndUpdate(
           { _id: match._id, roundPhase: "EXECUTING" },
           { $set: { roundPhase: "ACTIVE" } },

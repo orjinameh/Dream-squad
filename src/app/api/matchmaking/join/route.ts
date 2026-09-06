@@ -149,6 +149,12 @@ export async function POST(req: Request): Promise<Response> {
         player2Char: opponent.charId || "dreamer",
         player1Ready: false,
         player2Ready: false,
+        funded: true,
+        playerAmountPerRound: 1,
+        playerStartBalance: position.amount,
+        rivalStartBalance: position.amount,
+        playerBalance: position.amount,
+        rivalBalance: position.amount,
         // Reference the player's active EC position (money lives there, not here).
         positionId: position._id,
         positionWindowId: position.windowId,

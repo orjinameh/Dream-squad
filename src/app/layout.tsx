@@ -41,7 +41,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               background: "rgba(34,211,238,0.1)", border: "1px solid rgba(34,211,238,0.4)",
               padding: "2px 8px", borderRadius: 999,
             }}>
-              BUILD {process.env.NEXT_PUBLIC_BUILD_TAG ?? "ec-oracle-36a5ad0"}
+              BUILD {process.env.NEXT_PUBLIC_BUILD_TAG ?? "v2"}
             </span>
             <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
               <a href="/" style={{ fontSize: 12, color: "#94a3b8", letterSpacing: "0.1em", textDecoration: "none" }}>ARENA</a>

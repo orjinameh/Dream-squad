@@ -82,7 +82,9 @@ function randomPrivateKey(): `0x${string}` {
   if (typeof crypto !== "undefined" && crypto.getRandomValues) {
     crypto.getRandomValues(bytes);
   } else {
-    for (let i = 0; i < 32; i++) bytes[i] = Math.floor(Math.random() * 256);
+    // Server-side: Node.js crypto is always available in Next.js API routes.
+    // This path should only be hit in edge cases (e.g. old browsers).
+    throw new Error("[ghost] crypto.getRandomValues unavailable — cannot generate secure key");
   }
   bytes[0] &= 0x7f; // keep < secp256k1 order domain
   bytes[31] |= 0x01;

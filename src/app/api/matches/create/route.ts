@@ -45,13 +45,15 @@ export async function POST(req: Request): Promise<Response> {
 
   try {
     await connectToDatabase();
-    const address = normalizeAddress(input.playerAddress).toLowerCase();
+    const address = normalizeAddress(input.playerAddress);
+    const lowerAddr = address.toLowerCase();
 
     // The player must have an ACTIVE EC POSITION to fight. Matches never create
     // a stake — they ride the position. No open position => no fight.
+    // Query with both casings (positions were historically stored lowercase).
     let position = input.positionId
-      ? await EcPosition.findOne({ _id: input.positionId, address, status: "ACTIVE" }).lean()
-      : await EcPosition.findOne({ address, status: "ACTIVE" }).sort({ createdAt: -1 }).lean();
+      ? await EcPosition.findOne({ _id: input.positionId, address: { $in: [address, lowerAddr] }, status: "ACTIVE" }).lean()
+      : await EcPosition.findOne({ address: { $in: [address, lowerAddr] }, status: "ACTIVE" }).sort({ createdAt: -1 }).lean();
 
     if (!position) {
       return jsonError(409, "no active EC position — stake one first on the POSITION screen");

@@ -77,6 +77,9 @@ export const EC_ADDRESSES: SomniaMarketsAddresses = {
 /** Collateral is tUSDC on testnet — 6 decimal-places. */
 export const EC_COLLATERAL_DECIMALS = 6;
 
+/** Flat-band threshold: rounds with |YES-delta| below this are FLAT (no hit). */
+export const EC_ORACLE_FLAT_BAND = 0.0008;
+
 /** Selectors the operator needs granted to trade a user's vault. */
 export const EC_ORDER_SELECTORS = [PLACE_ORDER_FOR_SELECTOR, CANCEL_ORDER_FOR_SELECTOR] as `0x${string}`[];
 

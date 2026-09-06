@@ -9,10 +9,8 @@ export const maxDuration = 300;
 function authorized(req: NextRequest): boolean {
   const secret = process.env.CRON_SECRET;
   if (!secret) return false;
-  return (
-    req.headers.get("authorization") === `Bearer ${secret}` ||
-    req.nextUrl.searchParams.get("secret") === secret
-  );
+  // Only accept Bearer header — query params leak secrets in logs/referrers.
+  return req.headers.get("authorization") === `Bearer ${secret}`;
 }
 
 /**

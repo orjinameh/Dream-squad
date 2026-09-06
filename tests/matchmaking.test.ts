@@ -25,6 +25,7 @@ const CB = "0x8617E340B3D01FA5F11F306F4090FD50E238070D";
 beforeAll(async () => {
   mongo = await MongoMemoryServer.create();
   process.env.MONGODB_URI = mongo.getUri();
+  process.env.ADMIN_TOKEN = "test-admin-token";
   await mongoose.connect(mongo.getUri());
 });
 
@@ -256,7 +257,10 @@ describe("PvP matchmaking (two devices)", () => {
       rivalPrediction: null,
     });
 
-    const res = await clearRoute(new Request("http://localhost/api/matchmaking/clear", { method: "POST" }));
+    const res = await clearRoute(new Request("http://localhost/api/matchmaking/clear", {
+      method: "POST",
+      headers: { "x-admin-token": "test-admin-token" },
+    }));
     const data = await res.json();
     expect(data.cleared).toBe(true);
 
