@@ -119,6 +119,11 @@ export async function POST(req: Request): Promise<Response> {
       // is no separate player→escrow pre-funding to wait on any more.
       funded: true,
       playerAmountPerRound: amountPerRound,
+      // Initialize live balances from the position amount.
+      playerStartBalance: position.amount,
+      rivalStartBalance: position.amount,
+      playerBalance: position.amount,
+      rivalBalance: position.amount,
       // Reference the player's active EC position (authorization/stats only).
       positionId: position._id,
       positionWindowId: position.windowId,

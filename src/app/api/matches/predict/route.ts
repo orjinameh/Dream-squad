@@ -7,6 +7,7 @@ import { getPvpWinPoints } from "@/lib/rank";
 import { readArenaPrice, resolveArenaOutcome, type ArenaRef } from "@/lib/ec/executor";
 import { ecArenaForMatch, ecArenaForRound } from "@/lib/ec/arena";
 import { stakePlayerRoundOnDreamDEX } from "@/lib/ec/staker";
+import { payoutTusdc } from "@/lib/ec/payout";
 import { EC_COLLATERAL_DECIMALS } from "@/lib/ec/config";
 import { z } from "zod";
 import { isAddress } from "viem";
@@ -98,6 +99,10 @@ async function resolveRound(match: any, now: Date): Promise<{
   newRivalStreak: number;
   matchDecided: boolean;
   winner: "player" | "rival" | "draw";
+  playerPnL: number;
+  rivalPnL: number;
+  newPlayerBalance: number;
+  newRivalBalance: number;
 }> {
   const roundNumber = match.currentRound;
 
@@ -220,10 +225,27 @@ async function resolveRound(match: any, now: Date): Promise<{
   const winner = newPlayerScore > newRivalScore ? "player"
     : newRivalScore > newPlayerScore ? "rival" : "draw";
 
-  return {
-    roundRecord, newPlayerScore, newRivalScore, newPlayerHP, newRivalHP,
-    newPlayerStreak, newRivalStreak, matchDecided, winner,
-  };
+    // Instant per-round P&L: player wins stake amount on correct call, loses on wrong.
+    const stakeAmount = match.playerAmountPerRound ?? 1;
+    const rivalStakeAmount = match.rivalAmountPerRound ?? 1;
+    const playerPnL = playerCorrect ? stakeAmount : -stakeAmount;
+    const rivalPnL = rivalCorrect ? rivalStakeAmount : -rivalStakeAmount;
+    const prevPlayerBalance = match.playerBalance ?? match.playerStartBalance ?? 100;
+    const prevRivalBalance = match.rivalBalance ?? match.rivalStartBalance ?? 100;
+    const newPlayerBalance = prevPlayerBalance + playerPnL;
+    const newRivalBalance = prevRivalBalance + rivalPnL;
+
+    // Stamp P&L and live balance onto the round record for display.
+    roundRecord.playerPnL = playerPnL;
+    roundRecord.rivalPnL = rivalPnL;
+    roundRecord.playerBalance = newPlayerBalance;
+    roundRecord.rivalBalance = newRivalBalance;
+
+    return {
+      roundRecord, newPlayerScore, newRivalScore, newPlayerHP, newRivalHP,
+      newPlayerStreak, newRivalStreak, matchDecided, winner,
+      playerPnL, rivalPnL, newPlayerBalance, newRivalBalance,
+    };
 }
 
 /** Remove the per-round P&L helpers — matches are stats/rank only. */
@@ -280,7 +302,7 @@ async function updatePlayerStatsAtomic(match: any, allRounds: any[], winner: str
       },
       $max: { longestStreak: p1LongestStreak },
       $addToSet: { processedMatches: matchId },
-      $set: { lastPlayedAt: now, favoriteChar: match.playerChar },
+      $set: { lastPlayedAt: now, favoriteChar: match.playerChar, balance: match.playerBalance ?? match.playerStartBalance ?? 100 },
     },
     { upsert: true },
   );
@@ -320,7 +342,7 @@ async function updatePlayerStatsAtomic(match: any, allRounds: any[], winner: str
         },
         $max: { longestStreak: p2LongestStreak },
         $addToSet: { processedMatches: matchId },
-        $set: { lastPlayedAt: now, favoriteChar: match.player2Char || "dreamer" },
+        $set: { lastPlayedAt: now, favoriteChar: match.player2Char || "dreamer", balance: match.rivalBalance ?? match.rivalStartBalance ?? 100 },
       },
       { upsert: true },
     );
@@ -581,7 +603,7 @@ export async function POST(req: Request): Promise<Response> {
       // Execute and resolve
       try {
         const result = await resolveRound(claim, now);
-        const { roundRecord, newPlayerScore, newRivalScore, newPlayerHP, newRivalHP, newPlayerStreak, newRivalStreak, matchDecided, winner } = result;
+        const { roundRecord, newPlayerScore, newRivalScore, newPlayerHP, newRivalHP, newPlayerStreak, newRivalStreak, matchDecided, winner, playerPnL, rivalPnL, newPlayerBalance, newRivalBalance } = result;
 
         const nextDeadline = new Date(now.getTime() + ROUND_TIMINGS.COMMIT_DURATION_MS);
         const nextStatus = matchDecided ? "COMPLETED" : "ACTIVE";
@@ -600,6 +622,9 @@ export async function POST(req: Request): Promise<Response> {
             rivalHP: newRivalHP,
             playerStreak: newPlayerStreak,
             rivalStreak: newRivalStreak,
+            playerBalance: newPlayerBalance,
+            rivalBalance: newRivalBalance,
+            ...(matchDecided ? { playerFinalBalance: newPlayerBalance, rivalFinalBalance: newRivalBalance } : {}),
             roundPhase: nextRoundPhase,
             status: nextStatus,
             priceModel: {
@@ -629,6 +654,17 @@ export async function POST(req: Request): Promise<Response> {
             }),
           },
         });
+
+        // INSTANT PAYOUT: fire-and-forget tUSDC transfer to the player on a
+        // round win. The operator recoups later via settleRoundStakes().
+        if (playerPnL > 0 && claim.playerAddress) {
+          payoutTusdc(claim.playerAddress as `0x${string}`, playerPnL)
+            .then(({ txHash, error }) => {
+              if (error) console.error("[predict] instant payout failed", error);
+              else if (txHash) console.log(`[predict] paid ${playerPnL} tUSDC to ${claim.playerAddress} — tx ${txHash}`);
+            })
+            .catch((err) => console.error("[predict] payout error", err));
+        }
 
         // Idempotent stats update for completed matches. Combat matches are
         // stats/rank/bragging only — money settles once on the EC position, not
@@ -818,10 +854,12 @@ function buildState(match: any, serverTime: Date): MatchStateResponse {
       prices: currentCheckpoint.prices,
       actual: currentCheckpoint.actual,
     } : undefined,
-    playerBalance: fixedBalance,
-    rivalBalance: fixedBalance,
-    playerStartBalance: fixedBalance,
-    rivalStartBalance: fixedBalance,
+    // Live per-round balance from the match document (updated after each round
+    // by resolveRound). Falls back to the fixed position amount for legacy matches.
+    playerBalance: match.playerBalance ?? match.playerStartBalance ?? fixedBalance,
+    rivalBalance: match.rivalBalance ?? match.rivalStartBalance ?? fixedBalance,
+    playerStartBalance: match.playerStartBalance ?? fixedBalance,
+    rivalStartBalance: match.rivalStartBalance ?? fixedBalance,
     lastRound,
   };
 }

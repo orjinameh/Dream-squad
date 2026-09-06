@@ -120,6 +120,8 @@ export interface MatchDoc {
   // Trading balance lifecycle (STT)
   playerStartBalance: number;
   rivalStartBalance: number;
+  playerBalance: number;
+  rivalBalance: number;
   // Per-player independent trade amounts (STT)
   playerAmountPerRound: number;
   rivalAmountPerRound: number;
@@ -256,6 +258,8 @@ const MatchSchema = new Schema<MatchDoc>(
     // Trading balance lifecycle (STT)
     playerStartBalance: { type: Number, default: 100 },
     rivalStartBalance: { type: Number, default: 100 },
+    playerBalance: { type: Number, default: 100 },
+    rivalBalance: { type: Number, default: 100 },
     playerFinalBalance: { type: Number },
     rivalFinalBalance: { type: Number },
     priceModel: { type: Schema.Types.Mixed },

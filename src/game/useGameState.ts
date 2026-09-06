@@ -552,24 +552,26 @@ export function useGameState(): GameHook {
   }, [playCombatAnimation, playerHP, rivalHP, playerScore, rivalScore]);
 
   // --- BOT COUNTDOWN TIMER ---
+  // --- BOT ROUND TIMER (10s ACTIVE window) ---
   // Visual countdown only. Server resolves the round via predict endpoint.
+  // Uses the server's roundDeadline (authoritative) but respects the local
+  // override constant (__ROUND_TIME__) when it's shorter — this lets fast
+  // timer tests control the loop while production always syncs to the server.
   useEffect(() => {
     if (!isBotMatch || phase !== "ROUND_ACTIVE") return;
-    // Per-round financial model: money custodies via the venue through the
-    // operator; there is no separate player→escrow ghost deposit to wait for.
-    // The round clock therefore runs unconditionally — no `funded` hold (the
-    // legacy flag would freeze bot rounds forever for pre-fix matches). The
-    // timer drives `attemptSubmit` so the server advances cleanly round to
-    // round.
     if (botTimerRef.current) return;
 
-    const roundTime = (globalThis as any).__ROUND_TIME__ ?? ROUND_TIME;
-    const deadline = Date.now() + roundTime * 1000;
-    setTimeLeft(roundTime);
+    const localMs = ((globalThis as any).__ROUND_TIME__ ?? ROUND_TIME) * 1000;
+    const serverMs = mp.state.serverState?.roundDeadline
+      ? Math.max(0, new Date(mp.state.serverState.roundDeadline).getTime() - Date.now())
+      : Infinity;
+    const deadlineMs = Date.now() + Math.min(localMs, serverMs);
+    const roundTimeSec = Math.max(0, (deadlineMs - Date.now()) / 1000);
+    setTimeLeft(roundTimeSec);
     let resolved = false;
 
     const tick = () => {
-      const remaining = Math.max(0, (deadline - Date.now()) / 1000);
+      const remaining = Math.max(0, (deadlineMs - Date.now()) / 1000);
       setTimeLeft(+remaining.toFixed(2));
 
       if (remaining <= 0 && !resolved) {
@@ -581,17 +583,9 @@ export function useGameState(): GameHook {
         setPlayerCharState("locked");
         setRivalCharState("locked");
 
-        // The player's actual move for this round is their locked call (or a
-        // per-round flip). NEVER invent a random UP/DOWN for them — the round
-        // must resolve against the input the player actually made. If they made
-        // no call, submit a no-move so the server records an honest no-op (no
-        // hit) at the deadline instead of a fabricated call that could land an
-        // unearned hit.
-
         // Submit to server — server resolves everything. Use a BOUNDED retry
         // so a transient network/5xx failure cannot leave the round frozen at
-        // ROUND_LOCKED. After a few attempts, force a local advance so the
-        // game ALWAYS flows to the next round (never freezes).
+        // ROUND_LOCKED.
         const pred = (localPredictionRef.current as "UP" | "DOWN" | null) ?? undefined;
         setExecutionStatus("executing");
         roundPhaseRef.current = "SUBMITTING";
@@ -613,12 +607,10 @@ export function useGameState(): GameHook {
               roundPhaseRef.current = "WAITING_SERVER";
               advanceAfterSubmit(d);
             } else if (roundPhaseRef.current === "SUBMITTING") {
-              // No resolved round yet — retry after a short delay
               retryOrForce();
             }
           }).catch(() => {
             if (roundPhaseRef.current === "SUBMITTING") {
-              // Wait for the server's sticky-close to pass, then retry
               retryOrForce();
             }
           });
@@ -638,25 +630,25 @@ export function useGameState(): GameHook {
   // During the COMMIT phase, the player has 5s to pick Attack (UP) / Defend
   // (DOWN). At expiry the default/locked call is submitted to the server,
   // which transitions the round to the 10s ACTIVE combat window.
+  // Uses server roundDeadline when it's closer than the local constant.
   useEffect(() => {
     if (!isBotMatch || phase !== "ROUND_COMMIT") return;
     if (botTimerRef.current) return;
 
-    const commitTime = (globalThis as any).__COMMIT_TIME__ ?? COMMIT_TIME;
-    const deadline = Date.now() + commitTime * 1000;
-    setTimeLeft(commitTime);
+    const localMs = ((globalThis as any).__COMMIT_TIME__ ?? COMMIT_TIME) * 1000;
+    const serverMs = mp.state.serverState?.roundDeadline
+      ? Math.max(0, new Date(mp.state.serverState.roundDeadline).getTime() - Date.now())
+      : Infinity;
+    const deadlineMs = Date.now() + Math.min(localMs, serverMs);
+    const commitTimeSec = Math.max(0, (deadlineMs - Date.now()) / 1000);
+    setTimeLeft(commitTimeSec);
 
     const tick = () => {
-      const remaining = Math.max(0, (deadline - Date.now()) / 1000);
+      const remaining = Math.max(0, (deadlineMs - Date.now()) / 1000);
       setTimeLeft(+remaining.toFixed(2));
 
       if (remaining <= 0) {
         if (botTimerRef.current) { clearInterval(botTimerRef.current); botTimerRef.current = null; }
-        // Submit whatever the player picked (or the default locked call) to
-        // trigger the COMMIT→ACTIVE server transition. Bounded retry: a
-        // transient 500/network failure must not strand the round in COMMIT
-        // forever — the server advance is what opens the ACTIVE window. The
-        // server-synced effect picks up the ACTIVE state on the next poll.
         const pred = localPredictionRef.current as "UP" | "DOWN" | null;
         let commitAttempts = 0;
         const attemptCommit = (): void => {
