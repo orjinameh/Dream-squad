@@ -2,6 +2,7 @@ import { connectToDatabase } from "@/db/connect";
 import { PlayerStats } from "@/db/models/PlayerStats";
 import { jsonError } from "@/lib/utils";
 import { getRankLabel } from "@/lib/rank";
+import { isAddress } from "viem";
 
 export const dynamic = "force-dynamic";
 
@@ -9,9 +10,14 @@ type SortField = "rank" | "wins" | "accuracy" | "streak";
 
 export async function GET(req: Request): Promise<Response> {
   const url = new URL(req.url);
-  const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "20", 10) || 20, 100);
+  const rawLimit = Number.parseInt(url.searchParams.get("limit") ?? "20", 10);
+  const limit = Math.min(Math.max(Number.isFinite(rawLimit) ? rawLimit : 20, 1), 100);
   const address = url.searchParams.get("address");
-  const sort = (url.searchParams.get("sort") ?? "rank") as SortField;
+  const rawSort = url.searchParams.get("sort") ?? "rank";
+  const allowedSorts = ["rank", "wins", "accuracy", "streak"] as const;
+  if (!allowedSorts.includes(rawSort as SortField)) return jsonError(400, "invalid sort (rank|wins|accuracy|streak)");
+  const sort = rawSort as SortField;
+  if (address && !isAddress(address)) return jsonError(400, "invalid address");
 
   try {
     await connectToDatabase();

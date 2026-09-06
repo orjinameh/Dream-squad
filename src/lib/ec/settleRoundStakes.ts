@@ -34,8 +34,17 @@ export async function settleRoundStakes(skipMatchIds?: string[]): Promise<number
     for (let i = 0; i < checkpoints.length; i++) {
       const cp = checkpoints[i];
       if (!cp?.arena?.marketId || !cp.stakeTxHash || cp.stakeSettlement) continue;
-      const qty = cp.stakeQty ? BigInt(cp.stakeQty) : null;
+      const qty = (() => {
+        try { return cp.stakeQty ? BigInt(cp.stakeQty) : null; }
+        catch { return null; }
+      })();
       if (qty == null || qty <= 0n) continue;
+      // Cost is required to compute honest net P&L — a missing cost would
+      // fabricate `net = qty` free money. Skip until the stake write lands.
+      if (!cp.stakeCostRaw) continue;
+      let cost: bigint;
+      try { cost = BigInt(cp.stakeCostRaw); }
+      catch { continue; }
 
       const arena = {
         marketId: cp.arena.marketId,
@@ -46,14 +55,23 @@ export async function settleRoundStakes(skipMatchIds?: string[]): Promise<number
       const st = await readArenaSettlement(arena).catch(() => null);
       if (!st?.isResolved) continue;
 
-      const side = cp.stakeSide ?? (match.rounds?.[i]?.playerPrediction ?? "UP");
+      // Never invent a side: a missing stakeSide + missing round prediction
+      // means we cannot know won/lost — defaulting to UP would invert DOWN wins.
+      const sideRaw = cp.stakeSide ?? (match.rounds?.[i]?.playerPrediction ?? null);
+      if (sideRaw !== "UP" && sideRaw !== "DOWN") continue;
+      const side = sideRaw;
       const upWon = st.winningOutcome === 0;
       const voided = st.isVoided === true;
       const won = !voided && (side === "UP" ? upWon : !upWon);
-      const cost = cp.stakeCostRaw ? BigInt(cp.stakeCostRaw) : 0n;
 
       // Won or refunded → redeem the player's side. The win side redeems 1:1;
       // a voided market refunds 0.5 per token whichever side you hold.
+      // Claim the settlement slot FIRST so concurrent workers can't double-redeem.
+      const claimed = await Match.updateOne(
+        { _id: match._id, [`priceModel.checkpoints.${i}.stakeSettlement`]: { $exists: false } },
+        { $set: { [`priceModel.checkpoints.${i}.stakeSettlement`]: { won: false, voided: false, netPnlRaw: "0", settledAt: new Date().toISOString(), settling: true } } },
+      );
+      if (claimed.modifiedCount !== 1) continue;
       let redeemTxHash: string | undefined;
       if (won || voided) {
         const outcomeIdx = side === "UP" ? 0 : 1;
@@ -61,13 +79,12 @@ export async function settleRoundStakes(skipMatchIds?: string[]): Promise<number
         redeemTxHash = r?.txHash ?? undefined;
       }
 
-      const netPnlRaw = won ? qty - cost : voided ? (qty + 1n) / 2n - cost : -cost;
+      const netPnlRaw = won ? qty - cost : voided ? qty / 2n - cost : -cost;
       const settledAt = new Date().toISOString();
 
-      // Write once (the `$exists: false` guard makes a concurrent duplicate
-      // settle/redeem a no-op).
+      // Finalize (overwrite the settling placeholder).
       const res = await Match.updateOne(
-        { _id: match._id, [`priceModel.checkpoints.${i}.stakeSettlement`]: { $exists: false } },
+        { _id: match._id },
         {
           $set: {
             [`priceModel.checkpoints.${i}.stakeSettlement`]: {

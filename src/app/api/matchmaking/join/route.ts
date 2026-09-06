@@ -6,6 +6,8 @@ import { normalizeAddress } from "@/lib/addresses";
 import { jsonError } from "@/lib/utils";
 import { expireStaleWaitingMatches } from "@/lib/matchExpiry";
 import { randomUUID } from "node:crypto";
+import { isAddress } from "viem";
+import { CHARACTERS } from "@/game/characters";
 
 export const dynamic = "force-dynamic";
 
@@ -18,16 +20,21 @@ export async function POST(req: Request): Promise<Response> {
   const rounds = body.rounds as number | undefined;
   const charId = body.charId as string | undefined;
 
-  if (!address || !address.startsWith("0x")) {
+  if (!address || !isAddress(address)) {
     return jsonError(400, "valid wallet address required");
   }
   if (![3, 5, 7, 11].includes(rounds as number)) {
     return jsonError(400, "rounds must be 3, 5, 7, or 11");
   }
+  const validCharIds = new Set(CHARACTERS.map((c) => c.id));
+  if (charId && (typeof charId !== "string" || charId.length > 32 || !validCharIds.has(charId))) {
+    return jsonError(400, "invalid charId");
+  }
 
   try {
     await connectToDatabase();
     const addr = normalizeAddress(address);
+    const lower = addr.toLowerCase();
 
     // Check for existing active match — do not allow queueing if already in a
     // match, UNLESS it's an abandoned PvP match still WAITING with no round
@@ -36,7 +43,7 @@ export async function POST(req: Request): Promise<Response> {
     await expireStaleWaitingMatches(addr);
 
     const activeMatch = await Match.findOne({
-      $or: [{ playerAddress: addr }, { player2Address: addr }],
+      $or: [{ playerAddress: { $in: [addr, lower] } }, { player2Address: { $in: [addr, lower] } }],
       status: "ACTIVE",
     }).lean();
 
@@ -50,7 +57,7 @@ export async function POST(req: Request): Promise<Response> {
 
     // Must have an ACTIVE EC POSITION to fight (PvP rides the position, same as
     // the bot match path in create/route.ts). No position => no queueing.
-    const position = await EcPosition.findOne({ address: addr.toLowerCase(), status: "ACTIVE" }).sort({ createdAt: -1 }).lean();
+    const position = await EcPosition.findOne({ address: lower, status: "ACTIVE" }).sort({ createdAt: -1 }).lean();
     if (!position) {
       return jsonError(409, "no active EC position — stake one first on the POSITION screen");
     }
@@ -61,8 +68,9 @@ export async function POST(req: Request): Promise<Response> {
     // Ensure the player has a fresh "searching" queue entry (create if missing,
     // refresh if stale/timed-out, keep if valid). There may be at most one
     // "searching" entry per address (partial unique index).
+    // Queue stores lowercase — always query/create with lowercase.
     let queueId: string;
-    const existing = await MatchQueue.findOne({ address: addr, status: "searching" }).lean() as { _id: string; rounds: number; charId: string; createdAt: Date } | null;
+    const existing = await MatchQueue.findOne({ address: lower, status: "searching" }).lean() as { _id: string; rounds: number; charId: string; createdAt: Date } | null;
 
     if (existing) {
       const age = Date.now() - new Date(existing.createdAt).getTime();
@@ -73,7 +81,7 @@ export async function POST(req: Request): Promise<Response> {
           { $set: { status: "matched", updatedAt: new Date() } },
         );
         queueId = randomUUID();
-        await MatchQueue.create({ _id: queueId, address: addr, rounds: rounds!, charId: charId || "dreamer", status: "searching" });
+        await MatchQueue.create({ _id: queueId, address: lower, rounds: rounds!, charId: charId || "dreamer", status: "searching" });
       } else {
         queueId = existing._id;
         if (existing.rounds !== rounds || existing.charId !== charId) {
@@ -82,9 +90,9 @@ export async function POST(req: Request): Promise<Response> {
       }
     } else {
       // Clean up any fully stale entries for this player, then create fresh.
-      await MatchQueue.deleteMany({ address: addr, status: { $in: ["searching", "matched"] } });
+      await MatchQueue.deleteMany({ address: { $in: [addr, lower] }, status: { $in: ["searching", "matched"] } });
       queueId = randomUUID();
-      await MatchQueue.create({ _id: queueId, address: addr, rounds: rounds!, charId: charId || "dreamer", status: "searching" });
+      await MatchQueue.create({ _id: queueId, address: lower, rounds: rounds!, charId: charId || "dreamer", status: "searching" });
     }
 
     // ALWAYS attempt to pair after ensuring the queue entry, so re-joining or a
@@ -93,7 +101,7 @@ export async function POST(req: Request): Promise<Response> {
       _id: { $ne: queueId },
       rounds: rounds,
       status: "searching",
-      address: { $ne: addr },
+      address: { $ne: lower, $nin: [addr] },
       createdAt: { $gte: new Date(Date.now() - QUEUE_TIMEOUT_MS) },
     }).sort({ createdAt: 1 }).lean() as { _id: string; address: string; charId: string } | null;
 
@@ -182,7 +190,6 @@ export async function POST(req: Request): Promise<Response> {
     return Response.json({ status: "searching", queueId, age: ageNow });
   } catch (err) {
     console.error("matchmaking join failed", err);
-    const detail = err instanceof Error ? err.message : "unknown error";
-    return jsonError(500, `matchmaking failed: ${detail}`);
+    return jsonError(500, "matchmaking failed — try again shortly");
   }
 }

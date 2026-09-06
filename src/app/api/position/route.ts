@@ -12,7 +12,7 @@ const openSchema = z.object({
   address: z.string().refine((v) => isAddress(v), "invalid address"),
   direction: z.enum(["UP", "DOWN"]),
   market: z.enum(["BTC", "ETH"]),
-  amount: z.number().positive(),
+  amount: z.number().positive().finite().max(100000),
 });
 
 const patchSchema = z.object({
@@ -101,7 +101,10 @@ export async function GET(req: Request) {
       }
     }
 
-    const entryPrice = pos.entryPrice ? BigInt(pos.entryPrice) : null;
+    const entryPrice = (() => {
+      try { return pos.entryPrice && /^\d+$/.test(pos.entryPrice) ? BigInt(pos.entryPrice) : null; }
+      catch { return null; }
+    })();
     const stakeRaw = onchain?.balanceRaw
       ? BigInt(onchain.balanceRaw)
       : typeof pos.amount === "number"
@@ -225,14 +228,23 @@ export async function PATCH(req: Request) {
   const input = parsed.data;
   try {
     await connectToDatabase();
+    // Only the empty slot can be written once — prevents arbitrary overwrite of
+    // explorer links with fake hashes.
     const updated = await EcPosition.findOneAndUpdate(
-      { _id: input.positionId, address: normalizeAddress(input.address).toLowerCase() },
+      { _id: input.positionId, address: normalizeAddress(input.address).toLowerCase(), stakeTxHash: { $exists: false } },
       { $set: { stakeTxHash: input.stakeTxHash } },
       { new: true },
     ).lean();
-    if (!updated) return jsonError(404, "position not found");
+    if (!updated) {
+      // Distinguish missing vs already-set for a truthful status code.
+      const existing = await EcPosition.findOne({ _id: input.positionId, address: normalizeAddress(input.address).toLowerCase() }).lean();
+      if (!existing) return jsonError(404, "position not found");
+      return Response.json({ position: { id: existing._id, stakeTxHash: (existing as { stakeTxHash?: string }).stakeTxHash ?? null } });
+    }
     return Response.json({ position: { id: updated._id, stakeTxHash: updated.stakeTxHash ?? null } });
-  } catch (err) {
+  } catch (err: unknown) {
+    // Malformed ObjectId/CastError → 400, not 500.
+    if ((err as { name?: string })?.name === "CastError") return jsonError(400, "invalid positionId");
     console.error("record stake tx failed", err);
     return jsonError(500, "failed to record stake transaction");
   }

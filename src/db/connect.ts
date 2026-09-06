@@ -25,8 +25,18 @@ export async function connectToDatabase(): Promise<typeof mongoose> {
     cache.promise = mongoose.connect(uri, {
       dbName: process.env.MONGODB_DB ?? "dreamsquad",
       bufferCommands: false,
+      maxPoolSize: 10,
+      serverSelectionTimeoutMS: 5000,
+      socketTimeoutMS: 45000,
     });
   }
-  cache.conn = await cache.promise;
+  try {
+    cache.conn = await cache.promise;
+  } catch (err) {
+    // Clear rejected promise so the next call retries instead of re-throwing
+    // the same stale rejection forever.
+    cache.promise = null;
+    throw err;
+  }
   return cache.conn;
 }

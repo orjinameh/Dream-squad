@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { Schema, model, Types } from "mongoose";
+import { Schema, model } from "mongoose";
 import type { EcArenaMarket } from "@/lib/ec/executor";
 
 export const POSITION_STATUS = ["ACTIVE", "SETTLED", "FAILED"] as const;
@@ -52,23 +52,23 @@ export interface EcPositionDoc {
 export const EcPositionSchema = new Schema<EcPositionDoc>(
   {
     _id: { type: String, default: () => randomUUID() },
-    address: { type: String, required: true, index: true },
+    address: { type: String, required: true, index: true, lowercase: true, trim: true },
     direction: { type: String, enum: ["UP", "DOWN"], required: true },
-    market: { type: String, required: true },
-    amount: { type: Number, required: true },
+    market: { type: String, required: true, maxlength: 16 },
+    amount: { type: Number, required: true, min: 0, max: 100000 },
     arena: { type: Schema.Types.Mixed },
-    arenaOpen: { type: Number },
-    entryPrice: { type: String },
+    arenaOpen: { type: Number, min: 0 },
+    entryPrice: { type: String, match: /^\d+$/ },
     escrowAddress: { type: String },
     status: { type: String, enum: POSITION_STATUS, default: "ACTIVE" },
     windowId: { type: String },
-    stakeTxHash: { type: String },
+    stakeTxHash: { type: String, maxlength: 66 },
     windowOpenAt: { type: Date },
     windowCloseAt: { type: Date },
     settledWon: { type: Boolean },
     settledAt: { type: Date },
     settledOnchain: { type: Boolean, default: false },
-    matchCount: { type: Number, default: 0 },
+    matchCount: { type: Number, default: 0, min: 0 },
     createdAt: { type: Date, default: () => new Date() },
   },
   { versionKey: false },
@@ -76,5 +76,6 @@ export const EcPositionSchema = new Schema<EcPositionDoc>(
 
 EcPositionSchema.index({ address: 1, status: 1 });
 EcPositionSchema.index({ status: 1, windowCloseAt: 1 });
+EcPositionSchema.index({ windowId: 1 }, { sparse: true });
 
 export const EcPosition = model<EcPositionDoc>("EcPosition", EcPositionSchema, "ecpositions");

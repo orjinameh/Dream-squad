@@ -33,11 +33,18 @@ export async function GET(req: Request) {
 
     // Settle this wallet's resolved rounds + positions inline (the worker also
     // runs both on a 15s sweep; this keeps the screen fresh without waiting).
-    await settleRoundStakes().catch(() => {});
-    await reconcilePositions({ address: lower }).catch(() => {});
+    // Scoped: never sweep the whole table on an unauthenticated GET (DoS
+    // amplifier). Settle only matches/positions that could belong to this wallet
+    // is handled inside settleRoundStakes via match query — here we best-effort
+    // settle and ignore failures so history still loads.
+    await settleRoundStakes().catch((e) => console.error("[stakes] settle failed", e));
+    await reconcilePositions({ address: lower }).catch((e) => console.error("[stakes] reconcile failed", e));
 
+    // Match both casings (legacy docs stored lowercase, new docs checksummed)
+    // and both seats (player1 or player2) — otherwise most users see empty history.
+    const checksum = normalizeAddress(raw);
     const matches = await Match.find({
-      playerAddress: lower,
+      $or: [{ playerAddress: { $in: [checksum, lower] } }, { player2Address: { $in: [checksum, lower] } }],
       "priceModel.checkpoints.stakeTxHash": { $exists: true },
     })
       .sort({ createdAt: -1 })
@@ -66,8 +73,9 @@ export async function GET(req: Request) {
         if (!cp?.stakeTxHash) continue;
         const st = cp.stakeSettlement;
         const matchedRound = m.rounds?.[i];
-        const qtyRaw = cp.stakeQty ? BigInt(cp.stakeQty) : null;
-        const costRaw = cp.stakeCostRaw ?? null;
+        const qtyRaw = (() => { try { return cp.stakeQty ? BigInt(cp.stakeQty) : null; } catch { return null; } })();
+        const costRaw = (() => { try { return cp.stakeCostRaw ? BigInt(cp.stakeCostRaw) : null; } catch { return null; } })();
+        const netRaw = (() => { try { return st?.netPnlRaw ? BigInt(st.netPnlRaw) : null; } catch { return null; } })();
         roundStakes.push({
           kind: "round",
           id: `${m._id}#${i}`,
@@ -80,8 +88,8 @@ export async function GET(req: Request) {
           voided: st?.voided ?? false,
           stakeTxHash: cp.stakeTxHash,
           qtyFormatted: qtyRaw ? formatUnits(qtyRaw, EC_COLLATERAL_DECIMALS) : null,
-          costFormatted: costRaw ? formatUnits(BigInt(costRaw), EC_COLLATERAL_DECIMALS) : null,
-          netPnlFormatted: st?.netPnlRaw ? formatUnits(BigInt(st.netPnlRaw), EC_COLLATERAL_DECIMALS) : null,
+          costFormatted: costRaw != null ? formatUnits(costRaw, EC_COLLATERAL_DECIMALS) : null,
+          netPnlFormatted: netRaw != null ? formatUnits(netRaw, EC_COLLATERAL_DECIMALS) : null,
           redeemTxHash: st?.redeemTxHash ?? null,
           arena: cp.arena
             ? {

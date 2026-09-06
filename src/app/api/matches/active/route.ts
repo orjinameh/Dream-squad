@@ -3,13 +3,14 @@ import { Match } from "@/db/models/Match";
 import { normalizeAddress } from "@/lib/addresses";
 import { jsonError } from "@/lib/utils";
 import { expireStaleWaitingMatches } from "@/lib/matchExpiry";
+import { isAddress } from "viem";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(req: Request): Promise<Response> {
   const url = new URL(req.url);
   const address = url.searchParams.get("address");
-  if (!address || !address.startsWith("0x")) return jsonError(400, "address required");
+  if (!address || !isAddress(address)) return jsonError(400, "valid address required");
 
   try {
     await connectToDatabase();

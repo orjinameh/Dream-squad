@@ -13,7 +13,7 @@ import { useAccount } from "wagmi";
 // beforeEach to speed up a full bot match. Read at call time (not module load)
 // so overrides apply regardless of import order.
 const OVD = (key: string, def: number) => (globalThis as any)[`__${key}__`] ?? def;
-const ROUND_TIME = (globalThis as any).__ROUND_TIME__ ?? 10;
+const getRoundTime = () => (globalThis as any).__ROUND_TIME__ ?? 10;
 const COMMIT_TIME = 5;
 
 const MAX_HP = 100;
@@ -153,7 +153,7 @@ export function useGameState(): GameHook {
   const [rivalName, setRivalName] = useState("");
   const [playerStreak, setPlayerStreak] = useState(0);
   const [rivalStreak, setRivalStreak] = useState(0);
-  const [timeLeft, setTimeLeft] = useState(ROUND_TIME);
+  const [timeLeft, setTimeLeft] = useState(getRoundTime);
   const [playerPrediction, setPlayerPrediction] = useState<Prediction>(null);
   const [localPrediction, setLocalPrediction] = useState<Prediction>(null);
   const [roundResult, setRoundResult] = useState<RoundResult | null>(null);
@@ -259,6 +259,7 @@ export function useGameState(): GameHook {
   const phaseTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const roundProcessedRef = useRef<number[]>([]);
   const botTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const botCommitTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pvpTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const enteredFromIntroRef = useRef(false);
   const modeRef = useRef<GameMode | null>(null);
@@ -292,6 +293,7 @@ export function useGameState(): GameHook {
     phaseTimersRef.current.forEach(clearTimeout);
     phaseTimersRef.current = [];
     if (botTimerRef.current) { clearInterval(botTimerRef.current); botTimerRef.current = null; }
+    if (botCommitTimerRef.current) { clearInterval(botCommitTimerRef.current); botCommitTimerRef.current = null; }
     if (pvpTimerRef.current) { clearInterval(pvpTimerRef.current); pvpTimerRef.current = null; }
   }, []);
 
@@ -460,15 +462,13 @@ export function useGameState(): GameHook {
       } else {
         setPlayerCharState("idle"); setRivalCharState("idle");
         setRoundResult(null); setLastDamage(null);
-        // Per-round binary semantics: the player's pick is NOT locked to the
-        // pre-match call. Carry the previous round's position forward as the new
-        // round's default (so an untouched fight still resolves), but never
-        // overwrite an in-progress per-round flip. The server resolves each round
-        // against the per-round playerPrediction it stored, so a different
-        // direction per round is a genuine 7-trades-in-1-match.
+        // Traditional binary: each round's COMMIT is a fresh, independent stake
+        // choice. Carry the previous round's side as the next COMMIT's default
+        // (so an untouched fight still locks something), but the player must
+        // confirm/change it inside the 5s COMMIT — ACTIVE is locked.
         setLocalPrediction((prev) => prev ?? storedPredictionRef.current);
         setPlayerPrediction((prev) => prev ?? storedPredictionRef.current);
-        setLockedPrediction(storedPredictionRef.current);
+        setLockedPrediction((prev) => prev ?? storedPredictionRef.current);
         setPredictionUIStatus("idle");
         const nextRound = rNum + 1;
         setDisplayRound(nextRound);
@@ -516,44 +516,24 @@ export function useGameState(): GameHook {
 
   // --- FORCED LOCAL ADVANCE (freeze-proof fallback) ---
   // If the server predict fails/hangs, never leave the round stuck on
-  // "predictions locked". Resolve this round locally as a defensive draw (no
-  // damage) and advance to the next round. Server resolution remains the
-  // primary path; this only guards the rare failure so the game always flows.
+  // "predictions locked". The SERVER is authoritative — never fabricate a FLAT
+  // draw and mark the round processed (that would shadow the real server round
+  // forever on rehydrate). Instead surface the failure and unlock the UI so the
+  // player can retry; the next successful predict resolves authoritatively.
   const forceLocalAdvance = useCallback(() => {
     if (roundPhaseRef.current !== "SUBMITTING") return;
     if (roundProcessedRef.current.includes(activeRoundNumRef.current)) return;
-    roundProcessedRef.current.push(activeRoundNumRef.current);
-    roundPhaseRef.current = "WAITING_SERVER";
+    // Do NOT push to roundProcessedRef and do NOT synthesize a round — leave
+    // the round unresolved so the server's real resolution still applies.
+    roundPhaseRef.current = "LOCKED";
+    setExecutionStatus("failed");
+    setExecutionError("Round submit failed — check connection and retry. Your pick is kept.");
+  }, []);
 
-    const m = localMatchRef.current;
-    const rNum = activeRoundNumRef.current;
-    setExecutionStatus("success");
-    playCombatAnimation({
-      roundNum: rNum,
-      actual: "FLAT",
-      playerPrediction: localPredictionRef.current ?? "UP",
-      rivalPrediction: (localPredictionRef.current === "UP" ? "DOWN" : "UP"),
-      playerCorrect: true,
-      rivalCorrect: true,
-      playerDamage: 0,
-      rivalDamage: 0,
-      isCritical: false,
-      knockout: false,
-      startPrice: 0,
-      endPrice: 0,
-      prices: [],
-      asset: m?.asset ?? "BTC",
-      playerPnL: 0,
-      rivalPnL: 0,
-      playerExecution: null,
-      rivalExecution: null,
-      damage: 0,
-    }, m?.totalRounds ?? 7, playerHP, rivalHP, playerScore, rivalScore);
-  }, [playCombatAnimation, playerHP, rivalHP, playerScore, rivalScore]);
-
-  // --- BOT COUNTDOWN TIMER ---
-  // --- BOT ROUND TIMER (10s ACTIVE window) ---
-  // Visual countdown only. Server resolves the round via predict endpoint.
+  // --- BOT ROUND TIMER (10s locked trade duration) ---
+  // Traditional binary: ACTIVE is the locked trade — the side was fixed at the
+  // COMMIT lock and must NOT be re-sent here. At expiry we call predict with NO
+  // payload purely to trigger server resolution of the locked position.
   // Uses the server's roundDeadline (authoritative) but respects the local
   // override constant (__ROUND_TIME__) when it's shorter — this lets fast
   // timer tests control the loop while production always syncs to the server.
@@ -561,7 +541,7 @@ export function useGameState(): GameHook {
     if (!isBotMatch || phase !== "ROUND_ACTIVE") return;
     if (botTimerRef.current) return;
 
-    const localMs = ((globalThis as any).__ROUND_TIME__ ?? ROUND_TIME) * 1000;
+    const localMs = ((globalThis as any).__ROUND_TIME__ ?? getRoundTime()) * 1000;
     const serverMs = mp.state.serverState?.roundDeadline
       ? Math.max(0, new Date(mp.state.serverState.roundDeadline).getTime() - Date.now())
       : Infinity;
@@ -583,10 +563,9 @@ export function useGameState(): GameHook {
         setPlayerCharState("locked");
         setRivalCharState("locked");
 
-        // Submit to server — server resolves everything. Use a BOUNDED retry
-        // so a transient network/5xx failure cannot leave the round frozen at
-        // ROUND_LOCKED.
-        const pred = (localPredictionRef.current as "UP" | "DOWN" | null) ?? undefined;
+        // Resolve the LOCKED trade — no prediction payload (flips forbidden).
+        // Use a BOUNDED retry so a transient network/5xx failure cannot leave
+        // the round frozen at ROUND_LOCKED.
         setExecutionStatus("executing");
         roundPhaseRef.current = "SUBMITTING";
 
@@ -601,7 +580,7 @@ export function useGameState(): GameHook {
         };
 
         const attemptSubmit = (): void => {
-          mp.actions.submitPrediction(pred).then((d) => {
+          mp.actions.submitPrediction(undefined).then((d) => {
             if (d && d.rounds && d.rounds.length) {
               setExecutionStatus("success");
               roundPhaseRef.current = "WAITING_SERVER";
@@ -629,11 +608,12 @@ export function useGameState(): GameHook {
   // --- BOT COMMIT PHASE TIMER (5s) ---
   // During the COMMIT phase, the player has 5s to pick Attack (UP) / Defend
   // (DOWN). At expiry the default/locked call is submitted to the server,
-  // which transitions the round to the 10s ACTIVE combat window.
-  // Uses server roundDeadline when it's closer than the local constant.
+  // which places the round's stake + awaits receipt (THE GATE) before opening
+  // the 10s ACTIVE battle. Uses server roundDeadline when it's closer than
+  // the local constant.
   useEffect(() => {
     if (!isBotMatch || phase !== "ROUND_COMMIT") return;
-    if (botTimerRef.current) return;
+    if (botCommitTimerRef.current) return;
 
     const localMs = ((globalThis as any).__COMMIT_TIME__ ?? COMMIT_TIME) * 1000;
     const serverMs = mp.state.serverState?.roundDeadline
@@ -648,63 +628,82 @@ export function useGameState(): GameHook {
       setTimeLeft(+remaining.toFixed(2));
 
       if (remaining <= 0) {
-        if (botTimerRef.current) { clearInterval(botTimerRef.current); botTimerRef.current = null; }
+        if (botCommitTimerRef.current) { clearInterval(botCommitTimerRef.current); botCommitTimerRef.current = null; }
         const pred = localPredictionRef.current as "UP" | "DOWN" | null;
+        setExecutionStatus("executing");
         let commitAttempts = 0;
         const attemptCommit = (): void => {
           commitAttempts += 1;
           mp.actions.submitPrediction(pred ?? undefined).then((d) => {
             if (d && d.roundPhase === "ACTIVE") {
               roundPhaseRef.current = "WAITING_SERVER";
+              setExecutionStatus("success");
             } else if (!d) {
               roundPhaseRef.current = "LOCKED";
             }
             if (!d && commitAttempts < 6) scheduleTimer(attemptCommit, 600);
           }).catch(() => {
             if (commitAttempts < 6) scheduleTimer(attemptCommit, 600);
-            else roundPhaseRef.current = "LOCKED";
+            else { roundPhaseRef.current = "LOCKED"; setExecutionStatus("failed"); }
           });
         };
         attemptCommit();
       }
     };
 
-    botTimerRef.current = setInterval(tick, 50) as unknown as ReturnType<typeof setInterval>;
+    botCommitTimerRef.current = setInterval(tick, 50) as unknown as ReturnType<typeof setInterval>;
     return () => {
-      if (botTimerRef.current) { clearInterval(botTimerRef.current); botTimerRef.current = null; }
+      if (botCommitTimerRef.current) { clearInterval(botCommitTimerRef.current); botCommitTimerRef.current = null; }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isBotMatch, phase, mp.state.serverState?.funded]);
 
-  // --- PVP ROUND COUNTDOWN + SUBMIT ---
-  // PvP rounds resolve server-authoritatively via the predict route, which
-  // claims the round, waiting for both players to submit (or resolving after
-  // the deadline). This effect (a) keeps the UI countdown in lockstep with the
-  // shared server deadline, (b) locks the UI at timeout, and (c) makes sure the
-  // player's side is always submitted — auto-picking if they never tapped. It
-  // keeps ticking through ROUND_LOCKED and re-submits if the round is still
-  // unresolved past its deadline (e.g. both players submitted just before the
-  // close and the server momentarily reverted to ACTIVE), so a round can never
-  // deadlock. The resolved outcome/animation flows back via the server-sync
-  // effect below, which advances the phase and tears this timer down.
+  // --- PVP ROUND COUNTDOWN + LOCK/RESOLVE (traditional binary) ---
+  // COMMIT (5s): the ONLY window where a pick is submitted. At COMMIT expiry
+  // the locked side (or nothing = server default UP) is submitted once to force
+  // the COMMIT→ACTIVE lock — this is where each round's stake position is chosen.
+  // ACTIVE (10s locked trade) + LOCKED: never re-send a side (flips forbidden);
+  // only ping predict with NO payload to trigger resolution after the deadline.
+  // The resolved outcome/animation flows back via the server-sync effect below.
   useEffect(() => {
     if (isBotMatch) return;
-    if (phase !== "ROUND_ACTIVE" && phase !== "ROUND_LOCKED") return;
+    if (phase !== "ROUND_COMMIT" && phase !== "ROUND_ACTIVE" && phase !== "ROUND_LOCKED") return;
     const trackedRound = activeRoundNumRef.current;
     if (trackedRound <= 0) return;
 
-    let lastSubmitAt = 0;
-    let lastSubmitPred: "UP" | "DOWN" | null = null;
+    let lastResolveAt = 0;
+    let commitLocked = false;
     const SUBMIT_BACKOFF_MS = 1200;
 
     const check = () => {
-      if (phaseRef.current !== "ROUND_ACTIVE" && phaseRef.current !== "ROUND_LOCKED") return;
+      if (phaseRef.current !== "ROUND_COMMIT" && phaseRef.current !== "ROUND_ACTIVE" && phaseRef.current !== "ROUND_LOCKED") return;
       if (activeRoundNumRef.current !== trackedRound) return;
       const remaining = mp.actions.getTimeRemaining();
       setTimeLeft(+Math.max(0, remaining).toFixed(2));
 
+      // COMMIT expiry → lock the round's side once (pick or default).
+      if (phaseRef.current === "ROUND_COMMIT") {
+        if (remaining > 0) return;
+        if (commitLocked) return;
+        commitLocked = true;
+        phaseRef.current = "ROUND_LOCKED";
+        setPhase("ROUND_LOCKED");
+        setPlayerCharState("locked");
+        setRivalCharState("locked");
+        const pred = localPredictionRef.current as "UP" | "DOWN" | null;
+        roundPhaseRef.current = "SUBMITTING";
+        setExecutionStatus("executing");
+        // pred may be null → server locks default UP; never sent again after this.
+        mp.actions.submitPrediction(pred ?? undefined).then(() => {
+          roundPhaseRef.current = "LOCKED";
+        }).catch(() => {
+          roundPhaseRef.current = "LOCKED";
+        });
+        return;
+      }
+
       if (remaining > 0) return;
-      // Deadline elapsed — lock the UI once
+      // ACTIVE/LOCKED deadline elapsed — lock the UI once
       if (phaseRef.current === "ROUND_ACTIVE") {
         phaseRef.current = "ROUND_LOCKED";
         setPhase("ROUND_LOCKED");
@@ -712,20 +711,18 @@ export function useGameState(): GameHook {
         setRivalCharState("locked");
       }
 
-      // Make sure this player's prediction is stored server-side.
-      const pred = localPredictionRef.current as "UP" | "DOWN";
-      if (lastSubmitPred !== pred || Date.now() - lastSubmitAt >= SUBMIT_BACKOFF_MS) {
-        lastSubmitPred = pred;
-        lastSubmitAt = Date.now();
+      // Resolution-only ping (no side — flips forbidden after lock).
+      if (Date.now() - lastResolveAt >= SUBMIT_BACKOFF_MS) {
+        lastResolveAt = Date.now();
         roundPhaseRef.current = "SUBMITTING";
         setExecutionStatus("executing");
-        mp.actions.submitPrediction(pred).then((d) => {
+        mp.actions.submitPrediction(undefined).then((d) => {
           if (d && d.rounds && d.rounds.length) {
             setExecutionStatus("success");
             roundPhaseRef.current = "WAITING_SERVER";
             // Round resolved — the server-sync effect will play it and advance.
           } else {
-            // Not resolved yet (waiting on opponent / reverted) — keep retrying.
+            // Not resolved yet (waiting on opponent) — keep retrying.
             roundPhaseRef.current = "LOCKED";
           }
         }).catch(() => {
@@ -975,7 +972,7 @@ export function useGameState(): GameHook {
     setHitEffect("none"); setShakeScreen(false);
     setShowStreak(null);
     setPlayerCharState("idle"); setRivalCharState("idle");
-    setTimeLeft((globalThis as any).__ROUND_TIME__ ?? ROUND_TIME);
+    setTimeLeft(getRoundTime());
     setDisplayRound(1);
     setIsBotMatch(true);
     setExecutionStatus("idle"); setExecutionError(null); setLastTxHash(null);
@@ -992,8 +989,9 @@ export function useGameState(): GameHook {
     // that can never be funded.
     let matchCreated = false;
     try {
+      if (!address) throw new Error("Connect your wallet first");
       const res = await mp.actions.createMatch({
-        playerAddress: address || "0x0000000000000000000000000000000000000000",
+        playerAddress: address,
         playerChar: playerChar?.id ?? "dreamer",
         rivalName: rn,
         rivalChar: rival.id,
@@ -1047,43 +1045,37 @@ export function useGameState(): GameHook {
     }, OVD("MATCH_INTRO_DURATION", 2000));
   }, [phase, isBotMatch, scheduleTimer]);
 
-  // --- PREDICTION ---
-  // Records the player's chosen position locally but does NOT submit/resolve
-  // it. The round stays open so the position can be repositioned (changed)
-  // freely until the round closes — only the bot countdown timer commits and
-  // resolves the round at timeout. This matches binary-trading semantics:
-  // you hold one position per round and can flip it until the market closes.
+  // --- PREDICTION (traditional binary lock) ---
+  // The 5s COMMIT window is the ONLY time a pick is accepted. The 10s ACTIVE
+  // window is the locked trade duration — no flips, matching traditional
+  // binary trading. Each of the 7 rounds stakes its own position at the
+  // COMMIT→ACTIVE lock (direction chosen fresh in that round's COMMIT).
   const [lockedPrediction, setLockedPrediction] = useState<"UP" | "DOWN" | null>(null);
 
-  // Per-round binary semantics: you HOLD one position per round and can FLIP it
-  // UP<->DOWN any number of times while the round is ACTIVE (before the round
-  // lock timer commits it). The default call for a round is the previous round's
-  // (or the pre-match) position, so a fight still resolves if you don't touch
-  // it; changing it here re-submits the NEW call for the CURRENT round to the
-  // server (which stores/updates `playerPrediction` while the round is ACTIVE).
+  // COMMIT-only: pick (or re-pick) this round's side while the 5s window is
+  // open. Once locked to ACTIVE the call is final for that 10s trade.
   const makePrediction = useCallback((_pred: "UP" | "DOWN") => {
-    if (phase !== "ROUND_ACTIVE" && phase !== "ROUND_COMMIT") return;
+    if (phase !== "ROUND_COMMIT") return;
     if (localPrediction === _pred) return; // already holding that side
     setLocalPrediction(_pred);
     setPlayerPrediction(_pred);
     setLockedPrediction(_pred);
     setPredictionUIStatus("selected");
 
-    // During COMMIT: submit to server immediately to trigger COMMIT→ACTIVE transition.
-    // During ACTIVE: submit for repositioning; the bot countdown will do the final submit at expiry.
-    if (!isBotMatch || phase === "ROUND_COMMIT") {
-      mp.actions.submitPrediction(_pred).then((d) => {
-        if (d && d.rounds && d.rounds.length) {
-          roundPhaseRef.current = "WAITING_SERVER";
-          setExecutionStatus("success");
-        } else {
-          roundPhaseRef.current = "LOCKED";
-        }
-      }).catch(() => {
+    // Submit immediately to record the pick + trigger the COMMIT stake gate
+    // (server places the order + awaits receipt before opening the battle).
+    setExecutionStatus("executing");
+    mp.actions.submitPrediction(_pred).then((d) => {
+      if (d && d.rounds && d.rounds.length) {
+        roundPhaseRef.current = "WAITING_SERVER";
+        setExecutionStatus("success");
+      } else {
         roundPhaseRef.current = "LOCKED";
-      });
-    }
-  }, [phase, localPrediction, isBotMatch, mp.actions]);
+      }
+    }).catch(() => {
+      roundPhaseRef.current = "LOCKED";
+    });
+  }, [phase, localPrediction, mp.actions]);
 
   const rematch = useCallback(() => {
     clearAllTimers();
@@ -1102,7 +1094,7 @@ export function useGameState(): GameHook {
     setHitEffect("none"); setShakeScreen(false);
     setShowStreak(null);
     setPlayerCharState("idle"); setRivalCharState("idle");
-    setPredictionUIStatus("idle"); setTimeLeft((globalThis as any).__ROUND_TIME__ ?? ROUND_TIME);
+    setPredictionUIStatus("idle"); setTimeLeft(getRoundTime());
     setDisplayRound(1);
     setPlayerHP(MAX_HP); setRivalHP(MAX_HP);
     playerHPRef.current = MAX_HP; rivalHPRef.current = MAX_HP;

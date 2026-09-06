@@ -1,23 +1,26 @@
 "use client";
 
+import { useEffect } from "react";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
 import { useAccount } from "wagmi";
 
 export function WalletModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { isConnected } = useAccount();
 
+  // Never call onClose during render (setState-in-render loop). Close via effect.
+  useEffect(() => {
+    if (open && isConnected) onClose();
+  }, [open, isConnected, onClose]);
+
   if (!open) return null;
-  if (isConnected) {
-    onClose();
-    return null;
-  }
+  if (isConnected) return null;
 
   return (
-    <div style={{
+    <div role="dialog" aria-modal="true" aria-label="Connect wallet" style={{
       position: "fixed", inset: 0, zIndex: 100,
       display: "flex", alignItems: "center", justifyContent: "center",
       background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)",
-    }} onClick={onClose}>
+    }} onClick={onClose} onKeyDown={(e) => { if (e.key === "Escape") onClose(); }}>
       <div style={{
         background: "#0f172a", border: "2px solid #a855f7", borderRadius: 12,
         padding: "32px 40px", maxWidth: 420, width: "90%", textAlign: "center",

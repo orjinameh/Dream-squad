@@ -73,7 +73,7 @@ export function useGhostWallet(matchId: string | null, totalRounds: number, amou
   }, [matchId]);
 
   const totalStakeRaw = amountPerRound > 0 && totalRounds > 0
-    ? parseUnits(String(amountPerRound * totalRounds), EC_COLLATERAL_DECIMALS)
+    ? BigInt(Math.round(amountPerRound * 1_000_000)) * BigInt(totalRounds)
     : 0n;
 
   /**
@@ -90,8 +90,9 @@ export function useGhostWallet(matchId: string | null, totalRounds: number, amou
     // if the approve popup or the relay never confirms, give up and reset the
     // flag so the manual FUND MATCH button becomes clickable again.
     let settled = false;
+    let guardTimer: ReturnType<typeof setTimeout> | null = null;
     const guard = new Promise<never>((_, reject) => {
-      setTimeout(() => {
+      guardTimer = setTimeout(() => {
         if (!settled) {
           settled = true;
           setFunding(false);
@@ -138,8 +139,9 @@ export function useGhostWallet(matchId: string | null, totalRounds: number, amou
         const data = await res.json();
         if (!res.ok) throw new Error(data?.error ?? "fund ghost failed");
 
-        // Ghost approves the round escrow so it can move its own funds per round.
-        await ghost.signApproveEscrow(ROUND_ESCROW_ADDRESS, parseUnits("1000000", EC_COLLATERAL_DECIMALS));
+        // Ghost approves the round escrow for exactly this match's pot — never
+        // an open-ended 1M grant that a stolen ghost could drain.
+        await ghost.signApproveEscrow(ROUND_ESCROW_ADDRESS, totalStakeRaw);
         setFunded(true);
         setGrantPending(false);
         return data;
@@ -151,6 +153,7 @@ export function useGhostWallet(matchId: string | null, totalRounds: number, amou
       throw e;
     } finally {
       settled = true;
+      if (guardTimer) clearTimeout(guardTimer);
       setFunding(false);
     }
   }, [matchId, address, ghost, totalStakeRaw, writeContractAsync]);
@@ -204,8 +207,9 @@ export function useGhostWallet(matchId: string | null, totalRounds: number, amou
    */
   const stakeRound = useCallback(
     async (round: number, entryPrice: bigint) => {
-      if (!matchId || !ghost || !address) return;
-      const amountRaw = parseUnits(String(amountPerRound), EC_COLLATERAL_DECIMALS);
+      if (!matchId || !ghost || !address) throw new Error("Ghost not ready — cannot stake round");
+      const amountRaw = BigInt(Math.round(amountPerRound * 1_000_000));
+      if (amountRaw <= 0n) throw new Error("Invalid round stake amount");
       await ghost.signStakeRound({ matchId, playerAddress: address, round, amount: amountRaw, entryPrice });
     },
     [matchId, ghost, address, amountPerRound],
@@ -276,8 +280,14 @@ async function waitForReceipt(hash: `0x${string}`) {
   for (let i = 0; i < 40; i++) {
     try {
       const r = await pc.getTransactionReceipt({ hash });
-      if (r) return r;
-    } catch {
+      if (r) {
+        if ((r as { status?: string }).status && (r as { status: string }).status !== "success") {
+          throw new Error(`Transaction reverted (status=${(r as { status: string }).status})`);
+        }
+        return r;
+      }
+    } catch (e) {
+      if ((e as Error)?.message?.includes("reverted")) throw e;
       /* not mined yet */
     }
     await new Promise((r) => setTimeout(r, 1500));

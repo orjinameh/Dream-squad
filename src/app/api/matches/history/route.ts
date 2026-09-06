@@ -2,15 +2,17 @@ import { connectToDatabase } from "@/db/connect";
 import { Match } from "@/db/models/Match";
 import { normalizeAddress } from "@/lib/addresses";
 import { jsonError } from "@/lib/utils";
+import { isAddress } from "viem";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(req: Request): Promise<Response> {
   const url = new URL(req.url);
   const address = url.searchParams.get("address");
-  const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "20", 10), 50);
+  const rawLimit = Number.parseInt(url.searchParams.get("limit") ?? "20", 10);
+  const limit = Math.min(Math.max(Number.isFinite(rawLimit) ? rawLimit : 20, 1), 50);
 
-  if (!address) return jsonError(400, "address required");
+  if (!address || !isAddress(address)) return jsonError(400, "valid address required");
 
   try {
     await connectToDatabase();

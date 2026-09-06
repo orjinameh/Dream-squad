@@ -52,10 +52,34 @@ async function main(): Promise<void> {
     if (handle) clearInterval(handle);
   };
 
-  process.on("SIGTERM", () => { stop(); process.exit(0); });
-  process.on("SIGINT", () => { stop(); process.exit(0); });
+  const shutdown = async (): Promise<void> => {
+    stop();
+    // Drain: wait for any in-flight sweep before exiting + disconnect.
+    for (let i = 0; i < 30 && sweeping; i++) {
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    try {
+      const { default: mongoose } = await import("mongoose");
+      await mongoose.disconnect();
+    } catch { /* best-effort */ }
+    process.exit(0);
+  };
 
-  await runOnce();
+  process.on("SIGTERM", () => { shutdown().catch(() => process.exit(0)); });
+  process.on("SIGINT", () => { shutdown().catch(() => process.exit(0)); });
+
+  let retries = 0;
+  while (retries < 5) {
+    try {
+      await runOnce();
+      break;
+    } catch (err) {
+      retries += 1;
+      console.error(`[worker] initial sweep failed (attempt ${retries})`, err);
+      if (retries >= 5) throw err;
+      await new Promise((r) => setTimeout(r, 2000 * retries));
+    }
+  }
   handle = setInterval(() => { tick().catch((err) => console.error("[worker] tick failed", err)); }, SWEEP_INTERVAL_MS);
 }
 

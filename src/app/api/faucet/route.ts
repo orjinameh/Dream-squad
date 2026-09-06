@@ -40,18 +40,31 @@ const FAUCET_GAS_STT = 500_000_000_000_000_000n; // 0.5 STT for approval+stake t
 const FAUCET_COOLDOWN_MS = 120_000;
 
 const lastFaucetAt = new Map<string, number>();
+const MAX_COOLDOWN_ENTRIES = 5000;
+
+function pruneCooldowns(now: number) {
+  if (lastFaucetAt.size <= MAX_COOLDOWN_ENTRIES) return;
+  // Evict oldest entries first (best-effort bound; authoritative cooldown
+  // should be persisted in DB for multi-instance correctness).
+  const entries = [...lastFaucetAt.entries()].sort((a, b) => a[1] - b[1]);
+  const drop = entries.length - MAX_COOLDOWN_ENTRIES;
+  for (let i = 0; i < drop; i++) lastFaucetAt.delete(entries[i][0]);
+}
 
 const faucetSchema = z.object({
   address: z.string().refine((v) => isAddress(v), "invalid address"),
 });
 
 export async function POST(req: NextRequest) {
-  try {
-    const body = faucetSchema.safeParse(await req.json());
-    if (!body.success) return jsonError(400, body.error.issues[0]?.message ?? "invalid input");
+  let body: unknown;
+  try { body = await req.json(); } catch { return jsonError(400, "body must be JSON"); }
+  const parsed = faucetSchema.safeParse(body);
+  if (!parsed.success) return jsonError(400, parsed.error.issues.map((i) => i.message).join("; "));
 
-    const user = (body.data.address as `0x${string}`).toLowerCase() as `0x${string}`;
+  try {
+    const user = (parsed.data.address as `0x${string}`).toLowerCase() as `0x${string}`;
     const now = Date.now();
+    pruneCooldowns(now);
     const last = lastFaucetAt.get(user);
     if (last && now - last < FAUCET_COOLDOWN_MS) {
       const waitSec = Math.ceil((FAUCET_COOLDOWN_MS - (now - last)) / 1000);
@@ -60,8 +73,14 @@ export async function POST(req: NextRequest) {
     lastFaucetAt.set(user, now);
 
     const pc = publicClient();
-    const wc = adminWallet();
-    const operator = wc.account!.address as `0x${string}`;
+    let wc: ReturnType<typeof adminWallet>;
+    try {
+      wc = adminWallet();
+    } catch {
+      return jsonError(503, "faucet unavailable (operator not configured)");
+    }
+    if (!wc.account) return jsonError(503, "faucet unavailable (operator not configured)");
+    const operator = wc.account.address as `0x${string}`;
 
     // Native gas: top the user up so their very first approve/stake txs land.
     const userNative = await pc.getBalance({ address: user });
@@ -125,9 +144,10 @@ export async function POST(req: NextRequest) {
       txHash: transferTx,
       balance: balance.toString(),
     });
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error("[faucet] failed", err);
-    return jsonError(500, err?.message ?? "faucet failed");
+    // Never leak raw operator/RPC internals to the client.
+    return jsonError(500, "faucet failed — try again shortly");
   }
 }
 
@@ -136,8 +156,14 @@ async function waitMined(hash: `0x${string}`) {
   for (let i = 0; i < 40; i++) {
     try {
       const r = await pc.getTransactionReceipt({ hash });
-      if (r) return r;
-    } catch {
+      if (r) {
+        if ((r as { status?: string }).status && (r as { status: string }).status !== "success") {
+          throw new Error(`relay tx reverted (status=${(r as { status: string }).status})`);
+        }
+        return r;
+      }
+    } catch (e) {
+      if ((e as Error)?.message?.includes("reverted")) throw e;
       /* not mined yet */
     }
     await new Promise((r) => setTimeout(r, 1500));

@@ -161,44 +161,52 @@ export function LiveChart({ asset, height = 260, showHeader = true }: Props) {
     };
 
     // Pull initial candles + current spot from the DreamDEX oracle.
+    const ctrl = new AbortController();
+    let cancelled = false;
     Promise.all([fetchCandles(base), fetchSpot(base)])
       .then(([candles, spot]) => {
-        if (disposed) return;
+        if (disposed || cancelled) return;
         applyCandles(candles);
         if (lastCandleRef.current) {
           const last = lastCandleRef.current;
           const live = { ...last, high: Math.max(last.high, spot), low: Math.min(last.low, spot), close: spot };
           lastCandleRef.current = live;
-          series.update(live as CandlestickData);
+          // lightweight-charts expects seconds (UTCTimestamp), not ms.
+          series.update({ ...(live as unknown as object), time: Math.floor(live.time / 1000) } as CandlestickData);
         }
         setPrice(spot);
         setConnected(true);
         setErr(null);
       })
-      .catch((e) => {
-        if (!disposed) setErr("Live feed unavailable — chart paused.");
+      .catch(() => {
+        if (!disposed && !cancelled) setErr("Live feed unavailable — chart paused.");
       });
 
     // Live edge: refresh the current spot and fold it into the forming candle.
+    // Rolls to a new M1 bucket when the minute advances; converts ms→seconds
+    // for lightweight-charts (passing ms jumps the chart to year 55000).
     const poll = setInterval(async () => {
-      if (disposed) return;
+      if (disposed || cancelled) return;
       try {
         const spot = await fetchSpot(base);
-        if (disposed) return;
+        if (disposed || cancelled) return;
         setPrice(spot);
         const prev = lastCandleRef.current;
         if (prev) {
           const prevClose = prev.close;
+          const nowBucketMs = Math.floor(Date.now() / 60_000) * 60_000;
+          const baseCandle = nowBucketMs !== Math.floor(prev.time / 60_000) * 60_000
+            ? { time: nowBucketMs, open: prevClose, high: prevClose, low: prevClose, close: prevClose }
+            : prev;
           const live: Candle = {
-            ...prev,
-            time: prev.time,
-            high: Math.max(prev.high, spot),
-            low: Math.min(prev.low, spot),
+            ...baseCandle,
+            high: Math.max(baseCandle.high, spot),
+            low: Math.min(baseCandle.low, spot),
             close: spot,
           };
           lastCandleRef.current = live;
           setDir(spot >= prevClose ? "up" : "down");
-          series.update(live as CandlestickData);
+          series.update({ ...(live as unknown as object), time: Math.floor(live.time / 1000) } as CandlestickData);
           setConnected(true);
         }
       } catch {
@@ -206,11 +214,15 @@ export function LiveChart({ asset, height = 260, showHeader = true }: Props) {
       }
     }, GAP_MS);
 
-    const onResize = () => { chart.applyOptions({ width: el.clientWidth }); };
+    const onResize = () => {
+      if (el.clientWidth > 0) chart.applyOptions({ width: el.clientWidth });
+    };
     window.addEventListener("resize", onResize);
 
     return () => {
       disposed = true;
+      cancelled = true;
+      ctrl.abort();
       clearInterval(poll);
       window.removeEventListener("resize", onResize);
       chartRef.current = null;

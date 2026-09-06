@@ -18,14 +18,19 @@ export async function GET(req: Request): Promise<Response> {
   try {
     await connectToDatabase();
     const addr = normalizeAddress(address);
+    const lower = addr.toLowerCase();
 
     // Expire any abandoned PvP match still stuck in WAITING past its 10s stale
     // window so it can't masquerade as an active match and block re-queueing.
     await expireStaleWaitingMatches(addr);
 
-    // Check for active match first
+    // Check for active match first (matches store checksummed + lowercase
+    // variants historically — match both).
     const activeMatch = await Match.findOne({
-      $or: [{ playerAddress: addr }, { player2Address: addr }],
+      $or: [
+        { playerAddress: { $in: [addr, lower] } },
+        { player2Address: { $in: [addr, lower] } },
+      ],
       status: "ACTIVE",
     }).lean();
 
@@ -38,11 +43,11 @@ export async function GET(req: Request): Promise<Response> {
       });
     }
 
-    // Check queue status
-    const queueEntry = await MatchQueue.findOne({ address: addr, status: "searching" }).lean() as { _id: string; rounds: number; createdAt: Date } | null;
+    // Check queue status (queue stores lowercase — query lowercase).
+    const queueEntry = await MatchQueue.findOne({ address: lower, status: "searching" }).lean() as { _id: string; rounds: number; createdAt: Date } | null;
 
     if (!queueEntry) {
-      const anyEntry = await MatchQueue.findOne({ address: addr }).exec();
+      const anyEntry = await MatchQueue.findOne({ address: lower }).exec();
       console.log(`[status] addr=${addr.slice(0,6)} idle (no active, no searching; otherQ=${anyEntry ? anyEntry.status : "none"})`);
       return Response.json({ status: "idle" });
     }

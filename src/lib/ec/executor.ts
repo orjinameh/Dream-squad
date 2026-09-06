@@ -1,8 +1,8 @@
-import { createPublicClient, http, defineChain } from "viem";
+import { createPublicClient, http, fallback, defineChain } from "viem";
 import { SomniaMarkets, upProbability, type MarketOnchain, type UnifiedMarket, type BinaryMarket } from "@somnia-chain/markets-sdk";
 import {
-  EC_ADDRESSES, EC_CHAIN, EC_CHAIN_ID, EC_INDEXER_URL, EC_RPC_URL, EC_RPC_WS_URL,
-  EC_COLLATERAL_DECIMALS, EC_ORACLE_FLAT_BAND, ecHttpTransport,
+  EC_ADDRESSES, EC_CHAIN, EC_CHAIN_ID, EC_INDEXER_URL, EC_RPC_URL, EC_RPC_URLS, EC_RPC_WS_URL,
+  EC_COLLATERAL_DECIMALS, EC_ORACLE_FLAT_BAND, EC_TICK, ecHttpTransport,
 } from "./config";
 
 /**
@@ -40,11 +40,15 @@ export function ecExchange(): SomniaMarkets {
 
 export function ecPublicClient() {
   if (_publicClient) return _publicClient;
-  // Post-reorder, webSocket[...]/http[0] of EC_CHAIN is the reliable mirror;
-  // the fallback transport keeps all three mirrors warm for the rest.
+  // Always tier across all three mirrors (even when SOMNIA_RPC_URL is set) so
+  // a rate-limited primary never blocks resolution — the fallback keeps the
+  // other mirrors warm. SOMNIA_RPC_URL is prepended when explicitly set.
+  const extra = process.env.SOMNIA_RPC_URL && process.env.SOMNIA_RPC_URL !== EC_RPC_URL
+    ? [http(process.env.SOMNIA_RPC_URL)]
+    : [];
   _publicClient = createPublicClient({
     chain: EC_CHAIN,
-    transport: process.env.SOMNIA_RPC_URL ? http(RPC_URL) : ecHttpTransport(),
+    transport: fallback([...extra, ...EC_RPC_URLS.map((url) => http(url))]),
   });
   return _publicClient;
 }
@@ -162,10 +166,11 @@ async function sweepArenaFloor(asset: "BTC" | "ETH", minLeftSec: number, nowMs: 
   // Bind the sweep to a generous-but-bounded timeout so a slow/hung indexer
   // degrades gracefully inside the Vercel serverless budget instead of letting
   // the SDK's 30s GraphQL timeout blow the function's own limit.
-  let timer: NodeJS.Timeout | undefined;
+  // NOTE: timer is per-call (not shared) so concurrent sweeps can't clear each
+  // other's timeout.
   const withBudget = <T,>(p: Promise<T>): Promise<T> =>
     new Promise<T>((resolve, reject) => {
-      timer = setTimeout(() => reject(new Error(`arena sweep timed out after ${ARENA_SWEEP_TIMEOUT_MS}ms`)), ARENA_SWEEP_TIMEOUT_MS);
+      const timer: NodeJS.Timeout = setTimeout(() => reject(new Error(`arena sweep timed out after ${ARENA_SWEEP_TIMEOUT_MS}ms`)), ARENA_SWEEP_TIMEOUT_MS);
       p.then((v) => { clearTimeout(timer); resolve(v); }, (e) => { clearTimeout(timer); reject(e); });
     });
 
@@ -215,6 +220,9 @@ async function discoverLiquidArena(asset: "BTC" | "ETH", minLeftSec: number, now
     .sort((a, b) => Number(a.expiry) - Number(b.expiry));
 
   for (const r of rows.slice(0, 6)) {
+    // Skip rows with no pool — falling back to the collateral ERC20 address as
+    // a "pool" would route stakes/reads at the wrong contract.
+    if (!r.poolAddress) continue;
     const market = Object.values(exchange.markets).find((um) => um.id === r.marketId);
     const arena: EcArenaMarket = {
       symbol: market?.symbol ?? `${asset}-${r.strike ?? "0"}-liquid/tUSDC`,
@@ -378,8 +386,12 @@ export async function readArenaPrice(arena: ArenaRef): Promise<EcPriceQuote> {
   // behind `symbol` — the price the venue actually trades at. Prefer it; fall
   // back to the indexer's resting-order table when this symbol isn't registered
   // (a rolling window the registry hasn't picked up yet).
+  // Bounded so a hung WS/indexer can't hang a Vercel function.
   try {
-    const book = await exchange.fetchOrderBook(arena.symbol, 1);
+    const book = await Promise.race([
+      exchange.fetchOrderBook(arena.symbol, 1),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("orderbook timed out")), 5_000)),
+    ]);
     const bestBid = book.bids[0]?.[0] ?? null;
     const bestAsk = book.asks[0]?.[0] ?? null;
     if (bestBid != null && bestAsk != null && bestAsk - bestBid >= MIN_EC_BOOK_SPREAD) {
@@ -572,7 +584,7 @@ export async function quoteStake(
   }
   if (bid == null || ask == null || !(bid > 0) || !(ask > 0)) return null;
 
-  const tick = 0.0015; // venue tick (1500 / 1e6)
+  const tick = EC_TICK / 1_000_000; // venue tick in YES-price units (1000/1e6 = 0.001)
   const DEC = 1_000_000;
   let yesPrice: number; // protective YES limit
   let effective: number; // escrow price in the bought outcome's OWN terms
@@ -587,7 +599,11 @@ export async function quoteStake(
     effective = noLimit;
   }
   const priceRaw = BigInt(Math.min(DEC - 1, Math.max(1, Math.round(yesPrice * DEC))));
-  const quantity = BigInt(Math.floor(Number(stakeRaw) / Math.max(effective, 0.01)));
+  // BigInt sizing: quantity (outcome tokens) ≈ stakeRaw collateral / effective
+  // price. Avoid Number(stakeRaw) precision loss for large stakes.
+  const effectiveRaw = BigInt(Math.max(1, Math.round(effective * DEC)));
+  if (effectiveRaw <= 0n) return null;
+  const quantity = (stakeRaw * BigInt(DEC)) / effectiveRaw;
   if (quantity <= 0n) return null;
   return { kind: prediction === "UP" ? 0 : 2, price: priceRaw, quantity, effectivePrice: effective };
 }

@@ -23,10 +23,12 @@ export type EcPosition = {
 export function useEcPosition(matchId?: string | null, pollMs = 4000) {
   const [pos, setPos] = useState<EcPosition | null>(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (signal?: AbortSignal) => {
     if (!matchId) return;
     try {
-      const res = await window.fetch(`/api/matches/ec-position?matchId=${matchId}`);
+      const res = await fetch(`/api/matches/ec-position?matchId=${encodeURIComponent(matchId)}`, {
+        signal: signal ?? AbortSignal.timeout(8000),
+      });
       if (!res.ok) return;
       setPos((await res.json()) as EcPosition);
     } catch {
@@ -40,16 +42,21 @@ export function useEcPosition(matchId?: string | null, pollMs = 4000) {
       return;
     }
     let active = true;
+    const ctrl = new AbortController();
+    let inFlight = false;
     const run = async () => {
-      await load();
+      if (inFlight) return;
+      inFlight = true;
+      try { await load(ctrl.signal); } finally { inFlight = false; }
       if (!active) return;
     };
     run();
     const iv = setInterval(() => {
-      if (active) load();
+      if (active) run();
     }, pollMs);
     return () => {
       active = false;
+      ctrl.abort();
       clearInterval(iv);
     };
   }, [matchId, pollMs, load]);

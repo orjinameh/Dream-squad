@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 interface Props {
   closesAt: string; // ISO string
@@ -9,7 +9,7 @@ interface Props {
 }
 
 function formatRemaining(ms: number): string {
-  if (ms <= 0) return "0:00";
+  if (!Number.isFinite(ms) || ms <= 0) return "0:00";
   const totalSec = Math.ceil(ms / 1000);
   const min = Math.floor(totalSec / 60);
   const sec = totalSec % 60;
@@ -18,17 +18,29 @@ function formatRemaining(ms: number): string {
 
 export function CountdownTimer({ closesAt, onExpired, size = "lg" }: Props) {
   const [remaining, setRemaining] = useState(() => new Date(closesAt).getTime() - Date.now());
+  const firedRef = useRef(false);
+  const cbRef = useRef(onExpired);
+  cbRef.current = onExpired;
 
   useEffect(() => {
+    firedRef.current = false;
     const tick = () => {
-      const r = new Date(closesAt).getTime() - Date.now();
+      const t = new Date(closesAt).getTime();
+      const r = Number.isFinite(t) ? t - Date.now() : NaN;
       setRemaining(r);
-      if (r <= 0) onExpired?.();
+      if (Number.isFinite(r) && r <= 0 && !firedRef.current) {
+        firedRef.current = true;
+        cbRef.current?.();
+      }
+      if (Number.isFinite(r) && r <= 0) {
+        // Stop ticking once expired — firing every 250ms spams APIs.
+        clearInterval(id);
+      }
     };
     tick();
     const id = setInterval(tick, 250);
     return () => clearInterval(id);
-  }, [closesAt, onExpired]);
+  }, [closesAt]);
 
   const urgent = remaining > 0 && remaining < 30_000;
   const fontSize = size === "lg" ? 48 : 24;

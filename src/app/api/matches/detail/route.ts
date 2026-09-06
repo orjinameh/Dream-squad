@@ -2,6 +2,7 @@ import { connectToDatabase } from "@/db/connect";
 import { Match } from "@/db/models/Match";
 import { normalizeAddress } from "@/lib/addresses";
 import { jsonError } from "@/lib/utils";
+import { isAddress } from "viem";
 
 export const dynamic = "force-dynamic";
 
@@ -10,16 +11,23 @@ export async function GET(req: Request): Promise<Response> {
   const matchId = url.searchParams.get("matchId");
   const address = url.searchParams.get("address");
 
-  if (!matchId) return jsonError(400, "matchId required");
+  if (!matchId || matchId.length > 64) return jsonError(400, "valid matchId required");
 
   try {
     await connectToDatabase();
 
-    const match = await Match.findById(matchId).lean();
+    let match: any;
+    try {
+      match = await Match.findById(matchId).lean();
+    } catch (err: unknown) {
+      if ((err as { name?: string })?.name === "CastError") return jsonError(400, "invalid matchId");
+      throw err;
+    }
     if (!match) return jsonError(404, "match not found");
 
     // Verify the requester is a player in this match (if address provided)
     if (address) {
+      if (!isAddress(address)) return jsonError(400, "invalid address");
       const addr = normalizeAddress(address);
       const isPlayer1 = normalizeAddress(match.playerAddress) === addr;
       const isPlayer2 = match.player2Address && normalizeAddress(match.player2Address) === addr;
@@ -29,12 +37,12 @@ export async function GET(req: Request): Promise<Response> {
     const isBot = match.opponentType === "bot";
 
     // Compute prediction stats per player
-    const rounds = match.rounds ?? [];
-    const playerCorrectCount = rounds.filter((r) => r.playerCorrect).length;
-    const rivalCorrectCount = rounds.filter((r) => r.rivalCorrect).length;
+    const rounds: any[] = match.rounds ?? [];
+    const playerCorrectCount = rounds.filter((r: any) => r.playerCorrect).length;
+    const rivalCorrectCount = rounds.filter((r: any) => r.rivalCorrect).length;
 
     // Count knockouts — rounds where a KO landed (early stop before all rounds).
-    const knockouts = rounds.filter((r) => r.knockout).length;
+    const knockouts = rounds.filter((r: any) => r.knockout).length;
     let bestStreak = 0;
     let currentStreak = 0;
     for (const r of rounds) {
@@ -70,7 +78,7 @@ export async function GET(req: Request): Promise<Response> {
       knockouts,
       bestStreak,
       // Rounds detail
-      rounds: rounds.map((r) => {
+      rounds: rounds.map((r: any) => {
         const cp = match.priceModel?.checkpoints?.[Number(r.roundNum) - 1] ?? null;
         return {
           roundNum: r.roundNum,

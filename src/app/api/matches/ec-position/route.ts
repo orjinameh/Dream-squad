@@ -1,9 +1,9 @@
-import { NextResponse } from "next/server";
 import { connectToDatabase } from "@/db/connect";
 import { Match } from "@/db/models/Match";
 import { readArenaPrice } from "@/lib/ec/executor";
 import { ecArenaForMatch } from "@/lib/ec/arena";
 import { EC_ORACLE_FLAT_BAND } from "@/lib/ec/config";
+import { jsonError } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
 
@@ -21,17 +21,23 @@ export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
     const matchId = searchParams.get("matchId");
-    if (!matchId) return NextResponse.json({ error: "matchId required" }, { status: 400 });
+    if (!matchId || matchId.length > 64) return jsonError(400, "valid matchId required");
 
     await connectToDatabase();
-    const match = await Match.findById(matchId).lean();
-    if (!match) return NextResponse.json({ error: "match not found" }, { status: 404 });
+    let match: any;
+    try {
+      match = await Match.findById(matchId).lean();
+    } catch (err: unknown) {
+      if ((err as { name?: string })?.name === "CastError") return jsonError(400, "invalid matchId");
+      throw err;
+    }
+    if (!match) return jsonError(404, "match not found");
 
     const asset = (match.priceModel?.asset ?? match.predictionAsset ?? "BTC") as "BTC" | "ETH";
 
     const arena = await ecArenaForMatch(match, asset);
     if (!arena) {
-      return NextResponse.json({
+      return Response.json({
         asset,
         marketId: null,
         live: false,
@@ -44,9 +50,9 @@ export async function GET(req: Request) {
 
     const quote = await readArenaPrice(arena);
     const arenaOpenRaw = (match.priceModel as any)?.arenaOpen;
-    const arenaOpen = arenaOpenRaw && arenaOpenRaw > 0
-      ? arenaOpenRaw
-      : (quote.yesPrice && quote.yesPrice > 0 ? quote.yesPrice : null);
+    // Don't mask a missing anchor with the live price (that forces direction
+    // FLAT and misleads the UI). Surface null so the client shows "waiting".
+    const arenaOpen = arenaOpenRaw && arenaOpenRaw > 0 ? arenaOpenRaw : null;
 
     const now = Math.floor(Date.now() / 1000);
     const remainingSec = Math.max(0, arena.expiry - now);
@@ -59,7 +65,7 @@ export async function GET(req: Request) {
       direction = diff > band ? "UP" : diff < -band ? "DOWN" : "FLAT";
     }
 
-    return NextResponse.json({
+    return Response.json({
       asset,
       marketId: arena.marketId,
       symbol: arena.symbol,
@@ -75,6 +81,6 @@ export async function GET(req: Request) {
     });
   } catch (err) {
     console.error("[ec-position] failed", err);
-    return NextResponse.json({ error: "ec-position unavailable" }, { status: 500 });
+    return jsonError(500, "ec-position unavailable");
   }
 }

@@ -1,6 +1,7 @@
 import { useEcPosition, type EcPosition } from "./useEcPosition";
 
 function mmss(sec: number): string {
+  if (!Number.isFinite(sec) || sec < 0) return "0:00";
   const m = Math.floor(sec / 60);
   const s = Math.floor(sec % 60);
   return `${m}:${s.toString().padStart(2, "0")}`;
@@ -28,6 +29,8 @@ export function EcPositionRow({ pos, compact }: { pos: EcPosition | null; compac
     );
   }
   const dir = DIR_STYLE[pos.direction ? pos.direction : "FLAT"];
+  const yesNum = Number(pos.yesPrice ?? NaN);
+  const openNum = Number(pos.arenaOpen ?? NaN);
   return (
     <div style={{ fontSize: 11, lineHeight: 1.6, padding: "8px 0" }}>
       <div style={{ letterSpacing: "0.08em", color: "#64748b", fontWeight: 800, marginBottom: 4 }}>
@@ -35,8 +38,8 @@ export function EcPositionRow({ pos, compact }: { pos: EcPosition | null; compac
       </div>
       {!compact && (
         <div style={{ color: "#94a3b8", display: "flex", justifyContent: "space-between", maxWidth: 340 }}>
-          <span>YES: <span style={{ color: "#38bdf8", fontFamily: "'Courier New', monospace" }}>{(pos.yesPrice ?? 0).toFixed(4)}</span></span>
-          <span>OPEN: <span style={{ fontFamily: "'Courier New', monospace" }}>{(pos.arenaOpen ?? 0).toFixed(4)}</span></span>
+          <span>YES: <span style={{ color: "#38bdf8", fontFamily: "'Courier New', monospace" }}>{Number.isFinite(yesNum) ? yesNum.toFixed(4) : "—"}</span></span>
+          <span>OPEN: <span style={{ fontFamily: "'Courier New', monospace" }}>{Number.isFinite(openNum) ? openNum.toFixed(4) : "—"}</span></span>
           <span>
             DIR: <span style={{ color: dir.color, fontWeight: 800 }}>{dir.label}</span>
           </span>

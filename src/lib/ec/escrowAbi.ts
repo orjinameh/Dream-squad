@@ -469,8 +469,9 @@ export const LEGACY_POSITION_ABI = [
 
 /**
  * DreamDuelRoundEscrow — per-round on-chain tUSDC settlement. Keyed by
- * (matchId, round): same stake per round, flippable UP/DOWN, auto-settled at
- * each round's close against the live YES-mid. Deployed (chain 50312) at
+ * (matchId, round): same stake per round, side locked at each round's COMMIT
+ * close (one 10s binary trade per round), auto-settled at each round's close
+ * against the live YES-mid. Deployed (chain 50312) at
  * ROUND_ESCROW_ADDRESS, admin = operator.
  */
 export const DREAMDUEL_ROUND_ESCROW_ABI = [

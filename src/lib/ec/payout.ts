@@ -1,5 +1,6 @@
 import { adminWallet, publicClient } from "./escrow";
 import { EC_CHAIN, EC_ADDRESSES, EC_COLLATERAL_DECIMALS, EC_TX_GAS_PRICE } from "./config";
+import { parseUnits } from "viem";
 
 /**
  * Instant per-round payout: operator transfers tUSDC to the player's wallet
@@ -56,9 +57,11 @@ export async function payoutTusdc(
   playerAddress: `0x${string}`,
   amountHuman: number,
 ): Promise<{ txHash?: string; error?: string }> {
-  if (amountHuman <= 0) return {};
+  if (!Number.isFinite(amountHuman) || amountHuman <= 0) return {};
+  if (amountHuman > 100000) return { error: "payout amount exceeds cap" };
 
-  const amountRaw = BigInt(Math.round(amountHuman * 10 ** EC_COLLATERAL_DECIMALS));
+  // Integer-only conversion: avoid float 0.1*7 drift + precision loss >9M.
+  const amountRaw = parseUnits(amountHuman.toFixed(6), EC_COLLATERAL_DECIMALS);
 
   try {
     const wc = adminWallet();
@@ -85,7 +88,11 @@ export async function payoutTusdc(
           account: wc.account!,
           gas: GAS_LIMIT,
         });
-        await pc.waitForTransactionReceipt({ hash: mintTx });
+        const mintReceipt = await Promise.race([
+          pc.waitForTransactionReceipt({ hash: mintTx }),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("faucet timed out")), 60_000)),
+        ]);
+        if (mintReceipt.status !== "success") return { error: `faucet reverted (status=${mintReceipt.status})` };
       } catch (mintErr: any) {
         console.error("[payout] tUSDC faucet failed", mintErr?.shortMessage ?? mintErr?.message);
         return { error: `faucet failed: ${mintErr?.shortMessage ?? mintErr?.message}` };
@@ -102,7 +109,11 @@ export async function payoutTusdc(
       account: wc.account!,
       gas: GAS_LIMIT,
     });
-    await pc.waitForTransactionReceipt({ hash: txHash });
+    const receipt = await Promise.race([
+      pc.waitForTransactionReceipt({ hash: txHash }),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("transfer timed out")), 60_000)),
+    ]);
+    if (receipt.status !== "success") return { error: `transfer reverted (status=${receipt.status})` };
 
     return { txHash };
   } catch (err: any) {

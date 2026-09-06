@@ -20,8 +20,8 @@ wallet    approve          commit (5s) + active (10s)      FLAT / UP / DOWN → 
 
 ```
 Browser (wagmi + RainbowKit) ─────────────────────────────────────────────
-  └ 1v1 match flow: CHAR_SELECT → MATCH_TYPE → POSITION/approve → COMMIT(5s)
-     → ACTIVE(10s, flippable UP↔DOWN) → resolve → instant payout → next round / KO / result
+  └ 1v1 match flow: CHAR_SELECT → MATCH_TYPE → POSITION/approve → COMMIT(5s, pick + stake awaits receipt)
+     → ACTIVE(10s locked trade) → resolve → DB paper credit → next round / KO / result → ONE final tUSDC payout
 
 Next.js Route Handlers (server-authoritative)
   POST /api/matches/create|predict            round machine (COMMIT→ACTIVE→EXECUTING)

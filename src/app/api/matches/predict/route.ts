@@ -64,7 +64,10 @@ function computeLongestStreak(rounds: Array<{ playerCorrect: boolean }>): number
 // real directional signal — but a move that crosses/reshapes the spread is. This
 // makes rounds resolve against genuine flow instead of a frozen mid. (A move
 // wider than half the ask<=>bid spread is an unambiguous directional print.)
-const EC_ORACLE_SPREAD_FACTOR = 0.5;
+// Maximum time the COMMIT handler will wait for the operator's stake
+// transaction to confirm before giving up (client holds on the COMMIT screen
+// with a staking overlay until then — the battle must not start unconfirmed).
+const STAKE_GATE_TIMEOUT_MS = 60_000;
 
 // LEVERAGE MULTIPLIER for round resolution. The EC YES mid is a binary probability
 // (0..1) on a thin book, so it drifts only a few bp across a ~10s round while the
@@ -372,6 +375,61 @@ async function capProcessedArrays(addr: string): Promise<void> {
   }
 }
 
+/**
+ * GAME OVER — [THE SINGLE FINAL PAYOUT]
+ * Once the 7th round finishes (or a KO lands), credit is already paper-settled
+ * per round in MongoDB (playerBalance). This fires ONE real tUSDC transfer per
+ * net-positive player delivering the total match winnings to their primary
+ * wallet. Fire-and-forget: the round flow never blocks on it; the record
+ * (finalPayoutTxHash / rivalFinalPayoutTxHash) makes it idempotent, and the
+ * background worker recoups the operator's venue shares off-line later via
+ * settleRoundStakes().
+ */
+async function maybeFinalPayout(matchId: string): Promise<void> {
+  try {
+    const m = await Match.findById(matchId).lean();
+    if (!m || m.status !== "COMPLETED") return;
+    const jobs: { key: string; amountKey: string; addr: string; net: number }[] = [];
+    const pStart = m.playerStartBalance ?? m.positionAmount ?? 0;
+    const pNet = (m.playerBalance ?? pStart) - pStart;
+    if (pNet > 1e-6 && m.playerAddress) {
+      jobs.push({ key: "finalPayoutTxHash", amountKey: "finalPayoutAmount", addr: m.playerAddress, net: pNet });
+    }
+    if (m.opponentType === "player" && m.player2Address) {
+      const rStart = m.rivalStartBalance ?? m.positionAmount ?? 0;
+      const rNet = (m.rivalBalance ?? rStart) - rStart;
+      if (rNet > 1e-6) jobs.push({ key: "rivalFinalPayoutTxHash", amountKey: "rivalFinalPayoutAmount", addr: m.player2Address, net: rNet });
+    }
+    for (const job of jobs) {
+      const claimed = await Match.updateOne(
+        { _id: matchId, [job.key]: { $exists: false } },
+        { $set: { [job.key]: "PENDING", [job.amountKey]: job.net } },
+      );
+      if (claimed.modifiedCount !== 1) continue; // already paid / in flight
+      payoutTusdc(job.addr as `0x${string}`, job.net)
+        .then(({ txHash, error }) => {
+          if (error || !txHash) {
+            console.error(`[payout] final payout failed for ${job.addr}:`, error ?? "no tx");
+            Match.updateOne({ _id: matchId }, { $unset: { [job.key]: 1 } }).catch((e) =>
+              console.error("[payout] failed to clear pending payout", e),
+            );
+            return;
+          }
+          console.log(`[payout] final match payout ${job.net} tUSDC to ${job.addr} — tx ${txHash}`);
+          Match.updateOne({ _id: matchId }, { $set: { [job.key]: txHash } }).catch((e) =>
+            console.error("[payout] failed to record final payout", e),
+          );
+        })
+        .catch((err) => {
+          console.error("[payout] final payout error", err);
+          Match.updateOne({ _id: matchId }, { $unset: { [job.key]: 1 } }).catch(() => {});
+        });
+    }
+  } catch (err) {
+    console.error("[payout] maybeFinalPayout failed", err);
+  }
+}
+
 export async function POST(req: Request): Promise<Response> {
   let body: unknown;
   try { body = await req.json(); } catch { return jsonError(400, "body must be JSON"); }
@@ -399,7 +457,8 @@ export async function POST(req: Request): Promise<Response> {
     if (!isPlayer1 && !isPlayer2) return jsonError(403, "not a player in this match");
 
     const isBot = match.opponentType === "bot";
-    const deadlinePassed = now.getTime() > match.roundDeadline.getTime();
+    const deadlineMs = match.roundDeadline ? new Date(match.roundDeadline).getTime() : NaN;
+    const deadlinePassed = Number.isFinite(deadlineMs) && now.getTime() > deadlineMs;
     const isExpired = deadlinePassed && match.roundPhase === "ACTIVE";
 
     // Per-round financial model: `funded` is authoritative at create (true for
@@ -407,52 +466,128 @@ export async function POST(req: Request): Promise<Response> {
     // each round's stake custodies through the venue via the operator). A legacy
     // ghost-funded match retains its flag but is never held by it.
 
-    // Store prediction if provided and round is COMMIT (5s window) or ACTIVE.
-    // During ACTIVE, allow re-submission so per-round flips (UP↔DOWN) are
-    // captured server-side before the round resolves.
-    if (input.prediction && (match.roundPhase === "COMMIT" || (match.roundPhase === "ACTIVE" && !deadlinePassed))) {
+    // Traditional binary lock: predictions are accepted ONLY during COMMIT
+    // (the 5s pick window). Once the round is ACTIVE (the 10s trade duration),
+    // the position is locked — no flips. An ACTIVE payload never rewrites the
+    // locked call; it only drives the resolution claim below.
+    if (input.prediction && match.roundPhase === "COMMIT") {
       const predField = isPlayer1 ? "playerPrediction" : "rivalPrediction";
-      const existingPred = isPlayer1 ? match.playerPrediction : match.rivalPrediction;
-      const canUpdate = !existingPred || (match.roundPhase === "ACTIVE" && existingPred !== input.prediction);
-
-      if (canUpdate) {
-        const updateField: Record<string, "UP" | "DOWN"> = {};
-        updateField[predField] = input.prediction;
-        const atomicUpdate = await Match.findOneAndUpdate(
-          { _id: match._id, roundPhase: match.roundPhase },
-          { $set: updateField },
-          { new: true },
-        );
-        if (atomicUpdate) {
-          match.playerPrediction = atomicUpdate.playerPrediction;
-          match.rivalPrediction = atomicUpdate.rivalPrediction;
-        }
+      const atomicUpdate = await Match.findOneAndUpdate(
+        { _id: match._id, roundPhase: "COMMIT" },
+        { $set: { [predField]: input.prediction } },
+        { new: true },
+      );
+      if (atomicUpdate) {
+        match.playerPrediction = atomicUpdate.playerPrediction;
+        match.rivalPrediction = atomicUpdate.rivalPrediction;
       }
     }
 
-    // ── COMMIT → ACTIVE TRANSITION ────────────────────────────────────────
-    // The 5s commit window is where the player picks Attack (UP) / Defend
-    // (DOWN). The moment the prediction arrives (or the commit deadline
-    // expires with the default call), the round transitions to the 10s
-    // ACTIVE combat window: the entry YES-mid is locked, and the round
-    // escrow receives an on-chain stakeRound.
+    // ── COMMIT → ACTIVE TRANSITION — [THE SINGLE GATE] ───────────────────
+    // 0s→5s COMMIT: the player picks Attack (UP) / Defend (DOWN) — one fresh
+    // stake position per round (7 stakes per match, each living through its own
+    // 10s battle). The background operator places that side as a real BUY_YES /
+    // BUY_NO order on the pinned dreamDEX Event-Contract window HERE, and this
+    // handler AWAITS the confirmation receipt before the battle countdown may
+    // start. No receipt → no ACTIVE (client holds on the COMMIT staking
+    // overlay and retries); the 10s battle never runs on an unconfirmed stake.
     if (match.roundPhase === "COMMIT") {
-      const commitDeadlinePassed = now.getTime() > match.roundDeadline.getTime();
+      const commitDeadlineMs = match.roundDeadline ? new Date(match.roundDeadline).getTime() : NaN;
+      const commitDeadlinePassed = Number.isFinite(commitDeadlineMs) && now.getTime() > commitDeadlineMs;
       // Hold: neither prediction submitted nor deadline passed yet — the
       // client shows the commit UI countdown.
       if (!commitDeadlinePassed && !input.prediction) {
         return Response.json(buildState(match, now));
       }
 
-      // Atomic COMMIT → ACTIVE claim (only one request wins)
       const pred = input.prediction ?? match.playerPrediction ?? "UP";
+
+      // Re-read: if another request already locked this round, do NOT stake
+      // again — return its fresh state (prevents double-staking the same round
+      // when two COMMIT submits race).
+      const gateCheck = await Match.findById(match._id).lean();
+      if (!gateCheck || gateCheck.status !== "ACTIVE") {
+        return Response.json(buildState((await Match.findById(match._id))!, now));
+      }
+      if (gateCheck.roundPhase !== "COMMIT" || gateCheck.currentRound !== match.currentRound) {
+        const fresh = await Match.findById(match._id);
+        return Response.json(buildState(fresh!, now));
+      }
+
+      // Pin the arena window + capture the Second-5 entry YES-mid FIRST. The
+      // player's real stake goes into THIS market, and the round resolves at
+      // Second 15 against THIS market — one window, one resolution, one stake.
+      const asset = (gateCheck.priceModel?.asset ?? gateCheck.predictionAsset ?? "BTC") as "BTC" | "ETH";
+      let entryPrice = 0;
+      let pinnedArena: ArenaRef | null = null;
+      try {
+        pinnedArena = await ecArenaForRound(gateCheck as any, asset, gateCheck.currentRound - 1, { preferBook: true });
+        if (pinnedArena) {
+          const q = await readArenaPrice(pinnedArena);
+          if (q.yesPrice && q.yesPrice > 0) entryPrice = q.yesPrice;
+        }
+      } catch (err) {
+        console.warn(`[predict] entry price capture failed for commit round ${gateCheck.currentRound}`, err);
+      }
+      await Match.findByIdAndUpdate(match._id, {
+        $set: {
+          [`priceModel.checkpoints.${gateCheck.currentRound - 1}.entryPrice`]: entryPrice,
+        },
+      });
+
+      // ── THE GATE: place + await the real stake before opening the battle.
+      // Skipped only when there is nothing real to stake (no live arena/entry
+      // → paper FLAT round) or when staking is disabled (fast tests / no
+      // operator key in dev) — otherwise the round MUST NOT start unconfirmed.
+      const stakeConfigured = !!process.env.OPERATOR_PRIVATE_KEY && process.env.DREAMDUEL_FAST_ROUNDS !== "1";
+      let stakeTxHash: string | null = null;
+      let stakeQty: bigint | null = null;
+      let stakeCost: bigint | null = null;
+      if (pinnedArena && entryPrice > 0 && gateCheck.playerAmountPerRound) {
+        if (stakeConfigured) {
+          const stakeRaw = BigInt(Math.round(gateCheck.playerAmountPerRound * 10 ** EC_COLLATERAL_DECIMALS));
+          const staked: { txHash: string | null; error?: string; costRaw?: bigint; filledQuantity?: bigint } = await Promise.race([
+            stakePlayerRoundOnDreamDEX(pinnedArena, gateCheck.playerAddress, pred, stakeRaw),
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error("stake confirmation timed out")), STAKE_GATE_TIMEOUT_MS),
+            ),
+          ]).catch((err) => ({ txHash: null as string | null, error: err instanceof Error ? err.message : String(err) }));
+          if (!staked.txHash) {
+            // Gate closed: hold COMMIT so the client retries instead of
+            // fighting an unstaked round.
+            console.error(`[predict] stake gate failed for round ${gateCheck.currentRound}: ${staked.error ?? "no fill"}`);
+            return Response.json(
+              { ...buildState((await Match.findById(match._id))!, now), stakeFailed: true, error: `stake not confirmed: ${staked.error ?? "no fill"} — retrying` },
+              { status: 502 },
+            );
+          }
+          stakeTxHash = staked.txHash;
+          stakeQty = staked.filledQuantity ?? null;
+          stakeCost = staked.costRaw ?? null;
+        } else if (process.env.DREAMDUEL_FAST_ROUNDS !== "1") {
+          console.warn("[predict] stake gate open without operator key — paper round (dev only)");
+        }
+      }
+
+      // Atomic COMMIT → ACTIVE claim (only one request wins). The battle
+      // deadline starts NOW — at confirmation time — so the 10s window always
+      // measures Second 5 → Second 15 from the confirmed stake.
+      const cpIdx = gateCheck.currentRound - 1;
+      const stakeSet: Record<string, unknown> = {};
+      if (stakeTxHash) {
+        stakeSet[`priceModel.checkpoints.${cpIdx}.stakeTxHash`] = stakeTxHash;
+        stakeSet[`priceModel.checkpoints.${cpIdx}.stakeSide`] = pred;
+        if (stakeQty != null) stakeSet[`priceModel.checkpoints.${cpIdx}.stakeQty`] = stakeQty.toString();
+        if (stakeCost != null) stakeSet[`priceModel.checkpoints.${cpIdx}.stakeCostRaw`] = stakeCost.toString();
+      }
       const commitClaim = await Match.findOneAndUpdate(
         { _id: match._id, roundPhase: "COMMIT", currentRound: match.currentRound, status: "ACTIVE" },
         {
           $set: {
             roundPhase: "ACTIVE",
             [isPlayer1 ? "playerPrediction" : "rivalPrediction"]: pred,
-            roundDeadline: new Date(now.getTime() + ROUND_TIMINGS.ROUND_DURATION_MS + ROUND_TIMINGS.LOCK_MS),
+            roundDeadline: new Date(Date.now() + ROUND_TIMINGS.ROUND_DURATION_MS + ROUND_TIMINGS.LOCK_MS),
+            ...stakeSet,
           },
         },
         { new: true },
@@ -461,53 +596,6 @@ export async function POST(req: Request): Promise<Response> {
         // Another request already claimed — return fresh state
         const fresh = await Match.findById(match._id);
         return Response.json(buildState(fresh!, now));
-      }
-
-      // Capture the entry YES-mid for this round + PIN the arena window this
-      // round FIRST. The player's real stake goes into THIS market, and the
-      // round resolves against THIS market's real protocol outcome — one window,
-      // one resolution, one stake.
-      const asset = (commitClaim.priceModel?.asset ?? commitClaim.predictionAsset ?? "BTC") as "BTC" | "ETH";
-      let entryPrice = 0;
-      let pinnedArena: ArenaRef | null = null;
-      try {
-        pinnedArena = await ecArenaForRound(commitClaim, asset, commitClaim.currentRound - 1, { preferBook: true });
-        if (pinnedArena) {
-          const q = await readArenaPrice(pinnedArena);
-          if (q.yesPrice && q.yesPrice > 0) entryPrice = q.yesPrice;
-        }
-      } catch (err) {
-        console.warn(`[predict] entry price capture failed for commit round ${commitClaim.currentRound}`, err);
-      }
-      // Store the entry price on the match so resolveRound can compare
-      // exit vs entry.
-      await Match.findByIdAndUpdate(match._id, {
-        $set: {
-          [`priceModel.checkpoints.${commitClaim.currentRound - 1}.entryPrice`]: entryPrice,
-        },
-      });
-
-      // Per-round REAL stake on DreamDEX (fire-and-forget): the operator places
-      // the player's actual BUY_YES/BUY_NO market order in the pinned window via
-      // the SDK trader (escrowing collateral direct to the pool). A failed stake
-      // never blocks the match — the round still resolves off the real protocol
-      // result. The full placement (tx, side, qty, cost) is stored on the round's
-      // checkpoint so the on-chain stake history + settlement can surface it.
-      if (pinnedArena && commitClaim.playerAmountPerRound) {
-        const stakeRaw = BigInt(Math.round(commitClaim.playerAmountPerRound * 10 ** EC_COLLATERAL_DECIMALS));
-        const cpIdx = commitClaim.currentRound - 1;
-        stakePlayerRoundOnDreamDEX(pinnedArena, commitClaim.playerAddress, pred, stakeRaw)
-          .then(({ txHash, costRaw, filledQuantity }) => {
-            if (!txHash) return;
-            const $set: Record<string, unknown> = {
-              [`priceModel.checkpoints.${cpIdx}.stakeTxHash`]: txHash,
-              [`priceModel.checkpoints.${cpIdx}.stakeSide`]: pred,
-            };
-            if (filledQuantity != null) $set[`priceModel.checkpoints.${cpIdx}.stakeQty`] = filledQuantity.toString();
-            if (costRaw != null) $set[`priceModel.checkpoints.${cpIdx}.stakeCostRaw`] = costRaw.toString();
-            return Match.updateOne({ _id: match._id }, { $set });
-          })
-          .catch(() => {});
       }
 
       const fresh = await Match.findById(match._id);
@@ -529,14 +617,15 @@ export async function POST(req: Request): Promise<Response> {
         return Response.json(buildState(fresh!, now));
       }
 
-// We won the claim. Now resolve.
+      // We won the claim. Now resolve.
       // The round is the fixed ~10s combat window (commit at start, settle at
       // end). The stake was placed on the pinned arena at commit; the round
       // settles after the 10s window via resolveArenaOutcome — the protocol's
       // winningOutcome when it has already been posted, else the commit→round-
       // end price direction. The stake itself settles on-chain when the window
       // later closes; the round never waits on the full venue window.
-      const waitMs = claim.roundDeadline.getTime() - now.getTime();
+      const claimDeadlineMs = claim.roundDeadline ? new Date(claim.roundDeadline).getTime() : NaN;
+      const waitMs = Number.isFinite(claimDeadlineMs) ? claimDeadlineMs - now.getTime() : 0;
       if (waitMs > 0 && process.env.DREAMDUEL_FAST_ROUNDS !== "1") {
         // Reset to ACTIVE so the predict loop can re-claim once the deadline
         // passes. The atomic findOneAndUpdate claim prevents concurrent execution.
@@ -597,6 +686,9 @@ export async function POST(req: Request): Promise<Response> {
           const updated = await Match.findById(match._id);
           if (updated && nextStatus === "COMPLETED") {
             await updatePlayerStatsAtomic(updated, updated.rounds, "draw", now);
+            await Match.findByIdAndUpdate(match._id, { $set: { statsProcessed: "COMPLETE" as StatsProcessedStatus } });
+            // GAME OVER single final payout (draw → nets ≤ 0 → no-op inside).
+            void maybeFinalPayout(match._id.toString()).catch((e) => console.error("[payout] game-over payout failed", e));
           }
           return Response.json(buildState(updated!, now));
         }
@@ -613,6 +705,24 @@ export async function POST(req: Request): Promise<Response> {
 
         const allRounds = [...(claim.rounds as any[]), roundRecord];
 
+        // Preserve per-round stake/audit fields written at the COMMIT gate
+        // (stakeTxHash/stakeSide/stakeQty/stakeCostRaw/arena/entryPrice) by
+        // MERGING into this round's checkpoint slot. (Appending would duplicate
+        // the slot and misalign every later round's entry/arena.)
+        const prevCps: any[] = Array.isArray(claim.priceModel?.checkpoints) ? [...claim.priceModel.checkpoints] : [];
+        const cpSlot = roundRecord.roundNum - 1;
+        const prevCp = prevCps[cpSlot] ?? {};
+        while (prevCps.length <= cpSlot) prevCps.push({});
+        prevCps[cpSlot] = {
+          ...prevCp,
+          roundNum: roundRecord.roundNum,
+          startPrice: roundRecord.startPrice ?? (prevCp as any).startPrice ?? 0,
+          endPrice: roundRecord.endPrice ?? (prevCp as any).endPrice ?? 0,
+          prices: roundRecord.prices ?? (prevCp as any).prices ?? [roundRecord.startPrice ?? 0, roundRecord.endPrice ?? 0],
+          actual: roundRecord.actual,
+          arena: (prevCp as any).arena ?? roundRecord.arena,
+          entryPrice: (prevCp as any).entryPrice ?? roundRecord.startPrice,
+        };
         await Match.findByIdAndUpdate(match._id, {
           $push: { rounds: roundRecord },
           $set: {
@@ -637,13 +747,8 @@ export async function POST(req: Request): Promise<Response> {
               // MOVING EC mid — real venue flow produces UP/DOWN instead of a
               // perpetual mid==anchor draw.
               arenaOpen: claim.priceModel?.arenaOpen ?? claim.priceModel?.entryPrice ?? roundRecord.startPrice ?? 0,
-              checkpoints: [...(Array.isArray(claim.priceModel?.checkpoints) ? claim.priceModel.checkpoints : []), {
-                roundNum: roundRecord.roundNum,
-                startPrice: roundRecord.startPrice ?? 0,
-                endPrice: roundRecord.endPrice ?? 0,
-                prices: roundRecord.prices ?? [roundRecord.startPrice ?? 0, roundRecord.endPrice ?? 0],
-                actual: roundRecord.actual,
-              }],
+              arena: claim.priceModel?.arena,
+              checkpoints: prevCps,
             },
             ...(matchDecided ? {
               completedAt: now,
@@ -657,16 +762,11 @@ export async function POST(req: Request): Promise<Response> {
           },
         });
 
-        // INSTANT PAYOUT: fire-and-forget tUSDC transfer to the player on a
-        // round win. The operator recoups later via settleRoundStakes().
-        if (playerPnL > 0 && claim.playerAddress) {
-          payoutTusdc(claim.playerAddress as `0x${string}`, playerPnL)
-            .then(({ txHash, error }) => {
-              if (error) console.error("[predict] instant payout failed", error);
-              else if (txHash) console.log(`[predict] paid ${playerPnL} tUSDC to ${claim.playerAddress} — tx ${txHash}`);
-            })
-            .catch((err) => console.error("[predict] payout error", err));
-        }
+        // ROUND RESOLUTION (Second 15) — [INSTANT DATABASE CREDIT ONLY]
+        // Paper-credit the round PnL straight into MongoDB (playerBalance /
+        // rivalBalance). Deliberately NO on-chain transfer or redemption here —
+        // the single real tUSDC payout fires once at GAME OVER below, and the
+        // worker recoups venue shares off-line via settleRoundStakes().
 
         // Idempotent stats update for completed matches. Combat matches are
         // stats/rank/bragging only — money settles once on the EC position, not
@@ -675,6 +775,8 @@ export async function POST(req: Request): Promise<Response> {
           const matchForStats = { ...(typeof claim.toObject === "function" ? claim.toObject() : claim), rounds: allRounds };
           await updatePlayerStatsAtomic(matchForStats, allRounds, winner, now);
             await Match.findByIdAndUpdate(match._id, { $set: { statsProcessed: "COMPLETE" as StatsProcessedStatus } });
+          // GAME OVER single final payout (fire-and-forget, idempotent).
+          void maybeFinalPayout(match._id.toString()).catch((e) => console.error("[payout] game-over payout failed", e));
         }
 
         const updated = await Match.findById(match._id);
@@ -700,7 +802,7 @@ export async function POST(req: Request): Promise<Response> {
         };
 
         const lastRoundNum = match.currentRound;
-        const decided = lastRoundNum >= match.totalRounds || (claim.playerHP === 0 && claim.rivalHP === 0);
+        const decided = lastRoundNum >= match.totalRounds || claim.playerHP <= 0 || claim.rivalHP <= 0;
         const nextDeadline = new Date(now.getTime() + ROUND_TIMINGS.COMMIT_DURATION_MS);
         const nextRoundPhase: RoundPhase = decided ? "REVEALED" : "COMMIT";
         const nextStatus = decided ? "COMPLETED" : "ACTIVE";
@@ -727,6 +829,8 @@ export async function POST(req: Request): Promise<Response> {
         if (decided && updated) {
           await updatePlayerStatsAtomic(updated, updated.rounds ?? [], "draw", now);
           await Match.findByIdAndUpdate(match._id, { $set: { statsProcessed: "COMPLETE" as StatsProcessedStatus } });
+          // GAME OVER single final payout (draw → nets ≤ 0 → no-op inside).
+          void maybeFinalPayout(match._id.toString()).catch((e) => console.error("[payout] game-over payout failed", e));
           const finalized = await Match.findById(match._id);
           return Response.json({ ...buildState(finalized!, now), executionFailed: true, error: "round resolution failed, round recorded as no-op" });
         }
@@ -787,6 +891,9 @@ export interface MatchStateResponse {
   rivalBalance: number;
   playerStartBalance: number;
   rivalStartBalance: number;
+  // GAME OVER single final payout (tUSDC tx hash once mined, "PENDING" in flight)
+  finalPayoutTxHash?: string | null;
+  finalPayoutAmount?: number | null;
 }
 
 function buildState(match: any, serverTime: Date): MatchStateResponse {
@@ -835,7 +942,7 @@ function buildState(match: any, serverTime: Date): MatchStateResponse {
     playerPrediction: match.playerPrediction ?? null,
     rivalPrediction: match.rivalPrediction ?? null,
     rounds,
-    winner: match.winner ?? "player",
+    winner: match.winner ?? "draw",
     opponentType: match.opponentType,
     player2Char: match.player2Char,
     player1Ready: match.player1Ready,
@@ -862,6 +969,9 @@ function buildState(match: any, serverTime: Date): MatchStateResponse {
     rivalBalance: match.rivalBalance ?? match.rivalStartBalance ?? fixedBalance,
     playerStartBalance: match.playerStartBalance ?? fixedBalance,
     rivalStartBalance: match.rivalStartBalance ?? fixedBalance,
+    // GAME OVER single final payout state (paper credit until then).
+    finalPayoutTxHash: match.finalPayoutTxHash ?? null,
+    finalPayoutAmount: match.finalPayoutAmount ?? null,
     lastRound,
   };
 }

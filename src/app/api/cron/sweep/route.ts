@@ -1,4 +1,5 @@
 import { NextRequest } from "next/server";
+import { timingSafeEqual } from "node:crypto";
 import { connectToDatabase } from "@/db/connect";
 import { settleRoundStakes } from "@/lib/ec/settleRoundStakes";
 import { reconcilePositions } from "@/lib/ec/position";
@@ -10,7 +11,11 @@ function authorized(req: NextRequest): boolean {
   const secret = process.env.CRON_SECRET;
   if (!secret) return false;
   // Only accept Bearer header — query params leak secrets in logs/referrers.
-  return req.headers.get("authorization") === `Bearer ${secret}`;
+  const header = req.headers.get("authorization") ?? "";
+  const a = Buffer.from(header);
+  const b = Buffer.from(`Bearer ${secret}`);
+  if (a.length !== b.length) return false;
+  try { return timingSafeEqual(a, b); } catch { return false; }
 }
 
 /**
@@ -31,11 +36,19 @@ export async function GET(req: NextRequest) {
   try {
     await connectToDatabase();
     const roundStakesSettled = await settleRoundStakes();
-    const positions = await reconcilePositions().catch(() => null);
+    let positions: number | null = null;
+    let positionsError: string | null = null;
+    try {
+      positions = await reconcilePositions();
+    } catch (e) {
+      positionsError = e instanceof Error ? e.message : String(e);
+      console.error("[cron/sweep] reconcile failed", e);
+    }
     return Response.json({
-      ok: true,
+      ok: positionsError == null,
       roundStakesSettled,
-      positionsReconciled: positions != null,
+      positionsReconciled: positions,
+      ...(positionsError ? { positionsError } : {}),
       at: new Date().toISOString(),
     });
   } catch (err) {

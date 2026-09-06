@@ -127,6 +127,13 @@ export interface MatchDoc {
   rivalAmountPerRound: number;
   playerFinalBalance?: number;
   rivalFinalBalance?: number;
+  // GAME OVER single final payout: one real tUSDC transfer per net-positive
+  // player at match end (paper credit lives in playerBalance until then).
+  // "PENDING" while in flight; tx hash once mined. Absent = not paid / no win.
+  finalPayoutTxHash?: string;
+  finalPayoutAmount?: number;
+  rivalFinalPayoutTxHash?: string;
+  rivalFinalPayoutAmount?: number;
   // Single continuous market the whole match trades against
   priceModel?: MatchPriceModel;
   // Stats idempotency (lifecycle)
@@ -168,6 +175,16 @@ const RoundSchema = new Schema<RoundRecord>(
     asset: { type: String },
     // YES-mid captured at commit time — the entry price this round resolves against.
     entryPrice: { type: Number },
+    // How the round's UP/DOWN was decided: the DreamDEX window's real on-chain
+    // protocol resolution (winningOutcome) or the commit→end price direction.
+    resolutionSource: { type: String, enum: ["resolution", "direction"] },
+    // The pinned DreamDEX window this round's real stake + resolution used.
+    arena: {
+      marketId: { type: String },
+      poolAddress: { type: String },
+      symbol: { type: String },
+      expiry: { type: Number },
+    },
     // Trading P&L (per player), in STT
     playerPnL: { type: Number },
     rivalPnL: { type: Number },
@@ -220,7 +237,7 @@ const MatchSchema = new Schema<MatchDoc>(
     roundDeadline: { type: Date, required: true },
     playerScore: { type: Number, default: 0 },
     rivalScore: { type: Number, default: 0 },
-    winner: { type: String, enum: ["player", "rival", "draw"], default: "player" },
+    winner: { type: String, enum: ["player", "rival", "draw"], default: "draw" },
     rounds: { type: [RoundSchema], default: [] },
     playerPrediction: { type: String, enum: ["UP", "DOWN", null], default: null },
     rivalPrediction: { type: String, enum: ["UP", "DOWN", null], default: null },
@@ -262,6 +279,10 @@ const MatchSchema = new Schema<MatchDoc>(
     rivalBalance: { type: Number, default: 100 },
     playerFinalBalance: { type: Number },
     rivalFinalBalance: { type: Number },
+    finalPayoutTxHash: { type: String },
+    finalPayoutAmount: { type: Number },
+    rivalFinalPayoutTxHash: { type: String },
+    rivalFinalPayoutAmount: { type: Number },
     priceModel: { type: Schema.Types.Mixed },
     statsProcessed: { type: String, enum: ["PENDING", "PROCESSING", "COMPLETE", "FAILED"], default: "PENDING" },
     escrowStatus: { type: String, enum: ["PENDING", "SETTLED", "DRAWN", "FAILED"], default: "PENDING" },
@@ -278,7 +299,9 @@ const MatchSchema = new Schema<MatchDoc>(
 MatchSchema.index({ playerAddress: 1, status: 1 });
 MatchSchema.index({ playerAddress: 1, createdAt: -1 });
 MatchSchema.index({ player2Address: 1, status: 1 });
-MatchSchema.index({ status: 1 });
+MatchSchema.index({ status: 1, roundDeadline: 1 });
+MatchSchema.index({ statsProcessed: 1 });
+MatchSchema.index({ positionId: 1 });
 
 export const ROUND_TIMINGS = { ROUND_DURATION_MS, COMMIT_DURATION_MS, LOCK_MS, REVEAL_MS, IMPACT_MS } as const;
 

@@ -76,7 +76,9 @@ const TUSDC_ABI = [
   },
 ] as const;
 
-/** Random PEP-5218-compliant 32-byte private key (CSPRNG). */
+/** Random 32-byte private key (CSPRNG). Validated to be in secp256k1 range by
+ *  privateKeyToAccount at build time — no manual bit-twiddling that reduces
+ *  entropy. */
 function randomPrivateKey(): `0x${string}` {
   const bytes = new Uint8Array(32);
   if (typeof crypto !== "undefined" && crypto.getRandomValues) {
@@ -86,9 +88,11 @@ function randomPrivateKey(): `0x${string}` {
     // This path should only be hit in edge cases (e.g. old browsers).
     throw new Error("[ghost] crypto.getRandomValues unavailable — cannot generate secure key");
   }
-  bytes[0] &= 0x7f; // keep < secp256k1 order domain
-  bytes[31] |= 0x01;
   return `0x${Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("")}` as `0x${string}`;
+}
+
+function assertPrivateKey(pk: string): asserts pk is `0x${string}` {
+  if (!/^0x[0-9a-fA-F]{64}$/.test(pk)) throw new Error("[ghost] invalid stored key — clearing");
 }
 
 export function getOrCreateGhost(matchId: string): GhostWallet {
@@ -96,11 +100,18 @@ export function getOrCreateGhost(matchId: string): GhostWallet {
   const storage = window.sessionStorage;
   const key = `${GHOST_PREFIX}${matchId}`;
   let pk = storage.getItem(key);
+  if (pk) {
+    try { assertPrivateKey(pk); }
+    catch { storage.removeItem(key); pk = null; }
+  }
   if (!pk) {
     pk = randomPrivateKey();
+    // Validate before persisting (guarantees < secp256k1.n via viem).
+    privateKeyToAccount(pk as `0x${string}`);
     storage.setItem(key, pk);
   }
-  return buildGhost(pk as `0x${string}`, () => storage.removeItem(key));
+  assertPrivateKey(pk);
+  return buildGhost(pk, () => storage.removeItem(key));
 }
 
 /** Rebuild a ghost from an already-persisted key (SSR/navigation safe). */
@@ -108,7 +119,9 @@ export function loadGhost(matchId: string): GhostWallet | null {
   if (typeof window === "undefined") return null;
   const pk = window.sessionStorage.getItem(`${GHOST_PREFIX}${matchId}`);
   if (!pk) return null;
-  return buildGhost(pk as `0x${string}`, () => window.sessionStorage.removeItem(`${GHOST_PREFIX}${matchId}`));
+  try { assertPrivateKey(pk); }
+  catch { window.sessionStorage.removeItem(`${GHOST_PREFIX}${matchId}`); return null; }
+  return buildGhost(pk, () => window.sessionStorage.removeItem(`${GHOST_PREFIX}${matchId}`));
 }
 
 function buildGhost(pk: `0x${string}`, onDestroy: () => void): GhostWallet {
@@ -123,8 +136,14 @@ function buildGhost(pk: `0x${string}`, onDestroy: () => void): GhostWallet {
     for (let i = 0; i < 40; i++) {
       try {
         const r = await pc.getTransactionReceipt({ hash });
-        if (r) return r;
-      } catch {
+        if (r) {
+          if ((r as { status?: string }).status && (r as { status: string }).status !== "success") {
+            throw new Error(`[ghost] tx reverted (status=${(r as { status: string }).status})`);
+          }
+          return r;
+        }
+      } catch (e) {
+        if ((e as Error)?.message?.includes("reverted")) throw e;
         /* not mined yet */
       }
       await new Promise((r) => setTimeout(r, 1500));

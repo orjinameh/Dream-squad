@@ -13,6 +13,8 @@ export interface Checkpoint {
   endPrice: number;
   prices: number[]; // [start, end]
   actual: "UP" | "DOWN" | "FLAT";
+  // Second-5 entry YES-mid pinned at the COMMIT gate for this round.
+  entryPrice?: number;
   // Per-round DreamDEX arena window: the pinned binary market THIS round's real
   // stake was placed on and whose protocol resolution settles the round.
   arena?: {

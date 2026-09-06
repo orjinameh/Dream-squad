@@ -4,6 +4,8 @@ import { Match } from "@/db/models/Match";
 import { normalizeAddress } from "@/lib/addresses";
 import { jsonError } from "@/lib/utils";
 import { getRankLabel, getRankFromPoints } from "@/lib/rank";
+import { isAddress } from "viem";
+import { CHARACTERS } from "@/game/characters";
 
 export const dynamic = "force-dynamic";
 
@@ -11,35 +13,20 @@ export async function GET(req: Request): Promise<Response> {
   const url = new URL(req.url);
   const address = url.searchParams.get("address");
 
-  if (!address || !address.startsWith("0x")) {
-    return jsonError(400, "address required");
+  if (!address || !isAddress(address)) {
+    return jsonError(400, "valid address required");
   }
 
   try {
     await connectToDatabase();
     const addr = normalizeAddress(address);
 
-    let stats = await PlayerStats.findById(addr).lean();
-
-    if (!stats) {
-      await PlayerStats.create({
-        _id: addr,
-        address: addr,
-        totalWins: 0,
-        totalLosses: 0,
-        totalDraws: 0,
-        totalMatches: 0,
-        totalRounds: 0,
-        correctPredictions: 0,
-        longestStreak: 0,
-        currentStreak: 0,
-        favoriteChar: "dreamer",
-        lastPlayedAt: new Date(),
-        rankPoints: 500,
-        processedMatches: [],
-      });
-      stats = await PlayerStats.findById(addr).lean();
-    }
+    // Atomic read-or-create: concurrent GETs must not both create → duplicate-key 500.
+    const stats = await PlayerStats.findOneAndUpdate(
+      { _id: addr },
+      { $setOnInsert: { address: addr, favoriteChar: "dreamer", lastPlayedAt: new Date(), rankPoints: 500 } },
+      { upsert: true, new: true },
+    ).lean();
 
     if (!stats) {
       return jsonError(500, "failed to load player profile");
@@ -118,18 +105,25 @@ export async function PUT(req: Request): Promise<Response> {
   try { body = await req.json(); } catch { return jsonError(400, "body must be JSON"); }
 
   const { address, favoriteChar } = body as { address?: string; favoriteChar?: string };
-  if (!address || !address.startsWith("0x")) return jsonError(400, "address required");
+  if (!address || !isAddress(address)) return jsonError(400, "valid address required");
   if (!favoriteChar) return jsonError(400, "favoriteChar required");
+  const validChars = new Set(CHARACTERS.map((c) => c.id));
+  if (typeof favoriteChar !== "string" || favoriteChar.length > 32 || !validChars.has(favoriteChar)) {
+    return jsonError(400, "invalid favoriteChar");
+  }
 
   try {
     await connectToDatabase();
     const addr = normalizeAddress(address);
 
-    await PlayerStats.findOneAndUpdate(
+    // No upsert-with-partial-defaults: creating a doc with only favoriteChar
+    // pollutes the leaderboard with junk 0-stat rows. Require existing profile.
+    const updated = await PlayerStats.findOneAndUpdate(
       { _id: addr },
       { $set: { favoriteChar } },
-      { upsert: true },
+      { new: true },
     );
+    if (!updated) return jsonError(404, "profile not found");
 
     return Response.json({ ok: true, favoriteChar });
   } catch (err) {

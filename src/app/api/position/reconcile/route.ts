@@ -17,7 +17,9 @@ let inFlight = false;
 export async function POST(req: Request) {
   const adminToken = process.env.ADMIN_TOKEN;
   const auth = req.headers.get("x-admin-token");
-  if (adminToken && auth !== adminToken) {
+  // Fail-closed: without ADMIN_TOKEN set, the endpoint must NOT be open.
+  if (!adminToken) return jsonError(503, "reconcile unavailable (admin not configured)");
+  if (auth !== adminToken) {
     return jsonError(401, "unauthorized");
   }
   if (inFlight) {

@@ -253,7 +253,7 @@ describe("client bot game full loop", () => {
     r?.unmount();
   }, 120_000);
 
-  it("seeds the round with the pre-match call, which is flippable per-round", async () => {
+  it("locks the round at COMMIT close — ACTIVE flips are ignored (traditional binary)", async () => {
     const r = mountProbe();
     await openToRoundActive("UP");
 
@@ -265,17 +265,17 @@ describe("client bot game full loop", () => {
     expect(latest!.roundHistory.length).toBe(0);
     expect(latest!.phase).toBe("ROUND_ACTIVE");
 
-    // Per-round model: the call is flippable while the round is live — flipping
-    // re-submits the new side for THIS round, which resolves with the new call.
+    // Locked binary model: the 10s ACTIVE window is the locked trade — a
+    // late flip is ignored and the round keeps the COMMIT-locked call.
     await act(async () => {
       latest!.actions.makePrediction("DOWN");
     });
-    expect(latest!.playerPrediction).toBe("DOWN");
+    expect(latest!.playerPrediction).toBe("UP");
     expect(latest!.lockedCall).toBe("UP"); // the saved pre-match call is unchanged
 
-    // Resolves when the round closes (timeout), with the flipped call.
+    // Resolves when the round closes (timeout), with the locked call.
     await waitFor((h) => h.roundHistory.length >= 1, 25_000, "round resolves at close (not on pick)");
-    expect(latest!.roundHistory[0]?.playerPredicted).toBe("DOWN");
+    expect(latest!.roundHistory[0]?.playerPredicted).toBe("UP");
     r?.unmount();
   }, 60_000);
 

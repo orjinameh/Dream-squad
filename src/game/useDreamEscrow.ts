@@ -105,15 +105,28 @@ export function useDreamEscrow(windowId?: string | null, escrowAddress: `0x${str
     functionName: "position",
     args: key ? [key] : undefined,
     chainId: EC_CHAIN.id,
+    query: { enabled: !!key },
   });
 
   // Legacy (pre-v3) escrows return a 6-field struct that throws the current ABI
   // decoder. Probe with the legacy shape and normalize when the primary failed.
+  // Only query when the primary errored to avoid doubling RPC reads.
   const legacyPos = useReadContract({
     abi: LEGACY_POSITION_ABI,
     address: escrow,
     functionName: "position",
     args: key ? [key] : undefined,
+    chainId: EC_CHAIN.id,
+    query: { enabled: !!key && pos.isError },
+  });
+
+  // Allowance to the per-round escrow (spender = roundEscrow). stakeRound must
+  // check THIS, not the position-escrow allowance above.
+  const roundAllowance = useReadContract({
+    abi: TUSDC_ABI,
+    address: TUSDC_ADDRESS,
+    functionName: "allowance",
+    args: address ? [address, ROUND_ESCROW_ADDRESS ?? escrow] : undefined,
     chainId: EC_CHAIN.id,
   });
 
@@ -213,11 +226,14 @@ export function useDreamEscrow(windowId?: string | null, escrowAddress: `0x${str
   const approveFullMatch = useCallback(
     async (amountPerRound: number, rounds: number) => {
       if (!address) throw new Error("Wallet not connected");
+      // Integer-only pot sizing: avoid float 0.1*7 drift blowing parseUnits.
       const potRaw = amountPerRound > 0 && rounds > 0
-        ? parseUnits(String(amountPerRound * rounds), EC_COLLATERAL_DECIMALS)
+        ? BigInt(Math.round(amountPerRound * 1_000_000)) * BigInt(rounds)
         : 0n;
       if (potRaw <= 0n) throw new Error("Invalid stake amount");
-      const currentAllowance = allowance.data as bigint | undefined;
+      // Check the OPERATOR allowance (spender = ESCROW_ADMIN), not the
+      // position-escrow allowance — approveFullMatch approves ESCROW_ADMIN.
+      const currentAllowance = opAllowance.data as bigint | undefined;
       if ((currentAllowance ?? 0n) < potRaw) {
         const approveHash = await writeWithTimeout({
           abi: TUSDC_ABI,
@@ -227,11 +243,14 @@ export function useDreamEscrow(windowId?: string | null, escrowAddress: `0x${str
           chainId: EC_CHAIN.id,
         });
         setLastHash(approveHash as `0x${string}`);
-        await waitForReceipt(approveHash as `0x${string}`);
+        const receipt = await waitForReceipt(approveHash as `0x${string}`);
+        if ((receipt as { status?: string }).status && (receipt as { status: string }).status !== "success") {
+          throw new Error(`Approve reverted (status=${(receipt as { status: string }).status})`);
+        }
       }
       return potRaw;
     },
-    [address, allowance.data, writeWithTimeout],
+    [address, opAllowance.data, writeWithTimeout],
   );
 
   // Collect a WON position (DEX payout = stake / entryPrice).
@@ -259,7 +278,9 @@ export function useDreamEscrow(windowId?: string | null, escrowAddress: `0x${str
     async (matchId: Hash | string | null | undefined, round: number, amountRaw: bigint, entryPrice?: bigint) => {
       const mid = matchId == null ? undefined : matchKey(String(matchId), address);
       if (!mid || !address) throw new Error("Wallet not connected");
-      const curAllowance = allowance.data as bigint | undefined;
+      // Check the ROUND escrow allowance (spender = roundEscrow), not the
+      // position-escrow allowance.
+      const curAllowance = roundAllowance.data as bigint | undefined;
       if ((curAllowance ?? 0n) < amountRaw) {
         const approveHash = await writeWithTimeout({
           abi: TUSDC_ABI,
@@ -269,7 +290,10 @@ export function useDreamEscrow(windowId?: string | null, escrowAddress: `0x${str
           chainId: EC_CHAIN.id,
         });
         setLastHash(approveHash as `0x${string}`);
-        await waitForReceipt(approveHash as `0x${string}`);
+        const receipt = await waitForReceipt(approveHash as `0x${string}`);
+        if ((receipt as { status?: string }).status && (receipt as { status: string }).status !== "success") {
+          throw new Error(`Approve reverted (status=${(receipt as { status: string }).status})`);
+        }
       }
       const hash = await writeWithTimeout({
         abi: DREAMDUEL_ROUND_ESCROW_ABI,
@@ -279,10 +303,13 @@ export function useDreamEscrow(windowId?: string | null, escrowAddress: `0x${str
         chainId: EC_CHAIN.id,
       });
       setLastHash(hash as `0x${string}`);
-      await waitForReceipt(hash as `0x${string}`);
+      const stakeReceipt = await waitForReceipt(hash as `0x${string}`);
+      if ((stakeReceipt as { status?: string }).status && (stakeReceipt as { status: string }).status !== "success") {
+        throw new Error(`Stake reverted (status=${(stakeReceipt as { status: string }).status})`);
+      }
       return hash as `0x${string}`;
     },
-    [address, allowance.data, roundEscrow, writeWithTimeout],
+    [address, roundAllowance.data, roundEscrow, writeWithTimeout],
   );
 
   const roundWithdraw = useCallback(
@@ -328,6 +355,7 @@ export function useDreamEscrow(windowId?: string | null, escrowAddress: `0x${str
     usdcBalanceFormatted: usdc.data != null ? formatUnits(usdc.data as bigint, EC_COLLATERAL_DECIMALS) : null,
     allowance: allowance.data as bigint | undefined,
     operatorAllowance: opAllowance.data as bigint | undefined,
+    roundAllowance: roundAllowance.data as bigint | undefined,
     onchain: raw,
     isMine,
     isOpen,
@@ -348,6 +376,7 @@ export function useDreamEscrow(windowId?: string | null, escrowAddress: `0x${str
       usdc.refetch();
       allowance.refetch();
       opAllowance.refetch();
+      roundAllowance.refetch();
       pos.refetch();
       legacyPos.refetch();
     },
@@ -359,8 +388,14 @@ async function waitForReceipt(hash: `0x${string}`) {
   for (let i = 0; i < 30; i++) {
     try {
       const r = await pc.getTransactionReceipt({ hash });
-      if (r) return r;
-    } catch {
+      if (r) {
+        if ((r as { status?: string }).status && (r as { status: string }).status !== "success") {
+          throw new Error(`Transaction reverted (status=${(r as { status: string }).status})`);
+        }
+        return r;
+      }
+    } catch (e) {
+      if ((e as Error)?.message?.includes("reverted")) throw e;
       /* not mined yet */
     }
     await new Promise((r) => setTimeout(r, 1500));

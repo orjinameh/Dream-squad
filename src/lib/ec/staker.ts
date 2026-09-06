@@ -33,7 +33,11 @@ const OUTCOME_DOWN = 1; // 1 = Down/NO
  * Capped ~1min before the window closes so near-close round stakes don't revert.
  */
 function orderExpiryNs(arena: ArenaRef): bigint {
-  const capEpoch = Math.min(Math.floor(Date.now() / 1000) + 900, arena.expiry - 60);
+  // Dead-man's switch: future-dated, never past the window's own expiry.
+  // 15s venue windows would make `expiry - 60s` land in the past (instant
+  // OrderAlreadyExpired), so floor at now+30s and cap 10s before close.
+  const nowSec = Math.floor(Date.now() / 1000);
+  const capEpoch = Math.max(nowSec + 30, Math.min(nowSec + 900, arena.expiry - 10));
   return BigInt(capEpoch) * 1_000_000_000n;
 }
 
@@ -73,7 +77,11 @@ export async function stakePlayerRoundOnDreamDEX(
   // 1) Prefer organic liquidity: (a) a two-sided quoted IOC sized off the book,
   //    else (b) a plain mid-priced IOC that price-improves off any real ask/bid
   //    (near-close windows carry one-sided resters). Only a fill counts.
-  const wholeSets = stakeRaw > 0n ? stakeRaw : 1_000_000n;
+  // wholeSets is outcome-token quantity for the mint-a-pair fallback. Size it
+  // from collateral: at leg price p, cost ≈ qty*p/1e6, so qty ≈ stakeRaw*1e6/p
+  // (else a 1 tUSDC stake at 0.5 mints only 0.5 tUSDC of cost — half size).
+  const baseSets = stakeRaw > 0n ? stakeRaw : 1_000_000n;
+  const wholeSets = (baseSets * 1_000_000n) / PAIR_PRICE;
   const quote = await quoteStake(arena, prediction, stakeRaw).catch(() => null);
   const quoteAttempt = quote
     ? await placePlayerTakerFiltered(takerKey, arena, side, quote.price, quote.quantity)
@@ -97,19 +105,25 @@ export async function stakePlayerRoundOnDreamDEX(
     // Player's side first as a maker. If it crosses a real resting order the
     // position is even cheaper; if the 0.5 leg would cross a THICK book, step
     // the price down so it still rests (guaranteed fill beats best price here).
+    // Size each attempt so escrowed cost ≈ stakeRaw at that leg price.
     let legPrice = PAIR_PRICE;
+    let legQty = wholeSets;
     let maker: Awaited<ReturnType<typeof trader.placeOrder>> | null = null;
     for (const attemptPrice of [PAIR_PRICE, 250000n, 100000n]) {
+      const unitCost = side === "BUY_YES" ? attemptPrice : 1_000_000n - attemptPrice;
+      const qtyForPrice = unitCost > 0n ? (baseSets * 1_000_000n) / unitCost : wholeSets;
+      if (qtyForPrice <= 0n) continue;
       try {
         maker = await trader.placeOrder({
           pool,
           side,
           price: attemptPrice,
-          quantity: wholeSets,
+          quantity: qtyForPrice,
           orderType: ORDER_MAKER, // PostOnly — must rest, never takes
           expireTimestampNs: orderExpiryNs(arena),
         });
         legPrice = attemptPrice;
+        legQty = qtyForPrice;
         break;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -119,17 +133,17 @@ export async function stakePlayerRoundOnDreamDEX(
     if (!maker) throw new Error("PostOnly would cross at every leg price");
 
     // Counter side crosses it (or the book) with IOC — mint-a-pair, real fill.
-    const fillRes = await placePlayerTaker(takerKey, arena, counterSide, legPrice, wholeSets);
+    const fillRes = await placePlayerTaker(takerKey, arena, counterSide, legPrice, legQty);
     if (!fillRes.txHash) {
       return { ...fillRes, error: `mint-a-pair maker tx=${maker.hash} then ${fillRes.error ?? "no fill"}` };
     }
     // The PLAYER's leg is the maker: escrow at the leg price (BUY_YES pays
     // `legPrice`, BUY_NO pays `ONE - legPrice` per whole set).
-    const playerCost = side === "BUY_YES" ? (legPrice * wholeSets) / 1_000_000n : ((1_000_000n - legPrice) * wholeSets) / 1_000_000n;
+    const playerCost = side === "BUY_YES" ? (legPrice * legQty) / 1_000_000n : ((1_000_000n - legPrice) * legQty) / 1_000_000n;
     return {
       txHash: maker.hash,
       costRaw: playerCost,
-      filledQuantity: wholeSets,
+      filledQuantity: legQty,
       error: undefined,
     };
   } catch (err) {

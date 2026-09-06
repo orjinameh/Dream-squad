@@ -39,10 +39,15 @@ export async function ecArenaForMatch(
     // round's near-identical read (the source of all-FLAT 0-0 draws).
     const same = pinned?.marketId === arena.marketId;
     const set: Record<string, unknown> = { "priceModel.arena": arena };
-    if (!same && !(match.priceModel?.arenaOpen && match.priceModel.arenaOpen > 0)) {
-      set["priceModel.arenaOpen"] = await readArenaPrice(arena).then((q) =>
+    // Pin the window-open YES seed once — but retry if the first read was 0
+    // (null book at discovery). A permanent 0 would freeze every round to FLAT.
+    const existingOpen = match.priceModel?.arenaOpen;
+    if (!same || !(existingOpen && existingOpen > 0)) {
+      const open = await readArenaPrice(arena).then((q) =>
         q.yesPrice && q.yesPrice > 0 ? q.yesPrice : 0,
       ).catch(() => 0);
+      if (open > 0) set["priceModel.arenaOpen"] = open;
+      else if (!same && !(existingOpen && existingOpen > 0)) set["priceModel.arenaOpen"] = 0;
     }
     await import("@/db/models/Match").then(({ Match }) =>
       Match.updateOne({ _id: match._id }, { $set: set }),

@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 interface Props {
   asset: string;
   question: string;
   roundActive: boolean;
   roundDeadline: number;
+  roundDurationMs?: number;
   // Server-authoritative deterministic series (matches what resolution uses).
   prices?: number[];
   startPrice?: number;
@@ -19,6 +20,7 @@ export function MarketChart({
   question,
   roundActive,
   roundDeadline,
+  roundDurationMs = 10000,
   prices,
   startPrice,
   endPrice,
@@ -44,17 +46,19 @@ export function MarketChart({
   const series = prices && prices.length >= 2 ? prices : null;
   const base = startPrice ?? (series ? series[0] : 0);
 
-  // Reveal the series left→right proportionally to the 10-second round.
+  // Reveal the series left→right proportionally to the round duration
+  // (COMMIT is 5s, ACTIVE is 10s — never hardcode 10s).
   const visible = useMemo(() => {
     if (!roundActive) return series;
     if (!series) return series;
+    const dur = roundDurationMs > 0 ? roundDurationMs : 10000;
     const elapsedFrac = Math.min(
       1,
-      Math.max(0, ((roundDeadline - 10000 - Date.now()) * -1) / 10000),
+      Math.max(0, ((roundDeadline - dur - Date.now()) * -1) / dur),
     );
     const count = Math.max(2, Math.round(elapsedFrac * series.length));
     return series.slice(0, count);
-  }, [roundActive, series, roundDeadline, tick]);
+  }, [roundActive, series, roundDeadline, roundDurationMs, tick]);
 
   const currentPrice = visible && visible.length ? visible[visible.length - 1] : base;
 
@@ -112,10 +116,11 @@ export function MarketChart({
 }
 
 function MiniSparkline({ prices, height, color }: { prices: number[]; height: number; color: string }) {
+  const gid = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   if (prices.length < 2) return <div style={{ height, background: "#1e293b", borderRadius: 4 }} />;
 
-  const min = Math.min(...prices);
-  const max = Math.max(...prices);
+  const min = prices.reduce((a, b) => Math.min(a, b), prices[0]);
+  const max = prices.reduce((a, b) => Math.max(a, b), prices[0]);
   const range = max - min || 1;
   const width = 100;
 
@@ -126,16 +131,17 @@ function MiniSparkline({ prices, height, color }: { prices: number[]; height: nu
   }).join(" ");
 
   const fillPoints = `0,${height} ${points} ${width},${height}`;
+  const gradId = `grad-${gid}`;
 
   return (
     <svg viewBox={`0 0 ${width} ${height}`} style={{ width: "100%", height, borderRadius: 4, overflow: "hidden" }}>
       <defs>
-        <linearGradient id={`grad-${color.replace("#", "")}`} x1="0" y1="0" x2="0" y2="1">
+        <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor={color} stopOpacity="0.3" />
           <stop offset="100%" stopColor={color} stopOpacity="0" />
         </linearGradient>
       </defs>
-      <polygon points={fillPoints} fill={`url(#grad-${color.replace("#", "")})`} />
+      <polygon points={fillPoints} fill={`url(#${gradId})`} />
       <polyline points={points} fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );

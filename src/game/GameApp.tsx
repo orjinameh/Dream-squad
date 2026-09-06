@@ -410,8 +410,8 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
   const [faucetBusy, setFaucetBusy] = useState(false);
   const presets = [1, 5, 10, 25, 50];
   const rounds = game.totalRounds ?? 7;
-  const fullPot = amount * rounds;
-
+  // Integer-only pot math: avoid float String(amount*rounds) drift.
+  const fullPotRaw = BigInt(Math.round(amount * 1_000_000)) * BigInt(rounds);
   // Per-round model: an active position = a funded fight entry (the position
   // record carries amountPerRound). Money is staked PER ROUND by the per-round
   // escrow + ghost; at POSITION time the player only AUTHORIZES the full pot
@@ -419,7 +419,6 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
   // screen is "APPROVED", not "STAKED" — actual staking happens round by round.
   // A leftover DB record or an auto-loaded position alone is NOT approved — you
   // can't advance without a real on-chain approve covering the full match pot.
-  const fullPotRaw = parseUnits(String(fullPot), EC_COLLATERAL_DECIMALS);
   const onchainApproved = (escrow.operatorAllowance ?? 0n) >= fullPotRaw;
   const hasActive = Boolean(game.positionWindowId && game.positionDirection) && onchainApproved;
   const activeDirection = game.positionDirection;
@@ -563,7 +562,7 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
           width: "100%", padding: "12px 0", borderRadius: 6, cursor: "pointer", fontWeight: 800, fontSize: 14,
           background: "linear-gradient(135deg, #7c3aed, #a855f7)", border: "none", color: "#fff", letterSpacing: "0.08em", opacity: busy ? 0.6 : 1,
         }}>
-          {busy ? "APPROVING..." : hasActive ? `\u2713 APPROVED \u2192 SWITCH \u2192 FIGHT ${direction} ${amount} tUSDC / ROUND` : `\u2694 APPROVE ${direction} ${amount} tUSDC \u00D7 ${rounds} = ${fullPot} tUSDC (stakes per round)`}
+          {busy ? "APPROVING..." : hasActive ? `\u2713 APPROVED \u2192 SWITCH \u2192 FIGHT ${direction} ${amount} tUSDC / ROUND` : `\u2694 APPROVE ${direction} ${amount} tUSDC \u00D7 ${rounds} = ${amount * rounds} tUSDC (stakes per round)`}
         </button>
 
         {game.positionWonPositions.length > 0 && (
@@ -1232,7 +1231,7 @@ function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; 
         background: "rgba(8,8,16,0.95)",
       }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <RetroCharacter char={game.playerChar!} state={game.playerCharState} size={0.6} />
+          <RetroCharacter char={game.playerChar ?? CHARACTERS[0]} state={game.playerCharState} size={0.6} />
           <div style={{ minWidth: 80 }}>
             <div style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.1em" }}>YOU</div>
             <HealthBar current={game.playerHP} max={game.maxHP} color="#10b981" />
@@ -1281,7 +1280,7 @@ function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; 
               {game.rivalHP} HP
             </div>
           </div>
-          <RetroCharacter char={game.rivalChar!} state={game.rivalCharState} size={0.6} flip />
+          <RetroCharacter char={game.rivalChar ?? CHARACTERS[1]} state={game.rivalCharState} size={0.6} flip />
         </div>
       </div>
 
@@ -1385,7 +1384,7 @@ function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; 
             <div style={{
               textAlign: "center", position: "relative",
             }}>
-              <RetroCharacter char={game.playerChar!} state={game.playerCharState} size={0.8} aura={game.playerStreak >= 3 ? "#fbbf24" : undefined} />
+              <RetroCharacter char={game.playerChar ?? CHARACTERS[0]} state={game.playerCharState} size={0.8} aura={game.playerStreak >= 3 ? "#fbbf24" : undefined} />
               <div style={{ fontSize: 10, color: game.playerChar?.colors.accent, letterSpacing: "0.1em", marginTop: 4 }}>{game.playerChar?.name}</div>
               {game.lastDamage?.target === "player" && (
                 <DamageNumber amount={game.lastDamage.amount} isCritical={game.lastDamage.isCritical} />
@@ -1405,7 +1404,7 @@ function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; 
             <div style={{
               textAlign: "center", position: "relative",
             }}>
-              <RetroCharacter char={game.rivalChar!} state={game.rivalCharState} size={0.8} flip aura={game.rivalStreak >= 3 ? "#ef4444" : undefined} />
+              <RetroCharacter char={game.rivalChar ?? CHARACTERS[1]} state={game.rivalCharState} size={0.8} flip aura={game.rivalStreak >= 3 ? "#ef4444" : undefined} />
               <div style={{ fontSize: 10, color: game.rivalChar?.colors.accent, letterSpacing: "0.1em", marginTop: 4 }}>{game.rivalName}</div>
               {game.lastDamage?.target === "rival" && (
                 <DamageNumber amount={game.lastDamage.amount} isCritical={game.lastDamage.isCritical} />
@@ -1515,9 +1514,8 @@ function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; 
                   {game.timeLeft.toFixed(2)}
                 </div>
 
-                {/* Selection status — always "selected" (repositionable). Never
-                    "committed"/locked: there is no lock state until round close. */}
-                {game.playerPrediction && (
+                {/* Traditional binary status: COMMIT = picking, ACTIVE = locked trade */}
+                {game.phase === "ROUND_COMMIT" && game.playerPrediction && (
                   <div style={{
                     fontSize: 11, letterSpacing: "0.12em", marginBottom: 12, padding: "4px 12px",
                     borderRadius: 4, display: "inline-block",
@@ -1526,6 +1524,17 @@ function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; 
                     color: "#f59e0b",
                   }}>
                     {`${game.playerPrediction === "UP" ? "\u2191" : "\u2193"} ${game.playerPrediction} POSITION SELECTED`}
+                  </div>
+                )}
+                {game.phase === "ROUND_ACTIVE" && game.playerPrediction && (
+                  <div style={{
+                    fontSize: 11, letterSpacing: "0.12em", marginBottom: 12, padding: "4px 12px",
+                    borderRadius: 4, display: "inline-block",
+                    background: "rgba(16,185,129,0.15)",
+                    border: "1px solid #10b981",
+                    color: "#10b981",
+                  }}>
+                    {`${game.playerPrediction === "UP" ? "\u2191" : "\u2193"} ${game.playerPrediction} LOCKED \u2014 TRADE RUNNING`}
                   </div>
                 )}
                 {predStatus === "submitting" && (
@@ -1537,7 +1546,16 @@ function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; 
                     SUBMITTING...
                   </div>
                 )}
-                {game.executionStatus === "executing" && (
+                {game.phase === "ROUND_COMMIT" && game.executionStatus === "executing" && (
+                  <div style={{
+                    fontSize: 11, letterSpacing: "0.12em", marginBottom: 12, padding: "4px 12px",
+                    borderRadius: 4, display: "inline-block",
+                    background: "rgba(16,185,129,0.15)", border: "1px solid #10b981", color: "#10b981",
+                  }}>
+                    PLACING STAKE ON DREAMDEX {"\u2014"} AWAITING CONFIRMATION {"\u2014"} BATTLE STARTS AFTER CONFIRM
+                  </div>
+                )}
+                {game.executionStatus === "executing" && game.phase !== "ROUND_COMMIT" && (
                   <div style={{
                     fontSize: 11, letterSpacing: "0.12em", marginBottom: 12, padding: "4px 12px",
                     borderRadius: 4, display: "inline-block",
@@ -1547,7 +1565,8 @@ function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; 
                   </div>
                 )}
 
-                {/* Per-round pick — up/down, changeable each round until lock */}
+                {/* Binary pick — COMMIT only. ACTIVE is the locked 10s trade. */}
+                {game.phase === "ROUND_COMMIT" && (
                 <div style={{ display: "flex", gap: 12, justifyContent: "center", alignItems: "center" }}>
                   <button
                     onClick={() => { game.actions.makePrediction("UP"); }}
@@ -1574,9 +1593,28 @@ function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; 
                     {"\u2193"} DOWN
                   </button>
                 </div>
+                )}
+                {game.phase === "ROUND_COMMIT" && (
                 <div style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.1em", marginTop: 6 }}>
-                  PICK PER ROUND \u2014 CHANGE ANYTIME BEFORE THE ROUND CLOSES ({game.positionAmount ?? 0} tUSDC / ROUND)
+                  PICK THIS ROUND {"\u2014"} LOCKS AT COMMIT CLOSE ({game.positionAmount ?? 0} tUSDC / ROUND)
                 </div>
+                )}
+                {game.phase === "ROUND_ACTIVE" && (
+                <div style={{ fontSize: 10, color: "#10b981", letterSpacing: "0.1em", marginTop: 6 }}>
+                  LOCKED {"\u2014"} TRADE RUNNING 10s ({game.positionAmount ?? 0} tUSDC STAKED)
+                </div>
+                )}
+          </div>
+        )}
+
+        {game.phase === "ROUND_LOCKED" && (
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontSize: 14, color: "#f59e0b", letterSpacing: "0.12em", marginBottom: 8 }}>
+              CALCULATING RESULT...
+            </div>
+            <div style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.08em" }}>
+              Freezing Second-15 contract value {"\u2014"} crediting paper PnL to match balance
+            </div>
           </div>
         )}
 
@@ -1683,7 +1721,7 @@ function MatchResult({ game, onRematch, onChangePosition, onExit }: { game: Retu
 
       <div style={{ display: "flex", alignItems: "center", gap: 48, marginBottom: 16 }}>
         <div style={{ textAlign: "center" }}>
-          <RetroCharacter char={game.playerChar!} state={won ? "victory" : draw ? "idle" : "defeat"} size={1.5} />
+          <RetroCharacter char={game.playerChar ?? CHARACTERS[0]} state={won ? "victory" : draw ? "idle" : "defeat"} size={1.5} />
           <div style={{ fontSize: 14, color: game.playerChar?.colors.accent, letterSpacing: "0.1em", marginTop: 8 }}>{game.playerChar?.name}</div>
           <HealthBar current={game.playerHP} max={game.maxHP} color="#10b981" wide />
           <div style={{ fontSize: 11, color: "#10b981", marginTop: 2 }}>{game.playerHP} HP</div>
@@ -1698,7 +1736,7 @@ function MatchResult({ game, onRematch, onChangePosition, onExit }: { game: Retu
           </div>
         </div>
         <div style={{ textAlign: "center" }}>
-          <RetroCharacter char={game.rivalChar!} state={won ? "defeat" : draw ? "idle" : "victory"} size={1.5} flip />
+          <RetroCharacter char={game.rivalChar ?? CHARACTERS[1]} state={won ? "defeat" : draw ? "idle" : "victory"} size={1.5} flip />
           <div style={{ fontSize: 14, color: game.rivalChar?.colors.accent, letterSpacing: "0.1em", marginTop: 8 }}>{game.rivalName}</div>
           <HealthBar current={game.rivalHP} max={game.maxHP} color="#ef4444" wide />
           <div style={{ fontSize: 11, color: "#ef4444", marginTop: 2 }}>{game.rivalHP} HP</div>

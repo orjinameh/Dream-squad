@@ -17,20 +17,20 @@ import { isAddress } from "viem";
  */
 const createMatchSchema = z.object({
   playerAddress: z.string().refine((v) => isAddress(v), "invalid address"),
-  playerChar: z.string().min(1),
-  rivalName: z.string().min(1),
-  rivalChar: z.string().min(1),
-  mode: z.string().min(1),
-  totalRounds: z.number().int().positive().default(7),
+  playerChar: z.string().min(1).max(32),
+  rivalName: z.string().min(1).max(32),
+  rivalChar: z.string().min(1).max(32),
+  mode: z.string().min(1).max(32),
+  totalRounds: z.number().int().min(1).max(11).default(7),
   opponentType: z.enum(["bot", "player"]).optional(),
   botDifficulty: z.enum(["easy", "normal", "hard"]).optional(),
-  predictionAsset: z.string().optional(),
+  predictionAsset: z.enum(["BTC", "ETH"]).optional(),
   // Optional explicit position; defaults to the wallet's active one.
-  positionId: z.string().optional(),
+  positionId: z.string().min(1).max(64).optional(),
   // The player's own stake size for THIS match (tUSDC per round). Drives the
   // real per-round DreamDEX pool stakes; persisted so resolve/stake size is
   // server-authoritative and never defaults silently to 1.
-  amountPerRound: z.number().positive().optional(),
+  amountPerRound: z.number().positive().max(100000).optional(),
 });
 
 export async function POST(req: Request): Promise<Response> {
@@ -65,8 +65,8 @@ export async function POST(req: Request): Promise<Response> {
     const checksumAddr = normalizeAddress(input.playerAddress);
     const activeOwnerFilter = {
       $or: [
-        { playerAddress: { $in: [address, checksumAddr] } },
-        { player2Address: { $in: [address, checksumAddr] } },
+        { playerAddress: { $in: [address, checksumAddr, lowerAddr] } },
+        { player2Address: { $in: [address, checksumAddr, lowerAddr] } },
       ],
     };
 
@@ -76,8 +76,8 @@ export async function POST(req: Request): Promise<Response> {
     // stays lapsed — a healthy match always rolls its deadline forward at each
     // resolved round. Abandon those so a player isn't permanently locked out of
     // matching by a zombie row. A match with a deadline still in the future is a
-    // LIVE fight and is NOT touched.
-    const staleCutoff = new Date(Date.now() - 20_000);
+    // LIVE fight and is NOT touched. Shares STALE_WAITING_MS semantics (10s).
+    const staleCutoff = new Date(Date.now() - 10_000);
     await Match.updateMany(
       { ...activeOwnerFilter, status: "ACTIVE", roundDeadline: { $lt: staleCutoff } },
       { $set: { status: "ABANDONED", completedAt: new Date(), funded: true } },

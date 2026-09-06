@@ -1,10 +1,10 @@
 import { connectToDatabase } from "@/db/connect";
 import { EcPosition } from "@/db/models/EcPosition";
-import { createPublicClient, http, type Hash } from "viem";
+import { createPublicClient, type Hash } from "viem";
 import { findArenaFloor, readArenaPrice, readArenaSettlement } from "./executor";
 import { positionWindowId } from "./matchId";
 import { positionInfo, settleWindowOnchain, collectLostOnchain, positionOpen } from "./escrow";
-import { EC_CHAIN, EC_RPC_URL, ESCROW_ADDRESS, ESCROW_LEGACY_BY_AGE } from "./config";
+import { ESCROW_ADDRESS, ESCROW_LEGACY_BY_AGE } from "./config";
 
 /** Entry-price scale shared with the v3 escrow (1e6 = $1.00). */
 export const ENTRY_PRICE_SCALE = 1_000_000n;
@@ -122,7 +122,9 @@ export async function resolvePositionOutcome(position: {
   arena?: unknown;
 }): Promise<boolean | null> {
   if (!position.arena) return null;
-  const arena = position.arena as { pool: `0x${string}` };
+  const arena = position.arena as { marketId?: string; pool?: `0x${string}`; symbol?: string; expiry?: number };
+  // readArenaSettlement keys on marketId (not pool) — require it.
+  if (!arena.marketId) return null;
   const settlement = await readArenaSettlement(arena as never).catch(() => null);
   if (!settlement || !settlement.isResolved) return null;
   const yesWon = settlement.winningOutcome === 0;
@@ -180,6 +182,13 @@ export async function reconcilePositions(
     };
     try {
       if (!pos.windowId) { entry.error = "no windowId"; continue; }
+      // Per-round funding records (windowId `per-round-…`) have no on-chain
+      // escrow slot — they are not v4 windows and must never be treated as
+      // phantoms/deleted. Only v4 bytes32 windows reconcile here.
+      if (!pos.windowId.startsWith("0x")) {
+        entry.outcome = "per-round-record-skipped";
+        continue;
+      }
       const escrow = await resolvePositionEscrow(pos.windowId as string, pos);
       const onchain = await positionInfo(pos.windowId as `0x${string}`, escrow).catch(() => null);
       entry.onchain = onchain
@@ -264,7 +273,9 @@ export async function reconcilePositions(
 }
 
 async function waitForReceipt(hash: `0x${string}`) {
-  const pc = createPublicClient({ chain: EC_CHAIN, transport: http(EC_RPC_URL) });
+  const { ecHttpTransport } = await import("./config");
+  const { EC_CHAIN } = await import("./config");
+  const pc = createPublicClient({ chain: EC_CHAIN, transport: ecHttpTransport() });
   for (let i = 0; i < 30; i++) {
     try {
       const r = await pc.getTransactionReceipt({ hash });

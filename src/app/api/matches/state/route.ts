@@ -5,6 +5,7 @@ import { normalizeAddress } from "@/lib/addresses";
 import { jsonError } from "@/lib/utils";
 import { expireStaleWaitingMatches } from "@/lib/matchExpiry";
 import { getPvpWinPoints } from "@/lib/rank";
+import { isAddress } from "viem";
 
 export const dynamic = "force-dynamic";
 
@@ -24,19 +25,21 @@ export async function GET(req: Request): Promise<Response> {
 
     // Abandon any stuck match for this viewer (rejoin/resume path) so a stale
     // WAITING or never-resolved round can't be lazily resumed.
-    if (viewerAddress && viewerAddress.startsWith("0x")) {
+    if (viewerAddress && isAddress(viewerAddress)) {
       await expireStaleWaitingMatches(normalizeAddress(viewerAddress));
     }
 
     const now = new Date();
     const isPvP = match.opponentType === "player";
-    const isViewerP2 = !!(isPvP && viewerAddress && match.player2Address && normalizeAddress(viewerAddress) === normalizeAddress(match.player2Address));
+    const isViewerP2 = !!(isPvP && viewerAddress && isAddress(viewerAddress) && match.player2Address && normalizeAddress(viewerAddress) === normalizeAddress(match.player2Address));
     console.log(`[state] match=${matchId} viewer=${viewerAddress ? viewerAddress.slice(0,6) : "none"} st=${match.status} phase=${match.roundPhase} round=${match.currentRound} p1R=${match.player1Ready} p2R=${match.player2Ready} opponentType=${match.opponentType}`);
 
     // Auto-resolve expired bot rounds (server-authoritative).
     // Handles both ACTIVE (combat window expired) and COMMIT (commit window
     // expired without a pick — use default/locked call).
-    if (match.status === "ACTIVE" && match.opponentType === "bot" && (match.roundPhase === "ACTIVE" || match.roundPhase === "COMMIT") && now.getTime() > match.roundDeadline.getTime()) {
+    // Guard a missing deadline (legacy docs) — without it getTime() throws 500.
+    const deadlineMs = match.roundDeadline ? new Date(match.roundDeadline).getTime() : NaN;
+    if (match.status === "ACTIVE" && match.opponentType === "bot" && (match.roundPhase === "ACTIVE" || match.roundPhase === "COMMIT") && Number.isFinite(deadlineMs) && now.getTime() > deadlineMs) {
       // ── GHOST FUNDING GATE ────────────────────────────────────────────────
       // Never auto-resolve an expired bot round that was never funded — the
       // fight may not advance unfunded. Hold until `/api/matches/ghost` sets
@@ -91,6 +94,7 @@ export async function GET(req: Request): Promise<Response> {
         const updated = await Match.findById(matchId);
         if (updated && isLastRound) {
           await updateStatsForAutoResolved(updated, now);
+          await Match.findByIdAndUpdate(matchId, { $set: { statsProcessed: "COMPLETE" as StatsProcessedStatus } });
         }
         if (updated) {
           return Response.json(buildState(updated, now, isViewerP2, viewerAddress));
@@ -231,7 +235,7 @@ function buildState(match: any, serverTime: Date, isViewerP2: boolean, viewerAdd
     playerPrediction: myPred ?? null,
     rivalPrediction: theirPred ?? null,
     rounds,
-    winner: match.winner ?? "player",
+    winner: match.winner ?? "draw",
     playerChar: myChar,
     rivalChar: theirChar,
     rivalName: match.rivalName,
@@ -263,6 +267,9 @@ function buildState(match: any, serverTime: Date, isViewerP2: boolean, viewerAdd
     rivalBalance: Math.round((startThem + themPnl) * 100) / 100,
     playerStartBalance: startMe,
     rivalStartBalance: startThem,
+    // GAME OVER single final payout state (paper credit until then).
+    finalPayoutTxHash: match.finalPayoutTxHash ?? null,
+    finalPayoutAmount: match.finalPayoutAmount ?? null,
     // Per-player independent trade amounts (viewer-relative)
     playerAmountPerRound: myAmount,
     rivalAmountPerRound: theirAmount,

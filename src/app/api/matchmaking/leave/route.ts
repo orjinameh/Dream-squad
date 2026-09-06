@@ -17,7 +17,8 @@ export async function POST(req: Request): Promise<Response> {
   try {
     await connectToDatabase();
     const addr = normalizeAddress(address);
-    await MatchQueue.deleteMany({ address: addr, status: { $in: ["searching", "matched"] } });
+    const lower = addr.toLowerCase();
+    await MatchQueue.deleteMany({ address: { $in: [addr, lower] }, status: { $in: ["searching", "matched"] } });
 
     // Abandon any active match this player is in that is still in WAITING
     // (i.e. never started). This ensures leaving actually cancels the match —
@@ -26,7 +27,7 @@ export async function POST(req: Request): Promise<Response> {
     // already left.
     await Match.updateMany(
       {
-        $or: [{ playerAddress: addr }, { player2Address: addr }],
+        $or: [{ playerAddress: { $in: [addr, lower] } }, { player2Address: { $in: [addr, lower] } }],
         status: "ACTIVE",
         roundPhase: "WAITING",
       },
