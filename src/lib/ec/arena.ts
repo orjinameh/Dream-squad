@@ -27,7 +27,7 @@ export async function ecArenaForMatch(
     // Prefer the SOONEST window that still has >=15s left (enough to place the
     // stake before it expires): the round's real result lands fastest when its
     // window closes quickly, keeping matches ~10-40s per round instead of a
-    // full venue window (~60-150s). Falls back to any live window otherwise.
+    // full venue window (~5 min). Falls back to any live window otherwise.
     let arena = await findArenaFloor(asset, 15, opts);
     if (!arena) arena = await findArenaFloor(asset, 0, opts);
     if (!arena) return null;

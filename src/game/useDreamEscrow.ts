@@ -84,7 +84,7 @@ async function allowanceOfNow(owner: `0x${string}`, spender: `0x${string}`): Pro
 
 /**
  * Client (browser) interface to the deployed DreamDuel escrow for an EC POSITION
- * (a single tUSDC stake for a 15-minute window). The player's own wallet
+ * (a single tUSDC stake for a 5-minute window). The player's own wallet
  * approves tUSDC and calls `stake(windowId, amount, entryPrice)` — money only
  * moves when their wallet signs. On win they call `withdraw(windowId)` to
  * collect the DEX payout (stake / entryPrice). Everything shown is read on-chain

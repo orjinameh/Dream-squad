@@ -90,6 +90,15 @@ export const EC_ORACLE_FLAT_BAND = 0.0008;
  */
 export const EC_ORACLE_EPSILON = 1e-9;
 
+/**
+ * Venue window cadence the game fights on: 5-minute (300s) binary series,
+ * falling back to the 15-minute (900s) series when the 5m series gaps. A
+ * strict 300-only filter would outage the game on those gaps.
+ */
+export const EC_WINDOW_INTERVAL_SEC = 300;
+/** Tolerance around the preferred cadence (bootstrap partials, off-by-1s). */
+export const EC_WINDOW_INTERVAL_TOLERANCE_SEC = 15;
+
 /** Selectors the operator needs granted to trade a user's vault. */
 export const EC_ORDER_SELECTORS = [PLACE_ORDER_FOR_SELECTOR, CANCEL_ORDER_FOR_SELECTOR] as `0x${string}`[];
 
@@ -104,7 +113,7 @@ export const EC_LOT = 1;
 /**
  * DreamDuel escrow contract (on-chain tUSDC custody for EC POSITIONS).
  * Deployed to Somnia testnet. Players stake a EC position (direction x amount)
- * for a 15-min window; the backend relayer (`admin`) settles the window with
+ * for a 5-min window; the backend relayer (`admin`) settles the window with
  * the REAL EC settlement outcome (won/lost) and credits/forfeits the stake once.
  *
  * DEPLOYED (v2 window-keyed) via scripts/deploy-escrow.ts — chain 50312, tx

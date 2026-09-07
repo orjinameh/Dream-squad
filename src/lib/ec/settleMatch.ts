@@ -3,7 +3,7 @@
  *
  * Under the exact model, combat MATCHES never move money — matches are purely
  * stats + ranks (bragging) made of 70s = 7 x 10s rounds. The FINANCIAL layer is
- * the player's persistent EC POSITION (~15-min window stake), settled once from
+ * the player's persistent EC POSITION (~5-min window stake), settled once from
  * the real on-chain EC result.
  *
  * These functions are kept as explicit no-ops so old callers (predict route,

@@ -1028,7 +1028,7 @@ function buildState(match: any, serverTime: Date): MatchStateResponse {
     : undefined;
 
   // The EC position is the financial layer — its amount is FIXED for the whole
-  // 15-minute window and does not change between rounds. Report it as a
+  // 5-minute window and does not change between rounds. Report it as a
   // constant so the client never shows per-round P&L moving (money settles once
   // on the position, never per round).
   const fixedBalance = match.positionAmount ?? 0;

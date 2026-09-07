@@ -13,7 +13,7 @@ import { isAddress } from "viem";
  *
  * A combat MATCH is stats/rank only: 70s = 7 x 10s rounds. It does NOT carry a
  * stake and does NOT open an escrow — the player must already have an ACTIVE EC
- * POSITION (the ~15-min financial stake they set up on the POSITION screen).
+ * POSITION (the ~5-min financial stake they set up on the POSITION screen).
  * The match references that position; money settles only on the position.
  */
 const createMatchSchema = z.object({

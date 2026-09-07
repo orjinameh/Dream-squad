@@ -61,7 +61,7 @@ export async function findActivePosition(address: string) {
 }
 
 /**
- * Create an EC position (the 15-minute financial stake). This is app-side
+ * Create an EC position (the 5-minute financial stake). This is app-side
  * bookkeeping — the tUSDC is pulled on-chain by the PLAYER's wallet via
  * `stake(windowId, amount)` in the browser. The windowId is deterministic from
  * (address, direction, market, nonce) so the browser can derive it.

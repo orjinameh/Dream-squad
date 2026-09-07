@@ -2,7 +2,7 @@ import { createPublicClient, http, fallback, defineChain } from "viem";
 import { SomniaMarkets, upProbability, type MarketOnchain, type UnifiedMarket, type BinaryMarket } from "@somnia-chain/markets-sdk";
 import {
   EC_ADDRESSES, EC_CHAIN, EC_CHAIN_ID, EC_INDEXER_URL, EC_RPC_URL, EC_RPC_URLS, EC_RPC_WS_URL,
-  EC_COLLATERAL_DECIMALS, EC_ORACLE_EPSILON, EC_TICK, ecHttpTransport,
+  EC_COLLATERAL_DECIMALS, EC_ORACLE_EPSILON, EC_TICK, EC_WINDOW_INTERVAL_SEC, EC_WINDOW_INTERVAL_TOLERANCE_SEC, ecHttpTransport,
 } from "./config";
 
 /**
@@ -83,10 +83,11 @@ export interface EcArenaMarket extends ArenaRef {
 /**
  * Resolve the currently-trading binary market for an asset ("BTC"|"ETH") that
  * has a REAL strike (not the "ETH-0-" placeholder the venue lists for rolling
- * liquidity) and a future expiry. The venue rolls real-strike windows roughly
- * every minute, so one is essentially always live; the soonest-settling window
- * is picked so the position resolves ~a minute after opening. Returns null when
- * only zero-strike placeholder windows remain (503 — try again in a moment).
+ * liquidity) and a future expiry. The venue rolls the 5-minute series roughly
+ * every 5 minutes; the soonest-settling 5m window is picked so the position
+ * resolves shortly after opening (any live window as fallback when the 5m
+ * series gaps). Returns null when only zero-strike placeholder windows remain
+ * (503 — try again in a moment).
  *
  * NOTE: zero-strike "ETH-0-" windows are deliberately skipped: the venue never
  * resolves them (isResolved stays false forever), so a position anchored to one
@@ -201,10 +202,62 @@ async function discoverArenaFloor(asset: "BTC" | "ETH", minLeftSec: number, now:
 }
 
 /**
+ * True when a window's cadence matches the game's 5-minute series (within
+ * tolerance for bootstrap partials / off-by-one-second rows). Accepts the
+ * indexer decimal-string form or plain numbers; null/NaN never matches.
+ */
+export function isPreferredWindowInterval(value: string | number | null | undefined): boolean {
+  if (value == null) return false;
+  const sec = Number(value);
+  if (!Number.isFinite(sec) || sec <= 0) return false;
+  return Math.abs(sec - EC_WINDOW_INTERVAL_SEC) <= EC_WINDOW_INTERVAL_TOLERANCE_SEC;
+}
+
+/**
+ * Stable prefer-first ordering: 5-minute windows keep their relative order at
+ * the front, then 15-minute windows (the fallback series), then everything
+ * else untouched. Callers pre-sort by expiry, so the result is "soonest 5m,
+ * then soonest 15m, then soonest anything else".
+ */
+const FALLBACK_WINDOW_INTERVAL_SEC = 900;
+
+function isFallbackWindowInterval(value: string | number | null | undefined): boolean {
+  if (value == null) return false;
+  const sec = Number(value);
+  if (!Number.isFinite(sec) || sec <= 0) return false;
+  return Math.abs(sec - FALLBACK_WINDOW_INTERVAL_SEC) <= EC_WINDOW_INTERVAL_TOLERANCE_SEC;
+}
+
+export function preferWindowInterval<T>(rows: T[], getInterval: (row: T) => string | number | null | undefined): T[] {
+  return [
+    ...rows.filter((r) => isPreferredWindowInterval(getInterval(r))),
+    ...rows.filter((r) => !isPreferredWindowInterval(getInterval(r)) && isFallbackWindowInterval(getInterval(r))),
+    ...rows.filter((r) => !isPreferredWindowInterval(getInterval(r)) && !isFallbackWindowInterval(getInterval(r))),
+  ];
+}
+
+/**
+ * Resolve a unified registry market's cadence: the indexer-derived
+ * `intervalSec` first, else the window span (`expiry − tradingStart`).
+ */
+export function unifiedWindowIntervalSec(info: { intervalSec?: string | number | null; expiry?: string | number | null; tradingStart?: string | number | null }): number | null {
+  if (info.intervalSec != null) {
+    const v = Number(info.intervalSec);
+    if (Number.isFinite(v) && v > 0) return v;
+  }
+  if (info.expiry != null && info.tradingStart != null) {
+    const span = Number(info.expiry) - Number(info.tradingStart);
+    if (Number.isFinite(span) && span > 0) return span;
+  }
+  return null;
+}
+
+/**
  * Light, indexer-HTTP-only arena discovery for combat rounds. `listLiveBinaryMarkets`
  * returns every future-expiry binary window in ~300ms; among the soonest ones we
  * pick the first with a real two-sided order book (the venue's liquid windows).
- * No WebSocket, no per-window on-chain probes — deterministic and fast.
+ * 5-minute windows first, 15-minute fallback, then any live window. No WebSocket, no
+ * per-window on-chain probes — deterministic and fast.
  */
 async function discoverLiquidArena(asset: "BTC" | "ETH", minLeftSec: number, now: number): Promise<EcArenaMarket | null> {
   const exchange = ecExchange();
@@ -215,11 +268,14 @@ async function discoverLiquidArena(asset: "BTC" | "ETH", minLeftSec: number, now
   }
 
   const live = await listLiquidWindows(asset);
-  const rows = live
-    .filter((m) => !m.finalized && !m.voided && Number(m.expiry) > now + minLeftSec)
-    .sort((a, b) => Number(a.expiry) - Number(b.expiry));
+  const rows = preferWindowInterval(
+    live
+      .filter((m) => !m.finalized && !m.voided && Number(m.expiry) > now + minLeftSec)
+      .sort((a, b) => Number(a.expiry) - Number(b.expiry)),
+    (m) => m.intervalSec,
+  );
 
-  for (const r of rows.slice(0, 6)) {
+  for (const r of rows.slice(0, 8)) {
     // Skip rows with no pool — falling back to the collateral ERC20 address as
     // a "pool" would route stakes/reads at the wrong contract.
     if (!r.poolAddress) continue;
@@ -254,6 +310,7 @@ interface LiquidWindow {
   expiry: string | number;
   finalized: boolean;
   voided: boolean;
+  intervalSec: string | number | null;
 }
 
 /**
@@ -266,8 +323,8 @@ async function listLiquidWindows(asset: string): Promise<LiquidWindow[]> {
   const nowSec = Math.floor(Date.now() / 1000);
   const query = `
     query LiveWindows {
-      Market(where: {marketType: {_eq: "BINARY"}, expiry: {_gt: "${nowSec}"}, asset: {_eq: "${asset}"}}, order_by: {expiry: asc}, limit: 40) {
-        marketId poolAddress collateral yesTokenId noTokenId strike expiry finalized voided
+      Market(where: {marketType: {_eq: "BINARY"}, expiry: {_gt: "${nowSec}"}, asset: {_eq: "${asset}"}}, order_by: {expiry: asc}, limit: 60) {
+        marketId poolAddress collateral yesTokenId noTokenId strike expiry finalized voided intervalSec
       }
     }`;
   try {
@@ -333,32 +390,37 @@ async function discoverSettlingArena(asset: "BTC" | "ETH", minLeftSec: number, n
     candidates.map(async (m) => ({ m, onchain: await probeOnchain(m.id as string) })),
   );
 
-  const floors: EcArenaMarket[] = [];
+  const floors: { arena: EcArenaMarket; interval: number | null }[] = [];
   for (const { m, onchain } of results) {
     if (!onchain) continue;
     if (onchain.status !== 1 || onchain.isResolved) continue; // only live + unsettled
     if (!onchain.expiry || Number(onchain.expiry) <= now) continue;
     const leftSec = Number(onchain.expiry) - now;
     if (leftSec < minLeftSec) continue;
-    const info = m.info as BinaryMarket & { expiry?: string | number };
+    const info = m.info as BinaryMarket & { expiry?: string | number; intervalSec?: string | number | null; tradingStart?: string | number | null };
     floors.push({
-      symbol: m.symbol,
-      marketId: m.id,
-      pool: onchain.pool,
-      collateral: onchain.collateral ?? EC_ADDRESSES.collateral,
-      token: onchain.outcomeToken ?? EC_ADDRESSES.collateral,
-      yesId: onchain.yesId,
-      noId: onchain.noId,
-      strike: info.strike ?? "",
-      decimals: onchain.decimals,
-      expiry: Number(onchain.expiry),
+      interval: unifiedWindowIntervalSec(info),
+      arena: {
+        symbol: m.symbol,
+        marketId: m.id,
+        pool: onchain.pool,
+        collateral: onchain.collateral ?? EC_ADDRESSES.collateral,
+        token: onchain.outcomeToken ?? EC_ADDRESSES.collateral,
+        yesId: onchain.yesId,
+        noId: onchain.noId,
+        strike: info.strike ?? "",
+        decimals: onchain.decimals,
+        expiry: Number(onchain.expiry),
+      },
     });
   }
 
   if (floors.length === 0) return null;
-  floors.sort((a, b) => a.expiry - b.expiry);
-  // Soonest-settling window so the position resolves shortly after opening.
-  return floors[0];
+  floors.sort((a, b) => a.arena.expiry - b.arena.expiry);
+  // Soonest-settling 5-minute window so the position resolves shortly after
+  // opening; 15-minute fallback when the 5m series gaps, then any live window.
+  const ordered = preferWindowInterval(floors, (f) => f.interval);
+  return ordered[0].arena;
 }
 
 // ─── Live YES price oracle (real order book) ────────────────────────────────

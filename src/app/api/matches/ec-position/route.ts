@@ -15,7 +15,7 @@ export const dynamic = "force-dynamic";
  * anchor the match is pinned to. Nothing here is simulated — the price is the
  * live EC order-book mid, the anchor is the pinned window-open seed the match
  * resolves rounds against. Lets the player see where their position stands
- * before the ~15 min window settles on-chain.
+ * before the ~5 min window settles on-chain.
  */
 export async function GET(req: Request) {
   try {

@@ -7,7 +7,7 @@ import { DREAMDUEL_ESCROW_ABI, LEGACY_POSITION_ABI, DREAMDUEL_ROUND_ESCROW_ABI }
  * DreamDuel v2 on-chain escrow client.
  *
  * The escrow holds the player's EC POSITION (a single tUSDC stake for a DreamDEX
- * 15-minute window). Model:
+ * 5-minute window). Model:
  *   - stake(windowId, amount)  — player deposits/opens their UP or DOWN position.
  *   - settleWindow(windowId, won) — THE only money decision, reported from the
  *     REAL on-chain EC settlement (winningOutcome). win → stake returned in full,

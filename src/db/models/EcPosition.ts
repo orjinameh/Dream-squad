@@ -10,7 +10,7 @@ export type PositionStatus = (typeof POSITION_STATUS)[number];
  * Event-Contract window ("UP / $10").
  *
  * MODEL:
- *   - Lives for the DreamDEX ~15-minute window (financial layer).
+ *   - Lives for the DreamDEX ~5-minute window (financial layer).
  *   - The stake IS the position; its balance does NOT change during the window.
  *   - While active it is referenced by multiple 70-second combat MATCHES (stats/
  *     rank only). Matches never touch this position's money.
