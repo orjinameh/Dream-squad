@@ -38,6 +38,12 @@ export interface Checkpoint {
   // spends its share.
   fundTxHash?: string;
   fundCostRaw?: string;
+  // COMMIT staking lock: true while a gate execution owns this round's
+  // stake+fund placement (with stakingAt). Concurrent COMMIT submits see the
+  // fresh lock and wait (staking-pending) instead of double-staking. Stale
+  // locks (> STAKING_LOCK_MS) may be claimed after a crashed gate.
+  staking?: boolean;
+  stakingAt?: string;
   // On-chain settlement of the round's stake, written once the pinned window
   // has resolved on the venue (idempotent): WON sides are redeemed 1:1.
   stakeSettlement?: {

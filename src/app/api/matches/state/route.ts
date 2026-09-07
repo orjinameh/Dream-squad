@@ -10,6 +10,11 @@ import { isAddress } from "viem";
 export const dynamic = "force-dynamic";
 
 const MAX_HP = 100;
+// Lenient-clock constants (see the auto-resolve block below): the ONLY rigid
+// clock in the game is the 10s EC battle window. Everything else waits on
+// confirmation, so reaping and abandonment both require sustained silence.
+const AUTO_RESOLVE_GRACE_MS = 20_000;
+const STAKING_LOCK_MS = 150_000;
 
 export async function GET(req: Request): Promise<Response> {
   const url = new URL(req.url);
@@ -31,15 +36,28 @@ export async function GET(req: Request): Promise<Response> {
 
     const now = new Date();
     const isPvP = match.opponentType === "player";
+    const isViewerP1 = !!(viewerAddress && isAddress(viewerAddress) && normalizeAddress(viewerAddress) === normalizeAddress(match.playerAddress));
     const isViewerP2 = !!(isPvP && viewerAddress && isAddress(viewerAddress) && match.player2Address && normalizeAddress(viewerAddress) === normalizeAddress(match.player2Address));
+    // Contact heartbeat for participant viewers (see predict route): keeps
+    // confirming matches exempt from abandonment.
+    if (isViewerP1 || isViewerP2) {
+      await Match.updateOne({ _id: match._id }, { $set: { lastSeenAt: now } }).catch(() => {});
+    }
     console.log(`[state] match=${matchId} viewer=${viewerAddress ? viewerAddress.slice(0,6) : "none"} st=${match.status} phase=${match.roundPhase} round=${match.currentRound} p1R=${match.player1Ready} p2R=${match.player2Ready} opponentType=${match.opponentType}`);
 
     // Auto-resolve expired bot rounds (server-authoritative).
     // Handles both ACTIVE (combat window expired) and COMMIT (commit window
     // expired without a pick — use default/locked call).
+    // LENIENT CLOCK: only fires GRACE past the deadline, and never while a
+    // COMMIT gate holds a fresh staking lock (a round mid-confirmation must
+    // never be skipped over). Time never advances rounds here — confirmation
+    // does; this path only reaps rounds nobody is working.
     // Guard a missing deadline (legacy docs) — without it getTime() throws 500.
     const deadlineMs = match.roundDeadline ? new Date(match.roundDeadline).getTime() : NaN;
-    if (match.status === "ACTIVE" && match.opponentType === "bot" && (match.roundPhase === "ACTIVE" || match.roundPhase === "COMMIT") && Number.isFinite(deadlineMs) && now.getTime() > deadlineMs) {
+    const cpStaking = (match.priceModel?.checkpoints?.[match.currentRound - 1] as any)?.staking === true;
+    const cpStakingAt = (match.priceModel?.checkpoints?.[match.currentRound - 1] as any)?.stakingAt;
+    const stakingFresh = cpStaking && cpStakingAt != null && (now.getTime() - new Date(cpStakingAt).getTime()) < STAKING_LOCK_MS;
+    if (match.status === "ACTIVE" && match.opponentType === "bot" && (match.roundPhase === "ACTIVE" || match.roundPhase === "COMMIT") && Number.isFinite(deadlineMs) && now.getTime() > deadlineMs + AUTO_RESOLVE_GRACE_MS && !stakingFresh) {
       // ── GHOST FUNDING GATE ────────────────────────────────────────────────
       // Never auto-resolve an expired bot round that was never funded — the
       // fight may not advance unfunded. Hold until `/api/matches/ghost` sets

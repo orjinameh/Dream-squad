@@ -152,6 +152,10 @@ export interface MatchDoc {
   positionWindowId?: string;
   positionDirection?: "UP" | "DOWN";
   positionAmount?: number;
+  // Last confirmed client/server contact on this match (predict + state).
+  // Abandonment requires INACTIVITY (stale deadline AND stale contact) so a
+  // healthy match held in slow on-chain confirmation is never reaped.
+  lastSeenAt?: Date;
 }
 
 const ROUND_DURATION_MS = 10_000;
@@ -292,6 +296,7 @@ const MatchSchema = new Schema<MatchDoc>(
     positionWindowId: { type: String },
     positionDirection: { type: String, enum: ["UP", "DOWN"] },
     positionAmount: { type: Number },
+    lastSeenAt: { type: Date },
   },
   { versionKey: false },
 );

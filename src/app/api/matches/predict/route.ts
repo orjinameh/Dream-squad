@@ -61,6 +61,10 @@ function computeLongestStreak(rounds: Array<{ playerCorrect: boolean }>): number
 // transaction to confirm before giving up (client holds on the COMMIT screen
 // with a staking overlay until then — the battle must not start unconfirmed).
 const STAKE_GATE_TIMEOUT_MS = 60_000;
+// A staking lock older than this is treated as a crashed gate and may be
+// claimed by the next COMMIT submit. Covers stake (60s) + funding (45s) legs
+// with headroom; the lock is released on every normal exit long before this.
+const STAKING_LOCK_MS = 150_000;
 
 /**
  * AUTHORITATIVE ROUND RESOLUTION
@@ -441,6 +445,9 @@ export async function POST(req: Request): Promise<Response> {
 
     const match = await Match.findById(input.matchId);
     if (!match) return jsonError(404, "match not found");
+    // Contact heartbeat: abandonment requires INACTIVITY, so every
+    // authenticated touch refreshes lastSeenAt (indexed _id write).
+    await Match.updateOne({ _id: match._id }, { $set: { lastSeenAt: now } }).catch(() => {});
     if (match.status !== "ACTIVE") {
       return Response.json(buildState(match, now));
     }
@@ -507,6 +514,40 @@ export async function POST(req: Request): Promise<Response> {
         const fresh = await Match.findById(match._id);
         return Response.json(buildState(fresh!, now));
       }
+      const cpIdx = gateCheck.currentRound - 1;
+
+      // ── STAKING LOCK (confirm-strict, time-lenient): exactly one gate
+      // execution may place this round's stake+funding. A concurrent COMMIT
+      // submit sees the fresh lock and waits (staking-pending) instead of
+      // double-spending — so client retries during slow confirmations are
+      // always safe. Stale locks (> STAKING_LOCK_MS, crashed gate) are
+      // claimable. The lock releases on every exit path below.
+      const lockRes = await Match.updateOne(
+        {
+          _id: match._id,
+          roundPhase: "COMMIT",
+          currentRound: match.currentRound,
+          status: "ACTIVE",
+          $or: [
+            { [`priceModel.checkpoints.${cpIdx}.staking`]: { $ne: true } },
+            { [`priceModel.checkpoints.${cpIdx}.stakingAt`]: { $lt: new Date(Date.now() - STAKING_LOCK_MS).toISOString() } },
+          ],
+        },
+        { $set: { [`priceModel.checkpoints.${cpIdx}.staking`]: true, [`priceModel.checkpoints.${cpIdx}.stakingAt`]: now.toISOString() } },
+      );
+      if (lockRes.modifiedCount !== 1) {
+        // Either moved on (return it) or another gate is confirming (wait).
+        const fresh = await Match.findById(match._id).lean();
+        if (!fresh || fresh.roundPhase !== "COMMIT" || fresh.currentRound !== match.currentRound) {
+          return Response.json(buildState((await Match.findById(match._id))!, now));
+        }
+        return Response.json({ ...buildState(fresh as any, now), staking: true });
+      }
+      const releaseLock = () =>
+        Match.updateOne(
+          { _id: match._id },
+          { $set: { [`priceModel.checkpoints.${cpIdx}.staking`]: false } },
+        ).catch(() => {});
 
       // Pin the arena window + capture the Second-5 entry YES-mid FIRST. The
       // player's real stake goes into THIS market, and the round resolves at
@@ -536,7 +577,6 @@ export async function POST(req: Request): Promise<Response> {
       // Idempotent: a COMMIT retry reuses the already-recorded stake instead of
       // double-staking the round.
       const stakeConfigured = !!process.env.OPERATOR_PRIVATE_KEY && process.env.DREAMDUEL_FAST_ROUNDS !== "1";
-      const cpIdx = gateCheck.currentRound - 1;
       const gateFresh = await Match.findById(match._id).lean();
       const existingCp = gateFresh?.priceModel?.checkpoints?.[cpIdx] as
         | { stakeTxHash?: string; stakeSide?: "UP" | "DOWN"; stakeQty?: string; stakeCostRaw?: string; fundTxHash?: string }
@@ -558,9 +598,10 @@ export async function POST(req: Request): Promise<Response> {
             ),
           ]).catch((err) => ({ txHash: null as string | null, error: err instanceof Error ? err.message : String(err) }));
           if (!staked.txHash) {
-            // Gate closed: hold COMMIT so the client retries instead of
-            // fighting an unstaked round.
+            // Gate closed: release the lock and hold COMMIT so the client
+            // retries instead of fighting an unstaked round.
             console.error(`[predict] stake gate failed for round ${gateCheck.currentRound}: ${staked.error ?? "no fill"}`);
+            await releaseLock();
             return Response.json(
               { ...buildState((await Match.findById(match._id))!, now), stakeFailed: true, error: `stake not confirmed: ${staked.error ?? "no fill"} — retrying` },
               { status: 502 },
@@ -588,6 +629,7 @@ export async function POST(req: Request): Promise<Response> {
           const funded = await collectRoundFunding(gateCheck.playerAddress as `0x${string}`, fundAmount);
           if (!funded.txHash) {
             console.error(`[predict] funding gate failed for round ${gateCheck.currentRound}: ${funded.error ?? "unknown"}`);
+            await releaseLock();
             return Response.json(
               { ...buildState((await Match.findById(match._id))!, now), stakeFailed: true, error: `funding not confirmed: ${funded.error ?? "transfer failed"} — retrying` },
               { status: 502 },
@@ -601,9 +643,10 @@ export async function POST(req: Request): Promise<Response> {
         }
       }
 
-      // Atomic COMMIT → ACTIVE claim (only one request wins). The battle
-      // deadline starts NOW — at confirmation time — so the 10s window always
-      // measures Second 5 → Second 15 from the confirmed stake.
+      // Atomic COMMIT → ACTIVE claim (only the lock holder wins — it releases
+      // the lock in the same write). The battle deadline starts NOW — at
+      // confirmation time — so the strict 10s window always measures Second 5
+      // → Second 15 from the confirmed stake. That 10s is the ONLY rigid clock.
       const stakeSet: Record<string, unknown> = {};
       if (stakeTxHash) {
         stakeSet[`priceModel.checkpoints.${cpIdx}.stakeTxHash`] = stakeTxHash;
@@ -618,13 +661,16 @@ export async function POST(req: Request): Promise<Response> {
             roundPhase: "ACTIVE",
             [isPlayer1 ? "playerPrediction" : "rivalPrediction"]: pred,
             roundDeadline: new Date(Date.now() + ROUND_TIMINGS.ROUND_DURATION_MS + ROUND_TIMINGS.LOCK_MS),
+            [`priceModel.checkpoints.${cpIdx}.staking`]: false,
             ...stakeSet,
           },
         },
         { new: true },
       );
       if (!commitClaim) {
-        // Another request already claimed — return fresh state
+        // Lost the claim (phase moved under us) — release the lock and return
+        // fresh state; never advance a round that isn't ours.
+        await releaseLock();
         const fresh = await Match.findById(match._id);
         return Response.json(buildState(fresh!, now));
       }

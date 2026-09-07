@@ -12,6 +12,12 @@ import { Match } from "@/db/models/Match";
 // NOTE: 10s was too aggressive — a mid-round oracle sweep (8s) + relay can
 // legitimately hold a deadline 10-20s past expiry while settling. 60s avoids
 // abandoning healthy fights.
+//
+// CONFIRM-STRICT ADDENDUM: abandonment additionally requires INACTIVITY — a
+// stale deadline alone never kills a match that is still confirming (slow
+// stake receipts can legitimately hold COMMIT past its 5s window). Any match
+// with recent contact (lastSeenAt, touched on every predict/state call) is
+// left alone no matter how old its deadline is.
 export const STALE_WAITING_MS = 60_000;
 
 export async function expireStaleWaitingMatches(
@@ -32,6 +38,21 @@ export async function expireStaleWaitingMatches(
             { roundPhase: "WAITING", rounds: { $size: 0 }, roundStartTime: { $lt: waitingCutoff } },
             // Started a round but never resolved it (left mid-round)
             { roundPhase: { $ne: "WAITING" }, roundDeadline: { $lt: startedInactivityCutoff } },
+          ],
+        },
+        // ...AND nobody has touched it lately. A stale deadline with fresh
+        // contact means confirmation in flight (slow stake receipt holding
+        // COMMIT, resolving EXECUTING, polling clients) — never reap those.
+        // Legacy docs without lastSeenAt fall back to roundStartTime.
+        {
+          $or: [
+            { lastSeenAt: { $lt: startedInactivityCutoff } },
+            {
+              $and: [
+                { lastSeenAt: { $exists: false } },
+                { roundStartTime: { $lt: startedInactivityCutoff } },
+              ],
+            },
           ],
         },
       ],

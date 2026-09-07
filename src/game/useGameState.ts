@@ -560,24 +560,28 @@ export function useGameState(): GameHook {
         setRivalCharState("locked");
 
         // Resolve the LOCKED trade — no prediction payload (flips forbidden).
-        // Confirm-or-keep-trying: retry until the server confirms, so the
-        // round can never freeze on CALCULATING.
+        // Confirm-or-keep-trying: retry until the server confirms THIS round,
+        // so the round can never freeze on CALCULATING. Stale responses (prior
+        // rounds, holds) never stop the loop.
         setExecutionStatus("executing");
         setExecutionError(null);
         roundPhaseRef.current = "SUBMITTING";
+        const wantRound = activeRoundNumRef.current;
 
         const attemptSubmit = (): void => {
+          if (activeRoundNumRef.current !== wantRound) return;
           mp.actions.submitPrediction(undefined).then((d) => {
-            if (d && d.rounds && d.rounds.length) {
+            const resolved = !!d && Array.isArray(d.rounds) && d.rounds.some((r: any) => Number(r?.roundNum) >= wantRound);
+            if (resolved) {
               setExecutionStatus("success");
               setExecutionError(null);
               roundPhaseRef.current = "WAITING_SERVER";
               advanceAfterSubmit(d);
-            } else if (roundPhaseRef.current === "SUBMITTING") {
+            } else if (roundPhaseRef.current === "SUBMITTING" && activeRoundNumRef.current === wantRound) {
               scheduleTimer(attemptSubmit, 2000);
             }
           }).catch(() => {
-            if (roundPhaseRef.current === "SUBMITTING") {
+            if (roundPhaseRef.current === "SUBMITTING" && activeRoundNumRef.current === wantRound) {
               setExecutionError("Confirming round on server — retrying...");
               scheduleTimer(attemptSubmit, 2000);
             }
@@ -621,11 +625,16 @@ export function useGameState(): GameHook {
         const pred = localPredictionRef.current as "UP" | "DOWN" | null;
         setExecutionStatus("executing");
         setExecutionError(null);
+        // Patient retries while the server still holds this round in COMMIT
+        // (slow stake confirmation): the server staking lock makes resubmits
+        // idempotent, and only an ACTIVE response for THIS round advances us.
+        const wantRound = activeRoundNumRef.current;
         let commitAttempts = 0;
         const attemptCommit = (): void => {
+          if (activeRoundNumRef.current !== wantRound) return;
           commitAttempts += 1;
           mp.actions.submitPrediction(pred ?? undefined).then((d) => {
-            if (d && d.roundPhase === "ACTIVE") {
+            if (d && d.roundPhase === "ACTIVE" && Number(d.currentRound) >= wantRound) {
               roundPhaseRef.current = "WAITING_SERVER";
               setExecutionStatus("success");
               setExecutionError(null);
@@ -642,6 +651,7 @@ export function useGameState(): GameHook {
               setExecutionError("Stake not confirmed — tap UP or DOWN to retry the commit.");
             }
           }).catch(() => {
+            if (activeRoundNumRef.current !== wantRound) return;
             if (commitAttempts < 6) scheduleTimer(attemptCommit, 600);
             else {
               roundPhaseRef.current = "LOCKED";
@@ -675,8 +685,15 @@ export function useGameState(): GameHook {
     if (trackedRound <= 0) return;
 
     let lastResolveAt = 0;
-    let commitLocked = false;
+    let lastCommitAt = 0;
     const SUBMIT_BACKOFF_MS = 1200;
+    const COMMIT_RETRY_MS = 3000;
+
+    // Only a response carrying THIS round counts as progress — stale responses
+    // (previous rounds, staking-pending holds) must never flip local state or
+    // stop the retry loop, or the round freezes/skips on slow confirmations.
+    const hasTrackedRound = (d: any) =>
+      !!d && Array.isArray(d.rounds) && d.rounds.some((r: any) => Number(r?.roundNum) >= trackedRound);
 
     const check = () => {
       if (phaseRef.current !== "ROUND_COMMIT" && phaseRef.current !== "ROUND_ACTIVE" && phaseRef.current !== "ROUND_LOCKED") return;
@@ -684,21 +701,27 @@ export function useGameState(): GameHook {
       const remaining = mp.actions.getTimeRemaining();
       setTimeLeft(+Math.max(0, remaining).toFixed(2));
 
-      // COMMIT expiry → lock the round's side once (pick or default).
+      // COMMIT expiry → submit the locked side (pick or default) and WAIT for
+      // the server to confirm ACTIVE. Never force the UI out of COMMIT here:
+      // the battle clock starts at confirmation time, and the server-sync
+      // effect below is the only thing that opens the round. Retries are safe
+      // (server staking lock makes them idempotent) and patient.
       if (phaseRef.current === "ROUND_COMMIT") {
         if (remaining > 0) return;
-        if (commitLocked) return;
-        commitLocked = true;
-        phaseRef.current = "ROUND_LOCKED";
-        setPhase("ROUND_LOCKED");
-        setPlayerCharState("locked");
-        setRivalCharState("locked");
+        if (Date.now() - lastCommitAt < COMMIT_RETRY_MS) return;
+        lastCommitAt = Date.now();
         const pred = localPredictionRef.current as "UP" | "DOWN" | null;
         roundPhaseRef.current = "SUBMITTING";
         setExecutionStatus("executing");
-        // pred may be null → server locks default UP; never sent again after this.
-        mp.actions.submitPrediction(pred ?? undefined).then(() => {
-          roundPhaseRef.current = "LOCKED";
+        // pred may be null → server locks default UP.
+        mp.actions.submitPrediction(pred ?? undefined).then((d) => {
+          if (hasTrackedRound(d) && (d as any).roundPhase === "ACTIVE") {
+            roundPhaseRef.current = "WAITING_SERVER";
+          } else {
+            // Still COMMIT (staking-pending hold, 502 gate, or blip) — stay
+            // put; the next retry (or the server poll showing ACTIVE) moves us.
+            roundPhaseRef.current = "LOCKED";
+          }
         }).catch(() => {
           roundPhaseRef.current = "LOCKED";
         });
@@ -706,7 +729,8 @@ export function useGameState(): GameHook {
       }
 
       if (remaining > 0) return;
-      // ACTIVE/LOCKED deadline elapsed — lock the UI once
+      // ACTIVE/LOCKED deadline elapsed — lock the UI once. (The 10s battle is
+      // the one rigid clock; everything before it waited on confirmation.)
       if (phaseRef.current === "ROUND_ACTIVE") {
         phaseRef.current = "ROUND_LOCKED";
         setPhase("ROUND_LOCKED");
@@ -720,7 +744,7 @@ export function useGameState(): GameHook {
         roundPhaseRef.current = "SUBMITTING";
         setExecutionStatus("executing");
         mp.actions.submitPrediction(undefined).then((d) => {
-          if (d && d.rounds && d.rounds.length) {
+          if (hasTrackedRound(d)) {
             setExecutionStatus("success");
             roundPhaseRef.current = "WAITING_SERVER";
             // Round resolved — the server-sync effect will play it and advance.
