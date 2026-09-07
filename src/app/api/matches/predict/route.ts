@@ -217,12 +217,29 @@ async function resolveRound(match: any, now: Date): Promise<{
     : newRivalScore > newPlayerScore ? "rival" : "draw";
 
     // Instant per-round P&L (paper credit in MongoDB — no on-chain movement
-    // here). A correct call wins the stake; a wrong call loses it; an honest
-    // FLAT (no market move) is a push — stake back, 0. FLAT must never drain
-    // the balance, or every no-move round silently taxes the player.
+    // here). Sized from the ACTUAL fill recorded at the COMMIT gate
+    // (stakeQty/stakeCostRaw): thin books partially fill IOC orders, so the
+    // requested size and the real size differ — paper must follow the wallet,
+    // or wins/losses display one number while the wallet moves another. A
+    // correct call nets qty − cost (what the venue position is actually
+    // worth); a wrong call loses the cost actually paid; an honest FLAT (no
+    // market move) is a push — stake back, 0. Falls back to the requested
+    // size when no fill was recorded (paper/fast/test rounds).
     const stakeAmount = match.playerAmountPerRound ?? 1;
     const rivalStakeAmount = match.rivalAmountPerRound ?? 1;
-    const playerPnL = isFlat ? 0 : playerCorrect ? stakeAmount : -stakeAmount;
+    const toRaw = (v: unknown): bigint | null => {
+      try { return v != null ? BigInt(String(v)) : null; }
+      catch { return null; }
+    };
+    const fillQty = toRaw(cp?.stakeQty);
+    const fillCost = toRaw(cp?.stakeCostRaw);
+    const winProfit = fillQty != null && fillCost != null
+      ? Number(fillQty - fillCost) / 10 ** EC_COLLATERAL_DECIMALS
+      : stakeAmount;
+    const lossCost = fillCost != null
+      ? Number(fillCost) / 10 ** EC_COLLATERAL_DECIMALS
+      : stakeAmount;
+    const playerPnL = isFlat ? 0 : playerCorrect ? winProfit : -lossCost;
     const rivalPnL = isFlat ? 0 : rivalCorrect ? rivalStakeAmount : -rivalStakeAmount;
     const prevPlayerBalance = match.playerBalance ?? match.playerStartBalance ?? 100;
     const prevRivalBalance = match.rivalBalance ?? match.rivalStartBalance ?? 100;
