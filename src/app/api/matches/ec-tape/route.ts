@@ -93,7 +93,10 @@ export async function GET(req: Request) {
       }
       if (!match) return jsonError(404, "match not found");
       asset = ((match.priceModel?.asset ?? match.predictionAsset ?? "BTC") as string).toUpperCase() === "ETH" ? "ETH" : "BTC";
-      arena = await ecArenaForMatch(match, asset);
+      // Same liquid-book discovery the rounds resolve on — never the heavy
+      // settling sweep (it fails while resolution succeeds, freezing the chart
+      // on "no live window" mid-fight).
+      arena = await ecArenaForMatch(match, asset, { preferBook: true });
       // Entry anchor: this round's Second-10 lock, else the match-level anchor.
       const cp = match.priceModel?.checkpoints?.[(match.currentRound ?? 1) - 1];
       const rawEntry = cp?.entryPrice ?? (match.priceModel as any)?.arenaOpen ?? null;
@@ -102,7 +105,10 @@ export async function GET(req: Request) {
       const a = assetParam!.toUpperCase();
       if (a !== "BTC" && a !== "ETH") return jsonError(400, "asset must be BTC or ETH");
       asset = a;
-      arena = await findArenaFloor(asset, 0);
+      // Prefer a window with enough life left for a stable chart; fall back to
+      // any live window rather than pausing.
+      arena = await findArenaFloor(asset, 15, { preferBook: true })
+        ?? await findArenaFloor(asset, 0, { preferBook: true });
     }
 
     if (!arena) {

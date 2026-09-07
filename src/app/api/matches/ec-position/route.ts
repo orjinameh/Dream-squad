@@ -35,7 +35,7 @@ export async function GET(req: Request) {
 
     const asset = (match.priceModel?.asset ?? match.predictionAsset ?? "BTC") as "BTC" | "ETH";
 
-    const arena = await ecArenaForMatch(match, asset);
+    const arena = await ecArenaForMatch(match, asset, { preferBook: true });
     if (!arena) {
       return Response.json({
         asset,
