@@ -803,8 +803,11 @@ export async function POST(req: Request): Promise<Response> {
         await Match.findByIdAndUpdate(match._id, {
           $push: { rounds: roundRecord },
           $set: {
-            playerPrediction: roundRecord.playerPrediction,
-            rivalPrediction: roundRecord.rivalPrediction,
+            // Reset the commit slot: the next round opens blank and must be
+            // picked fresh (no repeat-last-commit). The just-resolved round's
+            // calls live on in rounds[].
+            playerPrediction: null,
+            rivalPrediction: null,
             playerScore: newPlayerScore,
             rivalScore: newRivalScore,
             playerHP: newPlayerHP,
@@ -889,8 +892,9 @@ export async function POST(req: Request): Promise<Response> {
           $set: {
             roundPhase: nextRoundPhase,
             status: nextStatus,
-            playerPrediction: claim.playerPrediction,
-            rivalPrediction: claim.rivalPrediction,
+            // Reset the commit slot (no repeat-last-commit into next round).
+            playerPrediction: null,
+            rivalPrediction: null,
             ...(decided ? {
               completedAt: now,
               winner: "draw",

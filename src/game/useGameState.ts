@@ -474,13 +474,13 @@ export function useGameState(): GameHook {
       } else {
         setPlayerCharState("idle"); setRivalCharState("idle");
         setRoundResult(null); setLastDamage(null);
-        // Traditional binary: each round's COMMIT is a fresh, independent stake
-        // choice. Carry the previous round's side as the next COMMIT's default
-        // (so an untouched fight still locks something), but the player must
-        // confirm/change it inside the 10s COMMIT — ACTIVE is locked.
-        setLocalPrediction((prev) => prev ?? storedPredictionRef.current);
-        setPlayerPrediction((prev) => prev ?? storedPredictionRef.current);
-        setLockedPrediction((prev) => prev ?? storedPredictionRef.current);
+        // Fresh COMMIT every round: the new round opens with NO pick — the
+        // player must choose UP/DOWN again in its 10s window. Never carry the
+        // previous round's side forward (no repeat-last-commit). An untouched
+        // round locks the server default (UP) at the gate, never a stale pick.
+        setLocalPrediction(null);
+        setPlayerPrediction(null);
+        setLockedPrediction(null);
         setPredictionUIStatus("idle");
         const nextRound = rNum + 1;
         setDisplayRound(nextRound);
@@ -895,7 +895,7 @@ export function useGameState(): GameHook {
     // venue custodians all per-round stakes via the operator. Bot rounds may
     // open unconditionally (never hold on a legacy `funded` flag that would
     // freeze pre-fix matches forever).
-    // COMMIT→ACTIVE transition: the player submitted their pick during the 5s
+    // COMMIT→ACTIVE transition: the player submitted their pick during the 10s
     // commit window and the server advanced the round to ACTIVE. Transition the
     // client from ROUND_COMMIT to ROUND_ACTIVE (the battle countdown).
     if (phase === "ROUND_COMMIT" && ss.roundPhase === "ACTIVE") {
@@ -903,14 +903,17 @@ export function useGameState(): GameHook {
       return;
     }
 
-    // COMMIT phase: 10s commit window where the player picks UP/DOWN.
+    // COMMIT phase: 10s commit window where the player picks UP/DOWN fresh.
+    // Round 1 opens pre-seeded with the pre-match call; every later round
+    // opens blank (no repeat-last-commit) and must be picked again.
     if (ss.roundPhase === "COMMIT" && !midRound) {
       roundIdentityRef.current = `${isBotMatch ? "bot" : "pvp"}-${ss.currentRound}`;
       activeRoundNumRef.current = ss.currentRound;
       roundPhaseRef.current = "LOCKED";
-      setLocalPrediction(storedPredictionRef.current);
-      setPlayerPrediction(storedPredictionRef.current);
-      setLockedPrediction(storedPredictionRef.current);
+      const seed = ss.currentRound === 1 ? storedPredictionRef.current : null;
+      setLocalPrediction(seed);
+      setPlayerPrediction(seed);
+      setLockedPrediction(seed);
       setPredictionUIStatus("idle");
       setRoundResult(null);
       setLastDamage(null);
@@ -928,13 +931,16 @@ export function useGameState(): GameHook {
     }
 
     // ACTIVE phase: 10s combat window — market moves, round resolves at expiry.
+    // Fresh opens (e.g. reconnects) seed like COMMIT: round 1 from the
+    // pre-match call, later rounds blank.
     if (ss.roundPhase === "ACTIVE" && !midRound) {
       roundIdentityRef.current = `${isBotMatch ? "bot" : "pvp"}-${ss.currentRound}`;
       activeRoundNumRef.current = ss.currentRound;
       roundPhaseRef.current = "LOCKED";
-      setLocalPrediction(storedPredictionRef.current);
-      setPlayerPrediction(storedPredictionRef.current);
-      setLockedPrediction(storedPredictionRef.current);
+      const seed = ss.currentRound === 1 ? storedPredictionRef.current : null;
+      setLocalPrediction(seed);
+      setPlayerPrediction(seed);
+      setLockedPrediction(seed);
       setPredictionUIStatus("idle");
       setRoundResult(null);
       setLastDamage(null);
