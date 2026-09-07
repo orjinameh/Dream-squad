@@ -59,6 +59,8 @@ export async function GET(req: Request) {
         stakeSide?: "UP" | "DOWN";
         stakeQty?: string;
         stakeCostRaw?: string;
+        fundTxHash?: string;
+        fundCostRaw?: string;
         stakeSettlement?: {
           won?: boolean;
           voided?: boolean;
@@ -76,6 +78,7 @@ export async function GET(req: Request) {
         const qtyRaw = (() => { try { return cp.stakeQty ? BigInt(cp.stakeQty) : null; } catch { return null; } })();
         const costRaw = (() => { try { return cp.stakeCostRaw ? BigInt(cp.stakeCostRaw) : null; } catch { return null; } })();
         const netRaw = (() => { try { return st?.netPnlRaw ? BigInt(st.netPnlRaw) : null; } catch { return null; } })();
+        const fundRaw = (() => { try { return cp.fundCostRaw ? BigInt(cp.fundCostRaw) : null; } catch { return null; } })();
         roundStakes.push({
           kind: "round",
           id: `${m._id}#${i}`,
@@ -87,6 +90,8 @@ export async function GET(req: Request) {
           status: st ? (st.won ? "WON" : "LOST") : "ACTIVE",
           voided: st?.voided ?? false,
           stakeTxHash: cp.stakeTxHash,
+          fundTxHash: cp.fundTxHash ?? null,
+          fundCostFormatted: fundRaw != null ? formatUnits(fundRaw, EC_COLLATERAL_DECIMALS) : null,
           qtyFormatted: qtyRaw ? formatUnits(qtyRaw, EC_COLLATERAL_DECIMALS) : null,
           costFormatted: costRaw != null ? formatUnits(costRaw, EC_COLLATERAL_DECIMALS) : null,
           netPnlFormatted: netRaw != null ? formatUnits(netRaw, EC_COLLATERAL_DECIMALS) : null,

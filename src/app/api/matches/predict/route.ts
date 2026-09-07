@@ -8,6 +8,7 @@ import { readArenaPrice, resolveArenaOutcome, type ArenaRef } from "@/lib/ec/exe
 import { ecArenaForMatch, ecArenaForRound } from "@/lib/ec/arena";
 import { stakePlayerRoundOnDreamDEX } from "@/lib/ec/staker";
 import { payoutTusdc } from "@/lib/ec/payout";
+import { collectRoundFunding } from "@/lib/ec/funding";
 import { EC_COLLATERAL_DECIMALS } from "@/lib/ec/config";
 import { z } from "zod";
 import { isAddress } from "viem";
@@ -532,11 +533,22 @@ export async function POST(req: Request): Promise<Response> {
       // Skipped only when there is nothing real to stake (no live arena/entry
       // → paper FLAT round) or when staking is disabled (fast tests / no
       // operator key in dev) — otherwise the round MUST NOT start unconfirmed.
+      // Idempotent: a COMMIT retry reuses the already-recorded stake instead of
+      // double-staking the round.
       const stakeConfigured = !!process.env.OPERATOR_PRIVATE_KEY && process.env.DREAMDUEL_FAST_ROUNDS !== "1";
-      let stakeTxHash: string | null = null;
+      const cpIdx = gateCheck.currentRound - 1;
+      const gateFresh = await Match.findById(match._id).lean();
+      const existingCp = gateFresh?.priceModel?.checkpoints?.[cpIdx] as
+        | { stakeTxHash?: string; stakeSide?: "UP" | "DOWN"; stakeQty?: string; stakeCostRaw?: string; fundTxHash?: string }
+        | undefined;
+      let stakeTxHash: string | null = existingCp?.stakeTxHash ?? null;
       let stakeQty: bigint | null = null;
       let stakeCost: bigint | null = null;
-      if (pinnedArena && entryPrice > 0 && gateCheck.playerAmountPerRound) {
+      try {
+        if (existingCp?.stakeQty != null) stakeQty = BigInt(existingCp.stakeQty);
+        if (existingCp?.stakeCostRaw != null) stakeCost = BigInt(existingCp.stakeCostRaw);
+      } catch { /* corrupt record — re-stake below */ stakeTxHash = null; }
+      if (!stakeTxHash && pinnedArena && entryPrice > 0 && gateCheck.playerAmountPerRound) {
         if (stakeConfigured) {
           const stakeRaw = BigInt(Math.round(gateCheck.playerAmountPerRound * 10 ** EC_COLLATERAL_DECIMALS));
           const staked: { txHash: string | null; error?: string; costRaw?: bigint; filledQuantity?: bigint } = await Promise.race([
@@ -562,10 +574,36 @@ export async function POST(req: Request): Promise<Response> {
         }
       }
 
+      // ── FUNDING LEG: draw the confirmed stake's cost from the player's
+      // operator approval (per-match consumption). The approval from the
+      // POSITION screen covers amount × rounds; each COMMIT gate spends one
+      // round's share, so a finished match exhausts it and replay needs a
+      // fresh approval. Receipt awaited — no fund, no battle.
+      // (PvP stakes are currently placed for player 1's side only, so the draw
+      // follows the stake: player 1's approval. Player-2 staking is unchanged.)
+      let fundTxHash: string | null = existingCp?.fundTxHash ?? null;
+      if (!fundTxHash && stakeTxHash && stakeConfigured) {
+        const fundAmount = stakeCost ?? BigInt(Math.round(gateCheck.playerAmountPerRound * 10 ** EC_COLLATERAL_DECIMALS));
+        if (fundAmount > 0n) {
+          const funded = await collectRoundFunding(gateCheck.playerAddress as `0x${string}`, fundAmount);
+          if (!funded.txHash) {
+            console.error(`[predict] funding gate failed for round ${gateCheck.currentRound}: ${funded.error ?? "unknown"}`);
+            return Response.json(
+              { ...buildState((await Match.findById(match._id))!, now), stakeFailed: true, error: `funding not confirmed: ${funded.error ?? "transfer failed"} — retrying` },
+              { status: 502 },
+            );
+          }
+          fundTxHash = funded.txHash;
+          await Match.updateOne(
+            { _id: match._id },
+            { $set: { [`priceModel.checkpoints.${cpIdx}.fundTxHash`]: fundTxHash, [`priceModel.checkpoints.${cpIdx}.fundCostRaw`]: fundAmount.toString() } },
+          ).catch((e) => console.error("[predict] failed to record funding", e));
+        }
+      }
+
       // Atomic COMMIT → ACTIVE claim (only one request wins). The battle
       // deadline starts NOW — at confirmation time — so the 10s window always
       // measures Second 5 → Second 15 from the confirmed stake.
-      const cpIdx = gateCheck.currentRound - 1;
       const stakeSet: Record<string, unknown> = {};
       if (stakeTxHash) {
         stakeSet[`priceModel.checkpoints.${cpIdx}.stakeTxHash`] = stakeTxHash;

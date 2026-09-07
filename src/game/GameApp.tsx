@@ -563,8 +563,8 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
         {hasActive ? (
           <div style={{ fontSize: 12, color: "#f59e0b", lineHeight: 1.5, marginBottom: 10 }}>
             Ready to fight: {"\uD83D\uDCC8"} {activeDirection} {activeAmount} tUSDC per round {"\u00D7"} {game.totalRounds} rounds
-            {" "} = <b>{(activeAmount ?? 0) * (game.totalRounds ?? 7)} tUSDC authorized</b> (one approval, not staked yet).
-            {"\n"}Each round stakes {activeAmount} tUSDC UP/DOWN and auto-settles on-chain; only that round's stake moves per round.
+            {" "} = <b>{(activeAmount ?? 0) * (game.totalRounds ?? 7)} tUSDC authorized</b> (one approval, drawn per confirmed round).
+            {"\n"}Each round draws {activeAmount} tUSDC from your wallet at commit and stakes it on-chain; only that round's stake moves per round.
           </div>
         ) : (
           <div style={{ marginBottom: 12, padding: "12px 14px", borderRadius: 8, border: "1px solid #334155", background: "rgba(30,41,59,0.25)" }}>

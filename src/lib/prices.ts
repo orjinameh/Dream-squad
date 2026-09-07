@@ -32,6 +32,12 @@ export interface Checkpoint {
   // as actually filled by the venue pool placement.
   stakeQty?: string;
   stakeCostRaw?: string;
+  // Per-match-consumption funding: the operator's transferFrom draw from the
+  // player's approval for this round's confirmed stake cost. Present once the
+  // COMMIT gate has drawn it; replay needs a fresh approval because each round
+  // spends its share.
+  fundTxHash?: string;
+  fundCostRaw?: string;
   // On-chain settlement of the round's stake, written once the pinned window
   // has resolved on the venue (idempotent): WON sides are redeemed 1:1.
   stakeSettlement?: {
