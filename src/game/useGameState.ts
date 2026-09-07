@@ -116,6 +116,9 @@ export interface GameHook {
   // GAME OVER single final payout (tUSDC tx hash once mined, "PENDING" in flight)
   finalPayoutTxHash: string | null;
   finalPayoutAmount: number | null;
+  // Null until the first position load answers; then whether rounds stake
+  // REAL on-chain (operator configured) or run paper.
+  stakingLive: boolean | null;
   // Per-player independent trade amount (STT) — each player's own stake.
   playerAmountPerRound?: number;
   rivalAmountPerRound?: number;
@@ -207,6 +210,10 @@ export function useGameState(): GameHook {
   const [positionReloadTick, setPositionReloadTick] = useState(0);
   const reloadPosition = useCallback(() => setPositionReloadTick((t) => t + 1), []);
   const hasActivePosition = Boolean(positionWindowId && positionDirection);
+  // Whether the server runs REAL on-chain stakes (operator key configured) or
+  // paper mode. Drives the POSITION screen badge so paper never masquerades
+  // as live staking.
+  const [stakingLive, setStakingLive] = useState<boolean | null>(null);
 
   // Load the wallet's EC POSITION (active, else latest settled) so a WON stake
   // stays reachable across reloads for withdraw. Doesn't clobber a just-opened
@@ -219,6 +226,7 @@ export function useGameState(): GameHook {
         const res = await fetch(`/api/position?address=${address}`);
         if (!res.ok) return;
         const data = (await res.json()) as {
+          stakingLive?: boolean | null;
           position?: {
             windowId?: string | null;
             direction?: "UP" | "DOWN" | null;
@@ -238,6 +246,7 @@ export function useGameState(): GameHook {
           }[];
         } | null;
         if (!data) return;
+        if (typeof data.stakingLive === "boolean" && !cancelled) setStakingLive(data.stakingLive);
         const p = data.position;
         if (!p || cancelled || positionWindowId) return;
         if (p.windowId && p.direction) {
@@ -1243,6 +1252,7 @@ export function useGameState(): GameHook {
     rivalAmountPerRound: mp.state.serverState?.rivalAmountPerRound ?? 1,
     finalPayoutTxHash: mp.state.serverState?.finalPayoutTxHash ?? null,
     finalPayoutAmount: mp.state.serverState?.finalPayoutAmount ?? null,
+    stakingLive,
     selectedMatchId,
     positionWindowId,
     positionDirection,

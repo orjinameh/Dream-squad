@@ -145,6 +145,9 @@ export async function GET(req: Request) {
     }
 
     return Response.json({
+      // stakingLive tells the client whether rounds place REAL stakes (operator
+      // key configured) or run paper. Boolean only — never leaks the key.
+      stakingLive: !!process.env.OPERATOR_PRIVATE_KEY,
       position: {
         id: pos._id,
         direction: pos.direction,

@@ -500,11 +500,22 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
       <p style={{ fontSize: 13, color: "#64748b", marginBottom: 8, textAlign: "center" }}>
         Fund your match: stake {amount} tUSDC {"\u00D7"} {rounds} rounds UP/DOWN on {asset}.
       </p>
-      <p style={{ fontSize: 11, color: "#475569", marginBottom: 28, textAlign: "center", maxWidth: 420, lineHeight: 1.6 }}>
+      <p style={{ fontSize: 11, color: "#475569", marginBottom: 12, textAlign: "center", maxWidth: 420, lineHeight: 1.6 }}>
         One approval covers the full match (10 {"\u00D7"} 7 = 70 tUSDC). Each round you
         lock UP/DOWN in a 5s commit, then a 10s locked trade runs; paper P&L credits
         your match balance, one final payout at game over.
       </p>
+      {game.stakingLive !== null && (
+        <div style={{
+          fontSize: 10, letterSpacing: "0.12em", marginBottom: 16, padding: "4px 12px",
+          borderRadius: 4, display: "inline-block",
+          background: game.stakingLive ? "rgba(16,185,129,0.12)" : "rgba(245,158,11,0.12)",
+          border: `1px solid ${game.stakingLive ? "#10b981" : "#f59e0b"}`,
+          color: game.stakingLive ? "#10b981" : "#f59e0b",
+        }}>
+          {game.stakingLive ? "LIVE ON-CHAIN STAKING" : "PAPER MODE \u2014 OPERATOR NOT CONFIGURED, NO REAL STAKES"}
+        </div>
+      )}
 
       <div style={{ width: "100%", maxWidth: 440, marginBottom: 20 }}>
         <LiveChart asset={asset} height={220} />
@@ -565,6 +576,11 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
             Ready to fight: {"\uD83D\uDCC8"} {activeDirection} {activeAmount} tUSDC per round {"\u00D7"} {game.totalRounds} rounds
             {" "} = <b>{(activeAmount ?? 0) * (game.totalRounds ?? 7)} tUSDC authorized</b> (one approval, drawn per confirmed round).
             {"\n"}Each round draws {activeAmount} tUSDC from your wallet at commit and stakes it on-chain; only that round's stake moves per round.
+            {escrow.operatorAllowance != null && (
+              <span style={{ display: "block", marginTop: 4, color: "#38bdf8" }}>
+                Approval remaining: {formatUnits(escrow.operatorAllowance, EC_COLLATERAL_DECIMALS)} tUSDC
+              </span>
+            )}
           </div>
         ) : (
           <div style={{ marginBottom: 12, padding: "12px 14px", borderRadius: 8, border: "1px solid #334155", background: "rgba(30,41,59,0.25)" }}>
