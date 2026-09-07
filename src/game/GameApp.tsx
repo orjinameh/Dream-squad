@@ -6,7 +6,7 @@ import { RetroCharacter, FlameBall } from "./RetroCharacter";
 import { CHARACTERS } from "./characters";
 import { TRADE_MARKETS, PREDICTIONS, type GameMode, type PredictionConfig, type TradeMarket, type BotDifficulty, type FighterState } from "./types";
 import { WalletModal } from "@/components/WalletModal";
-import { LiveChart } from "./LiveChart";
+import { ProbabilityChart } from "./ProbabilityChart";
 import { useMatchmaking } from "./useMatchmaking";
 import { useAccount } from "wagmi";
 import { useDreamDEX } from "./useDreamDEX";
@@ -518,7 +518,7 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
       )}
 
       <div style={{ width: "100%", maxWidth: 440, marginBottom: 20 }}>
-        <LiveChart asset={asset} height={220} />
+        <ProbabilityChart asset={asset} height={220} pollMs={5000} />
       </div>
 
       <div style={{ width: "100%", maxWidth: 440, marginBottom: 16, padding: "16px 20px", border: "1px solid #334155", borderRadius: 10, background: "rgba(15,23,42,0.75)" }}>
@@ -876,9 +876,9 @@ function PredictionSelect({ asset, onBack, onPredict, difficulty, onSelectDiffic
       </h2>
       <p style={{ fontSize: 13, color: "#64748b", marginBottom: 20 }}>Read the live chart, then lock UP or DOWN. Your call is locked for all {mode.rounds} rounds.</p>
 
-      {/* Live chart of the chosen pool — BEFORE the pick */}
+      {/* Live YES-probability tape of the chosen window — BEFORE the pick */}
       <div style={{ width: "100%", maxWidth: 460, marginBottom: 20 }}>
-        <LiveChart asset={asset} height={220} />
+        <ProbabilityChart asset={asset} height={220} pollMs={5000} />
       </div>
 
       <div style={{ display: "flex", gap: 12, marginBottom: 24 }}>
@@ -1210,10 +1210,11 @@ function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; 
   const [revealText, setRevealText] = useState("");
   const [impactText, setImpactText] = useState("");
 
-  // Live EC feed drives the real-time market chart only (LiveChart below). The
-  // ACTUAL per-round money (the player's `playerAmountPerRound` tUSDC as a real
-  // BUY_YES/BUY_NO on the pinned DreamDEX window) is placed server-side by the
-  // operator in the predict route — zero wallet popups and nothing to pre-fund.
+  // The YES-probability tape (ProbabilityChart below) visualizes the exact EC
+  // series each round is judged on. The ACTUAL per-round money (the player's
+  // `playerAmountPerRound` tUSDC as a real BUY_YES/BUY_NO on the pinned
+  // DreamDEX window) is placed server-side by the operator in the predict
+  // route — zero wallet popups and nothing to pre-fund.
   // The legacy browser ghost wallet has been removed; there is no separate
   // deposit step.
 
@@ -1447,11 +1448,11 @@ function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; 
           </div>
         )}
 
-        {/* Live chart — sits UNDER the combat. Same real BTC/ETH feed the
-            player watched before locking their call. */}
+        {/* YES-probability tape — sits UNDER the combat. The exact EC series
+            each round is judged on (same book, same anchor as resolution). */}
         {(game.phase === "ROUND_COMMIT" || game.phase === "ROUND_ACTIVE" || game.phase === "ROUND_LOCKED" || game.phase === "ROUND_REVEAL" || game.phase === "ROUND_IMPACT") && (
           <div style={{ width: "100%", maxWidth: 460, margin: "0 auto 16px" }}>
-            <LiveChart asset={game.selectedPrediction?.asset ?? "BTC"} height={180} />
+            <ProbabilityChart matchId={game.matchId} asset={game.selectedPrediction?.asset ?? "BTC"} height={180} pollMs={2000} />
           </div>
         )}
 
