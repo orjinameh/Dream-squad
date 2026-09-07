@@ -14,7 +14,7 @@ export interface MatchmakingState {
 }
 
 export interface MatchmakingActions {
-  joinQueue: (rounds: number, charId: string) => Promise<void>;
+  joinQueue: (rounds: number, charId: string, amountPerRound?: number) => Promise<void>;
   leaveQueue: () => Promise<void>;
   reset: () => void;
 }
@@ -46,7 +46,7 @@ export function useMatchmaking(walletAddress?: `0x${string}`): {
   // Keep statusRef in sync
   useEffect(() => { statusRef.current = status; }, [status]);
 
-  const performJoin = useCallback(async (roundsSelected: number, charId: string): Promise<void> => {
+  const performJoin = useCallback(async (roundsSelected: number, charId: string, amountPerRound?: number): Promise<void> => {
     if (!walletAddress) return;
     setError(null);
     setRounds(roundsSelected);
@@ -66,7 +66,7 @@ export function useMatchmaking(walletAddress?: `0x${string}`): {
       const res = await fetch("/api/matchmaking/join", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ address: walletAddress, rounds: roundsSelected, charId }),
+        body: JSON.stringify({ address: walletAddress, rounds: roundsSelected, charId, ...(amountPerRound != null ? { amountPerRound } : {}) }),
       });
       const data = await res.json();
 
@@ -129,7 +129,7 @@ export function useMatchmaking(walletAddress?: `0x${string}`): {
                 if (!rejoiningRef.current) {
                   rejoiningRef.current = true;
                   try {
-                    await performJoin(roundsSelected, charId);
+                    await performJoin(roundsSelected, charId, amountPerRound);
                   } finally {
                     rejoiningRef.current = false;
                   }
@@ -150,11 +150,11 @@ export function useMatchmaking(walletAddress?: `0x${string}`): {
     }
   }, [walletAddress, stopPolling]);
 
-  const joinQueue = useCallback(async (roundsSelected: number, charId: string) => {
+  const joinQueue = useCallback(async (roundsSelected: number, charId: string, amountPerRound?: number) => {
     if (!walletAddress) return;
     stopPolling();
     setStatus("searching");
-    await performJoin(roundsSelected, charId);
+    await performJoin(roundsSelected, charId, amountPerRound);
   }, [walletAddress, stopPolling, performJoin]);
 
   const leaveQueue = useCallback(async () => {

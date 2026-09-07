@@ -1023,6 +1023,9 @@ export function useGameState(): GameHook {
     let matchCreated = false;
     try {
       if (!address) throw new Error("Connect your wallet first");
+      // The match MUST ride the funded position size — the operator approval
+      // was sized on it (amount × rounds). Falling back to the duel-screen
+      // default would silently fight a different size than approved.
       const res = await mp.actions.createMatch({
         playerAddress: address,
         playerChar: playerChar?.id ?? "dreamer",
@@ -1032,7 +1035,7 @@ export function useGameState(): GameHook {
         totalRounds: mode?.rounds ?? 7,
         marketSymbol,
         predictionAsset: selectedPrediction?.asset,
-        amountPerRound: selectedAmount,
+        amountPerRound: positionAmount ?? selectedAmount,
         positionId: positionId ?? undefined,
       });
       if (res?.matchId) {
@@ -1062,7 +1065,7 @@ export function useGameState(): GameHook {
         setRivalCharState("thinking");
       }, OVD("ROUND_TRANSITION_DELAY", 800));
     }, OVD("MATCH_INTRO_DURATION", 2000));
-  }, [playerChar, mode, marketSymbol, scheduleTimer, address, mp.actions, positionId]);
+  }, [playerChar, mode, marketSymbol, scheduleTimer, address, mp.actions, positionId, positionAmount, selectedAmount]);
   // Advance from the general stake gate into the fight (bot path only — PvP
   // advances via the server round-open once both players READY UP).
   const startDuel = useCallback(() => {

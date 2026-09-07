@@ -20,12 +20,16 @@ export async function POST(req: Request): Promise<Response> {
   const address = body.address as string | undefined;
   const rounds = body.rounds as number | undefined;
   const charId = body.charId as string | undefined;
+  const amountPerRound = body.amountPerRound as number | undefined;
 
   if (!address || !isAddress(address)) {
     return jsonError(400, "valid wallet address required");
   }
   if (![3, 5, 7, 11].includes(rounds as number)) {
     return jsonError(400, "rounds must be 3, 5, 7, or 11");
+  }
+  if (amountPerRound !== undefined && (!(typeof amountPerRound === "number") || !(amountPerRound > 0) || amountPerRound > 100000)) {
+    return jsonError(400, "amountPerRound must be a positive number");
   }
   const validCharIds = new Set(CHARACTERS.map((c) => c.id));
   if (charId && (typeof charId !== "string" || charId.length > 32 || !validCharIds.has(charId))) {
@@ -66,9 +70,11 @@ export async function POST(req: Request): Promise<Response> {
       return jsonError(409, "your EC position window has ended — open a new position to fight");
     }
 
-    // CONFIRM FUND BEFORE QUEUEING: PvP matches stake 1 tUSDC/round. Verify the
-    // on-chain operator approval covers it — a DB position alone is not proof.
-    const fund = await assertMatchFunding(addr, 1, rounds!);
+    // CONFIRM FUND BEFORE QUEUEING: verify the on-chain operator approval
+    // covers this match's pot (position size, client-confirmed) — a DB
+    // position alone is not proof.
+    const joinAmount = amountPerRound ?? position.amount ?? 1;
+    const fund = await assertMatchFunding(addr, joinAmount, rounds!);
     if (!fund.ok) {
       return fund.reason === "insufficient"
         ? jsonError(402, `operator approval ${fund.allowance} below match pot ${fund.required} — approve on the POSITION screen first`)
@@ -168,7 +174,9 @@ export async function POST(req: Request): Promise<Response> {
         player1Ready: false,
         player2Ready: false,
         funded: true,
-        playerAmountPerRound: 1,
+        // Ride the funded position size (client sends its position amount;
+        // falls back to the position record, never a silent default).
+        playerAmountPerRound: joinAmount,
         playerStartBalance: position.amount,
         rivalStartBalance: position.amount,
         playerBalance: position.amount,

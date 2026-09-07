@@ -368,28 +368,43 @@ async function capProcessedArrays(addr: string): Promise<void> {
 
 /**
  * GAME OVER — [THE SINGLE FINAL PAYOUT]
- * Once the 7th round finishes (or a KO lands), credit is already paper-settled
- * per round in MongoDB (playerBalance). This fires ONE real tUSDC transfer per
- * net-positive player delivering the total match winnings to their primary
- * wallet. Fire-and-forget: the round flow never blocks on it; the record
- * (finalPayoutTxHash / rivalFinalPayoutTxHash) makes it idempotent, and the
- * background worker recoups the operator's venue shares off-line later via
- * settleRoundStakes().
+ * The wallet was really charged: every COMMIT gate drew that round's confirmed
+ * stake cost from the player's operator approval (fundCostRaw per checkpoint).
+ * The paper ledger (playerBalance) tracks profit/loss against a fictional
+ * starting balance — so paying just the paper net would double-charge every
+ * loss (once in the draw, once in the ledger) and shrink every win. The payout
+ * is therefore DRAWN STAKES BACK + PAPER NET, making the wallet's real delta
+ * exactly equal the displayed net: winning rounds grow the wallet, losing
+ * rounds shrink it by exactly the shown amount. Fire-and-forget: the round
+ * flow never blocks on it; the record (finalPayoutTxHash /
+ * rivalFinalPayoutTxHash) makes it idempotent, and the background worker
+ * recoups the operator's venue shares off-line later via settleRoundStakes().
  */
 async function maybeFinalPayout(matchId: string): Promise<void> {
   try {
     const m = await Match.findById(matchId).lean();
     if (!m || m.status !== "COMPLETED") return;
-    const jobs: { key: string; amountKey: string; addr: string; net: number }[] = [];
+    // Total really drawn from the player wallet across this match's gates.
+    let drawnRaw = 0n;
+    for (const cp of m.priceModel?.checkpoints ?? []) {
+      try {
+        if ((cp as any)?.fundCostRaw != null) drawnRaw += BigInt((cp as any).fundCostRaw);
+      } catch { /* corrupt record — treat as undrawn */ }
+    }
+    const jobs: { key: string; amountKey: string; addr: string; net: number; drawnRaw: bigint }[] = [];
     const pStart = m.playerStartBalance ?? m.positionAmount ?? 0;
     const pNet = (m.playerBalance ?? pStart) - pStart;
-    if (pNet > 1e-6 && m.playerAddress) {
-      jobs.push({ key: "finalPayoutTxHash", amountKey: "finalPayoutAmount", addr: m.playerAddress, net: pNet });
+    // Player 1 really funded: draws back + paper net.
+    if (m.playerAddress) {
+      jobs.push({ key: "finalPayoutTxHash", amountKey: "finalPayoutAmount", addr: m.playerAddress, net: pNet, drawnRaw });
     }
     if (m.opponentType === "player" && m.player2Address) {
+      // Player 2 never funds draws under the current single-stake flow, so
+      // they are owed paper net only (floored at zero — no prize for a
+      // negative ledger).
       const rStart = m.rivalStartBalance ?? m.positionAmount ?? 0;
       const rNet = (m.rivalBalance ?? rStart) - rStart;
-      if (rNet > 1e-6) jobs.push({ key: "rivalFinalPayoutTxHash", amountKey: "rivalFinalPayoutAmount", addr: m.player2Address, net: rNet });
+      if (rNet > 1e-6) jobs.push({ key: "rivalFinalPayoutTxHash", amountKey: "rivalFinalPayoutAmount", addr: m.player2Address, net: rNet, drawnRaw: 0n });
     }
     for (const job of jobs) {
       // The payout MUST go to the match's recorded player wallet — never the
@@ -398,13 +413,23 @@ async function maybeFinalPayout(matchId: string): Promise<void> {
         console.error(`[payout] match=${matchId} refusing payout to invalid address ${job.addr}`);
         continue;
       }
+      // Real-wallet delta must equal the paper net: draws back + net, in
+      // integer raw units (floor the float→raw conversion against dust).
+      let payoutRaw: bigint;
+      try {
+        payoutRaw = BigInt(Math.floor(job.net * 10 ** EC_COLLATERAL_DECIMALS)) + job.drawnRaw;
+      } catch {
+        continue;
+      }
+      if (payoutRaw <= 0n) continue;
+      const payoutHuman = Number(payoutRaw) / 10 ** EC_COLLATERAL_DECIMALS;
       const claimed = await Match.updateOne(
         { _id: matchId, [job.key]: { $exists: false } },
-        { $set: { [job.key]: "PENDING", [job.amountKey]: job.net } },
+        { $set: { [job.key]: "PENDING", [job.amountKey]: payoutHuman } },
       );
       if (claimed.modifiedCount !== 1) continue; // already paid / in flight
-      console.log(`[payout] match=${matchId} paying ${job.net} tUSDC to player ${job.addr}`);
-      payoutTusdc(job.addr as `0x${string}`, job.net)
+      console.log(`[payout] match=${matchId} paying ${payoutHuman} tUSDC (net ${job.net} + draws) to player ${job.addr}`);
+      payoutTusdc(job.addr as `0x${string}`, payoutHuman)
         .then(({ txHash, error }) => {
           if (error || !txHash) {
             console.error(`[payout] final payout failed for ${job.addr}:`, error ?? "no tx");
@@ -413,7 +438,7 @@ async function maybeFinalPayout(matchId: string): Promise<void> {
             );
             return;
           }
-          console.log(`[payout] final match payout ${job.net} tUSDC to ${job.addr} — tx ${txHash}`);
+          console.log(`[payout] match=${matchId} paying ${payoutHuman} tUSDC to player ${job.addr} — tx ${txHash}`);
           Match.updateOne({ _id: matchId }, { $set: { [job.key]: txHash } }).catch((e) =>
             console.error("[payout] failed to record final payout", e),
           );
