@@ -652,7 +652,7 @@ function MatchTypeScreen({ game, onBack, onPvP, onBot, onHome }: {
       <h2 style={{ fontSize: 28, fontWeight: 900, letterSpacing: "0.1em", color: "#fbbf24", textShadow: "2px 2px 0 #92400e", marginBottom: 8, textAlign: "center" }}>
         CHOOSE YOUR OPPONENT
       </h2>
-      <p style={{ fontSize: 12, color: "#64748b", letterSpacing: "0.12em", marginBottom: 32 }}>POT COVERED \u2014 EVERY ROUND DRAWS {game.positionAmount ?? 0} tUSDC FROM YOUR APPROVAL</p>
+      <p style={{ fontSize: 12, color: "#64748b", letterSpacing: "0.12em", marginBottom: 32 }}>POT COVERED {"\u2014"} EVERY ROUND DRAWS {game.positionAmount ?? 0} tUSDC FROM YOUR APPROVAL</p>
 
       <div style={{
         fontSize: 13, color: "#94a3b8", marginBottom: 24, padding: "8px 18px", borderRadius: 6,
@@ -1185,7 +1185,7 @@ function ReadyUpScreen({ game, escrow, onReady, onStartDuel }: {
           {"\uD83D\uDCC8"} FIGHT STAKE {"\u00B7"} {game.positionDirection ?? "UP"} {"\u00D7"} {game.positionAmount ?? 0} tUSDC / ROUND
         </div>
         <div style={{ fontSize: 11, color: "#94a3b8", lineHeight: 1.5 }}>
-          Funded up front (one approval) for {game.totalRounds} rounds \u2014 {(game.positionAmount ?? 0) * (game.totalRounds ?? 7)} tUSDC.
+          Funded up front (one approval) for {game.totalRounds} rounds {"\u2014"} {(game.positionAmount ?? 0) * (game.totalRounds ?? 7)} tUSDC.
           Every round stakes {game.positionAmount ?? 0} tUSDC and settles on-chain; winnings return at match end.
         </div>
       </div>
@@ -1329,7 +1329,7 @@ function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; 
             {"\u2705"} STAKING {game.playerAmountPerRound ?? game.positionAmount ?? 0} tUSDC / ROUND
           </span>
           <span style={{ fontSize: 12, color: "#94a3b8", letterSpacing: "0.03em" }}>
-            {game.playerAmountPerRound ?? game.positionAmount ?? 0} tUSDC \u00D7 {game.totalRounds} = <b style={{ color: "#e2e8f0" }}>{(game.playerAmountPerRound ?? game.positionAmount ?? 0) * game.totalRounds} tUSDC</b> on DreamDEX \u00B7 auto-settles each round \u00B7 no wallet prompts
+            {game.playerAmountPerRound ?? game.positionAmount ?? 0} tUSDC {"\u00D7"} {game.totalRounds} = <b style={{ color: "#e2e8f0" }}>{(game.playerAmountPerRound ?? game.positionAmount ?? 0) * game.totalRounds} tUSDC</b> on DreamDEX {"\u00B7"} auto-settles each round {"\u00B7"} no wallet prompts
           </span>
         </div>
       </div>
@@ -2081,7 +2081,7 @@ function ProfileScreen({ address, escrow, onBack, onHistory, onStakeHistory }: {
 
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", justifyContent: "center" }}>
         <button onClick={onHistory} style={{ ...ctaButtonStyle, background: "linear-gradient(135deg, #155e75, #22d3ee)", fontSize: 14, padding: "12px 28px" }}>
-          {"\u2694\uFE0F"} MARKET \u00B7 BATTLE HISTORY
+          {"\u2694\uFE0F"} MARKET {"\u00B7"} BATTLE HISTORY
         </button>
         <button onClick={onStakeHistory} style={{ ...ctaButtonStyle, background: "linear-gradient(135deg, #4c1d95, #7c3aed)", fontSize: 14, padding: "12px 28px" }}>
           {"\uD83C\uDFE6"} EC STAKE HISTORY
@@ -2579,7 +2579,7 @@ function StakeHistoryScreen({ address, onBack }: { address?: string; onBack: () 
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <span style={{ fontSize: 16 }}>{s.direction === "UP" ? "\uD83D\uDCC8" : "\uD83D\uDCC9"}</span>
                   <span style={{ fontSize: 14, fontWeight: 900, color: borderColor, letterSpacing: "0.08em" }}>
-                    R{s.roundNum} {s.direction} \u00D7 {s.amount} tUSDC
+                    R{s.roundNum} {s.direction} {"\u00D7"} {s.amount} tUSDC
                   </span>
                   <span style={{
                     fontSize: 9, fontWeight: 900, letterSpacing: "0.1em", padding: "2px 8px", borderRadius: 4,
@@ -2631,7 +2631,7 @@ function StakeHistoryScreen({ address, onBack }: { address?: string; onBack: () 
             return (
               <div key={s.id} style={{ marginBottom: 6, padding: "8px 14px", borderRadius: 8, border: `1.5px solid ${borderColor}`, background: `${borderColor}08`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span style={{ fontSize: 13, fontWeight: 900, color: "#cbd5e1", letterSpacing: "0.06em" }}>
-                  {s.direction === "UP" ? "\uD83D\uDCC8" : "\uD83D\uDCC9"} {s.direction} \u00D7 {s.amount} tUSDC
+                  {s.direction === "UP" ? "\uD83D\uDCC8" : "\uD83D\uDCC9"} {s.direction} {"\u00D7"} {s.amount} tUSDC
                   <span style={{ fontSize: 10, color: "#64748b", marginLeft: 8 }}>{s.market}{s.arenaSymbol ? ` \u00B7 ${s.arenaSymbol}` : ""}</span>
                 </span>
                 <span style={{ fontSize: 9, fontWeight: 900, letterSpacing: "0.1em", color: borderColor }}>{s.status}</span>
