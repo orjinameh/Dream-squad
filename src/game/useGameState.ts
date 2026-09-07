@@ -254,6 +254,14 @@ export function useGameState(): GameHook {
           setPositionDirection(p.direction);
           setPositionAmount(p.amount ?? null);
           setPositionMarket(p.market ?? null);
+          // Keep the single asset truth: a loaded position re-points the
+          // question/charts to its market.
+          if (p.market === "BTC" || p.market === "ETH") {
+            setSelectedPrediction((prev) => {
+              const next = PREDICTIONS.find((q) => q.asset === p.market) ?? PREDICTIONS[0];
+              return next.id === prev.id ? prev : { ...next, prediction: prev.prediction };
+            });
+          }
           setPositionStakeTxHash(p.stakeTxHash ?? null);
           setPositionEscrowAddress(p.escrowAddress ?? null);
           setPositionEntryPrice(p.entryPrice ?? null);
@@ -1034,7 +1042,9 @@ export function useGameState(): GameHook {
         mode: mode?.id ?? "duel",
         totalRounds: mode?.rounds ?? 7,
         marketSymbol,
-        predictionAsset: selectedPrediction?.asset,
+        // Money truth wins: the FUNDED position's market decides the fight's
+        // asset (stakes settle on its window), UI selection only backs it up.
+        predictionAsset: positionMarket ?? selectedPrediction?.asset,
         amountPerRound: positionAmount ?? selectedAmount,
         positionId: positionId ?? undefined,
       });
@@ -1065,7 +1075,7 @@ export function useGameState(): GameHook {
         setRivalCharState("thinking");
       }, OVD("ROUND_TRANSITION_DELAY", 800));
     }, OVD("MATCH_INTRO_DURATION", 2000));
-  }, [playerChar, mode, marketSymbol, scheduleTimer, address, mp.actions, positionId, positionAmount, selectedAmount]);
+  }, [playerChar, mode, marketSymbol, scheduleTimer, address, mp.actions, positionId, positionAmount, positionMarket, selectedAmount]);
   // Advance from the general stake gate into the fight (bot path only — PvP
   // advances via the server round-open once both players READY UP).
   const startDuel = useCallback(() => {
@@ -1150,7 +1160,17 @@ export function useGameState(): GameHook {
   const goToMatchHistory = useCallback(() => { setPhase("MATCH_HISTORY"); }, []);
   const goToStakeHistory = useCallback(() => { setPhase("STAKE_HISTORY"); }, []);
   const goToMatchDetail = useCallback((matchId: string) => { setSelectedMatchId(matchId); setPhase("MATCH_DETAIL"); }, []);
-  const selectMarket = useCallback((m: TradeMarket) => { setMarketSymbol(m.symbol); setMode(DEFAULT_MODE); setPhase("POSITION"); }, []);
+  const selectMarket = useCallback((m: TradeMarket) => {
+    setMarketSymbol(m.symbol);
+    // Single asset truth: the question, the charts, and the match asset all
+    // derive from selectedPrediction — so a market pick must re-point it
+    // (otherwise the UI asks BTC on an ETH fight). Keep any picked direction.
+    setSelectedPrediction((prev) => {
+      const next = PREDICTIONS.find((p) => p.asset === m.asset) ?? PREDICTIONS[0];
+      return { ...next, prediction: prev.prediction };
+    });
+    setMode(DEFAULT_MODE); setPhase("POSITION");
+  }, []);
   const selectChar = useCallback((c: CharacterDef) => { setPlayerChar(c); setPhase("MATCH_TYPE"); }, []);
   const confirmDuel = useCallback(() => { setPhase("MATCH_TYPE"); }, []);
 
