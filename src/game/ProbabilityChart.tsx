@@ -1,13 +1,18 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import {
-  createChart,
-  LineStyle,
-  type IChartApi,
-  type ISeriesApi,
-  type UTCTimestamp,
-} from "lightweight-charts";
+  Area,
+  Bar,
+  CartesianGrid,
+  Cell,
+  ComposedChart,
+  ReferenceLine,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 
 export interface TickPoint {
   t: number; // unix seconds
@@ -39,7 +44,7 @@ interface Props {
 }
 
 export interface CandleRow {
-  time: UTCTimestamp;
+  time: number; // bucket start, unix seconds
   open: number;
   high: number;
   low: number;
@@ -47,13 +52,14 @@ export interface CandleRow {
 }
 
 export interface VolumeRow {
-  time: UTCTimestamp;
+  time: number;
   value: number;
   color: string;
 }
 
 const UP = "#10b981";
 const DOWN = "#ef4444";
+const LINE = "#38bdf8";
 const VOL_UP = "rgba(16,185,129,0.45)";
 const VOL_DOWN = "rgba(239,68,68,0.45)";
 
@@ -87,32 +93,61 @@ export function bucketCandles(
   const volumes: VolumeRow[] = [];
   for (const key of [...buckets.keys()].sort((a, b) => a - b)) {
     const b = buckets.get(key)!;
-    const time = key as UTCTimestamp;
-    candles.push({ time, open: b.open, high: b.high, low: b.low, close: b.close });
-    volumes.push({ time, value: b.volume, color: b.close >= b.open ? VOL_UP : VOL_DOWN });
+    candles.push({ time: key, open: b.open, high: b.high, low: b.low, close: b.close });
+    volumes.push({ time: key, value: b.volume, color: b.close >= b.open ? VOL_UP : VOL_DOWN });
   }
   return { candles, volumes };
 }
 
+interface ChartRow {
+  time: number;
+  label: string;
+  price: number;
+  volume: number;
+  up: boolean;
+}
+
+function fmtTime(t: number): string {
+  const d = new Date(t * 1000);
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  return `${hh}:${mm}:${ss}`;
+}
+
+function TapeTooltip(props: any) {
+  const { active, payload, label } = props ?? {};
+  if (!active || !payload?.length) return null;
+  const row = payload[0]?.payload as ChartRow | undefined;
+  if (!row) return null;
+  return (
+    <div style={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 6, padding: "6px 10px", fontSize: 11 }}>
+      <div style={{ color: "#94a3b8", marginBottom: 2 }}>{label}</div>
+      <div style={{ color: "#e2e8f0", fontWeight: 800, fontFamily: "'Courier New', monospace" }}>
+        YES ${row.price.toFixed(4)}
+      </div>
+      <div style={{ color: "#64748b" }}>Vol {row.volume.toFixed(2)} tUSDC</div>
+    </div>
+  );
+}
+
 /**
  * The exact live YES-probability tape ($0.01–$0.99) ticking on the dreamDEX
- * Central Limit Order Book for the arena in play — rendered as candlesticks
- * with real traded volume, the same venue series every round is judged
- * against. Replaces external spot charts so players decide on the series that
- * actually scores them.
+ * Central Limit Order Book for the arena in play — rendered as a price area
+ * with real traded volume underneath, the same venue series every round is
+ * judged against. Replaces external spot charts so players decide on the
+ * series that actually scores them. No third-party watermark: every pixel
+ * below is our own SVG.
  */
 export function ProbabilityChart({ matchId, asset = "BTC", height = 220, pollMs = 2000, showHeader = true, bucketSec = 5 }: Props) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const chartRef = useRef<IChartApi | null>(null);
-  const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
-  const volRef = useRef<ISeriesApi<"Histogram"> | null>(null);
-  const entryLineRef = useRef<{ price: number; handle: unknown } | null>(null);
-  const everConnectedRef = useRef(false);
+  const gid = useId().replace(/[^a-zA-Z0-9_-]/g, "");
+  const [rows, setRows] = useState<ChartRow[]>([]);
   const [price, setPrice] = useState<number | null>(null);
   const [entry, setEntry] = useState<number | null>(null);
   const [dir, setDir] = useState<"up" | "down" | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
+  const everConnectedRef = useRef(false);
 
   const query = matchId
     ? `/api/matches/ec-tape?matchId=${encodeURIComponent(matchId)}`
@@ -120,93 +155,39 @@ export function ProbabilityChart({ matchId, asset = "BTC", height = 220, pollMs 
 
   useEffect(() => {
     let disposed = false;
-    const el = containerRef.current;
-    if (!el) return;
-    el.innerHTML = "";
-
-    const chart = createChart(el, {
-      width: el.clientWidth > 0 ? el.clientWidth : 320,
-      height,
-      // Supported at runtime (v4.2.3 honors it); absent from the bundled
-      // typings, hence the narrow assertion.
-      attributionLogo: false,
-      layout: { background: { color: "#0b1120" }, textColor: "#94a3b8" },
-      grid: { vertLines: { color: "#1e293b" }, horzLines: { color: "#1e293b" } },
-      timeScale: { borderColor: "#1e293b", timeVisible: true, secondsVisible: true },
-      rightPriceScale: { borderColor: "#1e293b" },
-      crosshair: { mode: 0 },
-    } as Parameters<typeof createChart>[1]);
-    const candles = chart.addCandlestickSeries({
-      upColor: UP,
-      downColor: DOWN,
-      borderUpColor: UP,
-      borderDownColor: DOWN,
-      wickUpColor: UP,
-      wickDownColor: DOWN,
-      priceFormat: { type: "price", precision: 4, minMove: 0.0001 },
-      // No library last-price line: the header already reads out YES, and the
-      // only horizontal that may cross the pane is the ENTRY anchor. Two
-      // unexplained lines is exactly the confusion to avoid.
-      lastValueVisible: false,
-      priceLineVisible: false,
-    });
-    const volumes = chart.addHistogramSeries({
-      priceScaleId: "",
-      priceFormat: { type: "volume" },
-    });
-    chart.priceScale("").applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
-    chartRef.current = chart;
-    candleRef.current = candles;
-    volRef.current = volumes;
-
-    const applyTape = (data: TapeResponse) => {
-      if (disposed) return;
-      const { candles: rows, volumes: vols } = bucketCandles(data.points ?? [], data.edge, bucketSec);
-      if (rows.length === 0) {
-        setErr(data.live === false ? "No live window — chart paused." : "Waiting for window trades — candles form live.");
-        return;
-      }
-      candles.setData(rows);
-      volRef.current?.setData(vols);
-      chart.timeScale().scrollToRealTime();
-      const last = rows[rows.length - 1].close;
-      setPrice(last);
-      setConnected(true);
-      everConnectedRef.current = true;
-      setErr(null);
-
-      const entryPrice = typeof data.entry === "number" && data.entry > 0 ? data.entry : null;
-      setEntry(entryPrice);
-      if (entryPrice != null) {
-        setDir(last > entryPrice ? "up" : last < entryPrice ? "down" : null);
-        const prev = entryLineRef.current;
-        if (!prev || Math.abs(prev.price - entryPrice) > 1e-12) {
-          if (prev) {
-            try { candles.removePriceLine(prev.handle as never); } catch { /* stale handle */ }
-          }
-          const handle = candles.createPriceLine({
-            price: entryPrice,
-            color: "#fbbf24",
-            lineWidth: 1,
-            lineStyle: LineStyle.Dashed,
-            axisLabelVisible: true,
-            title: "ENTRY",
-          });
-          entryLineRef.current = { price: entryPrice, handle };
-        }
-      } else {
-        setDir(null);
-      }
-    };
-
     let inFlight = false;
+
     const load = async () => {
       if (disposed || document.hidden || inFlight) return;
       inFlight = true;
       try {
         const res = await fetch(query, { signal: AbortSignal.timeout(8000) });
         if (!res.ok) throw new Error(`tape ${res.status}`);
-        applyTape((await res.json()) as TapeResponse);
+        const data = (await res.json()) as TapeResponse;
+        const { candles, volumes } = bucketCandles(data.points ?? [], data.edge, bucketSec);
+        const volByTime = new Map(volumes.map((v) => [v.time, v]));
+        const next: ChartRow[] = candles.map((c) => ({
+          time: c.time,
+          label: fmtTime(c.time),
+          price: c.close,
+          volume: volByTime.get(c.time)?.value ?? 0,
+          up: c.close >= c.open,
+        }));
+        if (disposed) return;
+        if (next.length === 0) {
+          setErr(data.live === false ? "No live window — chart paused." : "Waiting for window trades — line ticks live.");
+          return;
+        }
+        setRows(next);
+        const last = next[next.length - 1].price;
+        setPrice(last);
+        setConnected(true);
+        everConnectedRef.current = true;
+        setErr(null);
+
+        const entryPrice = typeof data.entry === "number" && data.entry > 0 ? data.entry : null;
+        setEntry(entryPrice);
+        setDir(entryPrice != null ? (last > entryPrice ? "up" : last < entryPrice ? "down" : null) : null);
       } catch {
         // transient — keep last chart state; surface only if never connected
         if (!disposed && !everConnectedRef.current) setErr("Live tape unavailable — retrying.");
@@ -219,24 +200,26 @@ export function ProbabilityChart({ matchId, asset = "BTC", height = 220, pollMs 
     const iv = setInterval(load, Math.max(1000, pollMs));
     const onVis = () => { if (!document.hidden) load(); };
     document.addEventListener("visibilitychange", onVis);
-    const onResize = () => {
-      if (el.clientWidth > 0) chart.applyOptions({ width: el.clientWidth });
-    };
-    window.addEventListener("resize", onResize);
-
     return () => {
       disposed = true;
       clearInterval(iv);
       document.removeEventListener("visibilitychange", onVis);
-      window.removeEventListener("resize", onResize);
-      chartRef.current = null;
-      candleRef.current = null;
-      volRef.current = null;
-      entryLineRef.current = null;
-      chart.remove();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, height, pollMs, bucketSec]);
+  }, [query, pollMs, bucketSec]);
+
+  // Autoscale around the data so thin-book micro-moves are visible instead of
+  // a flat line: pad the observed range, clamped to probability bounds.
+  const domain = useMemo<[number, number]>(() => {
+    if (rows.length === 0) return [0.01, 0.99];
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (const r of rows) {
+      if (r.price < lo) lo = r.price;
+      if (r.price > hi) hi = r.price;
+    }
+    const pad = Math.max(0.005, (hi - lo) * 0.35);
+    return [Math.max(0, lo - pad), Math.min(1, hi + pad)];
+  }, [rows]);
 
   const arrow = dir === "up" ? "\u2191" : dir === "down" ? "\u2193" : "\u2013";
   const arrowColor = dir === "up" ? UP : dir === "down" ? DOWN : "#64748b";
@@ -284,7 +267,53 @@ export function ProbabilityChart({ matchId, asset = "BTC", height = 220, pollMs 
         position: "relative", borderRadius: 8, overflow: "hidden",
         border: "1px solid #1e293b", background: "#0b1120",
       }}>
-        <div ref={containerRef} style={{ width: "100%", height }} />
+        <div style={{ width: "100%", height }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <ComposedChart data={rows} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+              <defs>
+                <linearGradient id={`tape-${gid}`} x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#38bdf8" stopOpacity={0.35} />
+                  <stop offset="100%" stopColor="#38bdf8" stopOpacity={0.02} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid stroke="#1e293b" vertical={false} />
+              <XAxis dataKey="label" tick={{ fill: "#64748b", fontSize: 9 }} tickLine={false} axisLine={{ stroke: "#1e293b" }} minTickGap={40} />
+              <YAxis
+                domain={domain}
+                tick={{ fill: "#64748b", fontSize: 9 }}
+                tickLine={false}
+                axisLine={false}
+                width={44}
+                tickFormatter={(v: number) => `$${v.toFixed(2)}`}
+              />
+              <YAxis yAxisId="vol" orientation="right" hide domain={[0, "dataMax"]} />
+              <Tooltip content={<TapeTooltip />} />
+              <Bar dataKey="volume" yAxisId="vol" barSize={10} radius={[2, 2, 0, 0]}>
+                {rows.map((r) => (
+                  <Cell key={r.time} fill={r.up ? VOL_UP : VOL_DOWN} />
+                ))}
+              </Bar>
+              <Area
+                type="monotone"
+                dataKey="price"
+                stroke="#38bdf8"
+                strokeWidth={2}
+                fill={`url(#tape-${gid})`}
+                dot={false}
+                activeDot={{ r: 3, fill: "#38bdf8" }}
+              />
+              {entry !== null && (
+                <ReferenceLine
+                  y={entry}
+                  stroke="#fbbf24"
+                  strokeDasharray="6 4"
+                  strokeWidth={1}
+                  label={{ value: `ENTRY $${entry.toFixed(4)}`, fill: "#fbbf24", fontSize: 9, position: "insideTopRight" }}
+                />
+              )}
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
         {err && (
           <div style={{ position: "absolute", bottom: 8, left: 0, right: 0, textAlign: "center", fontSize: 10, color: "#f59e0b", letterSpacing: "0.05em" }}>
             {err}
