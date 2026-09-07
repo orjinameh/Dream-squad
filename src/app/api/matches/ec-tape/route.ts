@@ -94,7 +94,7 @@ export async function GET(req: Request) {
       if (!match) return jsonError(404, "match not found");
       asset = ((match.priceModel?.asset ?? match.predictionAsset ?? "BTC") as string).toUpperCase() === "ETH" ? "ETH" : "BTC";
       arena = await ecArenaForMatch(match, asset);
-      // Entry anchor: this round's Second-5 lock, else the match-level anchor.
+      // Entry anchor: this round's Second-10 lock, else the match-level anchor.
       const cp = match.priceModel?.checkpoints?.[(match.currentRound ?? 1) - 1];
       const rawEntry = cp?.entryPrice ?? (match.priceModel as any)?.arenaOpen ?? null;
       entry = typeof rawEntry === "number" && rawEntry > 0 ? rawEntry : null;

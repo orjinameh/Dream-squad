@@ -14,8 +14,8 @@ vi.mock("@/lib/operator", () => ({
   ensurePlayerVault: vi.fn(async () => ({ funded: true, vaultTxHash: null })),
 }));
 
-// Frozen EC book: the YES-mid never moves between the Second-5 entry and the
-// Second-15 exit. EC-only judge => every round is an honest FLAT draw (a push:
+// Frozen EC book: the YES-mid never moves between the Second-10 entry and the
+// Second-20 exit. EC-only judge => every round is an honest FLAT draw (a push:
 // 0 PnL, balances untouched), never a fabricated UP/DOWN.
 const FROZEN_MID = 0.30;
 

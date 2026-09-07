@@ -159,7 +159,7 @@ export interface MatchDoc {
 }
 
 const ROUND_DURATION_MS = 10_000;
-const COMMIT_DURATION_MS = 5_000;
+const COMMIT_DURATION_MS = 10_000;
 const LOCK_MS = 1_200;
 const REVEAL_MS = 1_500;
 const IMPACT_MS = 1_400;

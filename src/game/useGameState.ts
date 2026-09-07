@@ -14,7 +14,7 @@ import { useAccount } from "wagmi";
 // so overrides apply regardless of import order.
 const OVD = (key: string, def: number) => (globalThis as any)[`__${key}__`] ?? def;
 const getRoundTime = () => (globalThis as any).__ROUND_TIME__ ?? 10;
-const COMMIT_TIME = 5;
+const COMMIT_TIME = 10;
 
 const MAX_HP = 100;
 
@@ -477,7 +477,7 @@ export function useGameState(): GameHook {
         // Traditional binary: each round's COMMIT is a fresh, independent stake
         // choice. Carry the previous round's side as the next COMMIT's default
         // (so an untouched fight still locks something), but the player must
-        // confirm/change it inside the 5s COMMIT — ACTIVE is locked.
+        // confirm/change it inside the 10s COMMIT — ACTIVE is locked.
         setLocalPrediction((prev) => prev ?? storedPredictionRef.current);
         setPlayerPrediction((prev) => prev ?? storedPredictionRef.current);
         setLockedPrediction((prev) => prev ?? storedPredictionRef.current);
@@ -672,7 +672,7 @@ export function useGameState(): GameHook {
   }, [isBotMatch, phase, mp.state.serverState?.funded]);
 
   // --- PVP ROUND COUNTDOWN + LOCK/RESOLVE (traditional binary) ---
-  // COMMIT (5s): the ONLY window where a pick is submitted. At COMMIT expiry
+  // COMMIT (10s): the ONLY window where a pick is submitted. At COMMIT expiry
   // the locked side (or nothing = server default UP) is submitted once to force
   // the COMMIT→ACTIVE lock — this is where each round's stake position is chosen.
   // ACTIVE (10s locked trade) + LOCKED: never re-send a side (flips forbidden);
@@ -903,7 +903,7 @@ export function useGameState(): GameHook {
       return;
     }
 
-    // COMMIT phase: 5s commit window where the player picks UP/DOWN.
+    // COMMIT phase: 10s commit window where the player picks UP/DOWN.
     if (ss.roundPhase === "COMMIT" && !midRound) {
       roundIdentityRef.current = `${isBotMatch ? "bot" : "pvp"}-${ss.currentRound}`;
       activeRoundNumRef.current = ss.currentRound;
@@ -1073,13 +1073,13 @@ export function useGameState(): GameHook {
   }, [phase, isBotMatch, scheduleTimer]);
 
   // --- PREDICTION (traditional binary lock) ---
-  // The 5s COMMIT window is the ONLY time a pick is accepted. The 10s ACTIVE
+  // The 10s COMMIT window is the ONLY time a pick is accepted. The 10s ACTIVE
   // window is the locked trade duration — no flips, matching traditional
   // binary trading. Each of the 7 rounds stakes its own position at the
   // COMMIT→ACTIVE lock (direction chosen fresh in that round's COMMIT).
   const [lockedPrediction, setLockedPrediction] = useState<"UP" | "DOWN" | null>(null);
 
-  // COMMIT-only: pick (or re-pick) this round's side while the 5s window is
+  // COMMIT-only: pick (or re-pick) this round's side while the 10s window is
   // open. Once locked to ACTIVE the call is final for that 10s trade.
   const makePrediction = useCallback((_pred: "UP" | "DOWN") => {
     if (phase !== "ROUND_COMMIT") return;

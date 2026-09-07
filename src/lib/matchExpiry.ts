@@ -15,7 +15,7 @@ import { Match } from "@/db/models/Match";
 //
 // CONFIRM-STRICT ADDENDUM: abandonment additionally requires INACTIVITY — a
 // stale deadline alone never kills a match that is still confirming (slow
-// stake receipts can legitimately hold COMMIT past its 5s window). Any match
+// stake receipts can legitimately hold COMMIT past its window). Any match
 // with recent contact (lastSeenAt, touched on every predict/state call) is
 // left alone no matter how old its deadline is.
 export const STALE_WAITING_MS = 60_000;

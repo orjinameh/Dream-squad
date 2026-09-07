@@ -11,7 +11,7 @@ By engineering a **Hybrid State Engine with EOA Operator Delegation**, DreamDuel
 
 ```
 Browser (wagmi + RainbowKit) ─────────────────────────────────────────────
-  └ 1v1 match flow: CHAR_SELECT → MATCH_TYPE → POSITION/approve → COMMIT(5s, pick + stake awaits receipt)
+  └ 1v1 match flow: CHAR_SELECT → MATCH_TYPE → POSITION/approve → COMMIT(10s, pick + stake awaits receipt)
      → ACTIVE(10s locked trade) → resolve → DB paper credit → next round / KO / result → ONE final tUSDC payout
 
 Next.js Route Handlers (server-authoritative)
@@ -23,22 +23,22 @@ Next.js Route Handlers (server-authoritative)
 
 ---
 
-## ⏱️ The 15-Second Round Lifecycle
+## ⏱️ The 20-Second Round Lifecycle
 
-Every round enforces a rigid, server-authoritative 15-second mechanical split that matches true binary-options trading parameters:
+Every round enforces a rigid, server-authoritative 20-second mechanical split that matches true binary-options trading parameters:
 
-1. **Phase 1: COMMIT & Stake (0s – 5s) `[The Single Blocking Gate]`**
-   * A 5-second countdown prompts player inputs. Clicking **"Attack"** maps to a dreamDEX Event Contract **YES order**, while clicking **"Defend"** maps to a **NO order**.
+1. **Phase 1: COMMIT & Stake (0s – 10s) `[The Single Blocking Gate]`**
+   * A 10-second countdown prompts player inputs. Clicking **"Attack"** maps to a dreamDEX Event Contract **YES order**, while clicking **"Defend"** maps to a **NO order**.
    * The background operator wallet automatically places the order on the dreamDEX router via the markets SDK trader.
    * **The Hard Gate:** the serverless handler enforces a strict await-confirmation lock on the stake receipt. The 10-second battle clock is pinned to the confirmation timestamp, eliminating nonce congestion and multi-round queue jams. If a stake fails, the server holds COMMIT with a `502` to force a clean client retry instead of fighting unstaked.
 
-2. **Phase 2: BATTLE & Locked Trade (5s – 15s) `[Zero UI Popups]`**
+2. **Phase 2: BATTLE & Locked Trade (10s – 20s) `[Zero UI Popups]`**
    * Inputs are entirely frozen (`LOCKED — TRADE RUNNING`). Characters run clashing/charging animation loops while the embedded live chart streams ticks from the Somnia price oracle.
    * The trade position is locked on-chain, tracking the live implied-probability shifts of the player's YES/NO shares on the dreamDEX order book.
 
-3. **Phase 3: RESOLUTION & Paper Credit (At Second 15)**
+3. **Phase 3: RESOLUTION & Paper Credit (At Second 20)**
    * The countdown hits zero and triggers a temporary calculation freeze overlay.
-   * The system computes the micro-value delta of the contract shares from the exact entry stamp to the exit stamp — judged on the **EC order book itself** (Second-15 YES-mid vs Second-5 YES-mid): any genuine tick movement decides the round, exactly the book the house settles on. A book that sat literally untouched across the round is an honest FLAT draw (stake back, no damage).
+   * The system computes the micro-value delta of the contract shares from the exact entry stamp to the exit stamp — judged on the **EC order book itself** (Second-20 YES-mid vs Second-10 YES-mid): any genuine tick movement decides the round, exactly the book the house settles on. A book that sat literally untouched across the round is an honest FLAT draw (stake back, no damage).
    * **The Optimization:** to completely bypass slow, erratic block latency mid-match, the engine logs wins/losses instantly as an **off-chain paper credit** inside the MongoDB match document (`match.playerBalance`), releasing the hit animations and updating health bars at lightning speed.
 
 4. **Phase 4: GAME OVER & Final Payout**

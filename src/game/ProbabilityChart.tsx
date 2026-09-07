@@ -39,7 +39,7 @@ interface Props {
   /** Live poll cadence: 2000ms in-round, 5000ms on idle screens. */
   pollMs?: number;
   showHeader?: boolean;
-  /** Candle bucket in seconds. ~3 candles per 15s battle + window history. */
+  /** Candle bucket in seconds. ~2 candles per 10s battle + window history. */
   bucketSec?: number;
 }
 

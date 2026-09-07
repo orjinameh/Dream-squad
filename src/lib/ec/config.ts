@@ -83,7 +83,7 @@ export const EC_ORACLE_FLAT_BAND = 0.0008;
 
 /**
  * EC-only judge epsilon: any genuine tick movement in the YES-mid between the
- * Second-5 entry and the Second-15 exit decides the round. FLAT then means
+ * Second-10 entry and the Second-20 exit decides the round. FLAT then means
  * exactly one honest thing — the book was literally untouched across the
  * round (identical resting quotes), a voided market, or an unreadable book.
  * The house settles on this same book, so the book judges.

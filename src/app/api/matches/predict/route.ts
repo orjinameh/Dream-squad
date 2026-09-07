@@ -53,8 +53,8 @@ function computeLongestStreak(rounds: Array<{ playerCorrect: boolean }>): number
   return max;
 }
 
-// EC judge note: rounds are decided by the EC YES-mid MOVE (Second-15 exit vs
-// Second-5 entry) with an epsilon band — any genuine tick movement counts, and
+// EC judge note: rounds are decided by the EC YES-mid MOVE (Second-20 exit vs
+// Second-10 entry) with an epsilon band — any genuine tick movement counts, and
 // a literally untouched book is an honest FLAT draw (stake back). See
 // resolveArenaOutcome in @/lib/ec/executor.
 // Maximum time the COMMIT handler will wait for the operator's stake
@@ -468,7 +468,7 @@ export async function POST(req: Request): Promise<Response> {
     // ghost-funded match retains its flag but is never held by it.
 
     // Traditional binary lock: predictions are accepted ONLY during COMMIT
-    // (the 5s pick window). Once the round is ACTIVE (the 10s trade duration),
+    // (the 10s pick window). Once the round is ACTIVE (the 10s trade duration),
     // the position is locked — no flips. An ACTIVE payload never rewrites the
     // locked call; it only drives the resolution claim below.
     if (input.prediction && match.roundPhase === "COMMIT") {
@@ -485,7 +485,7 @@ export async function POST(req: Request): Promise<Response> {
     }
 
     // ── COMMIT → ACTIVE TRANSITION — [THE SINGLE GATE] ───────────────────
-    // 0s→5s COMMIT: the player picks Attack (UP) / Defend (DOWN) — one fresh
+    // 0s→10s COMMIT: the player picks Attack (UP) / Defend (DOWN) — one fresh
     // stake position per round (7 stakes per match, each living through its own
     // 10s battle). The background operator places that side as a real BUY_YES /
     // BUY_NO order on the pinned dreamDEX Event-Contract window HERE, and this
@@ -549,9 +549,9 @@ export async function POST(req: Request): Promise<Response> {
           { $set: { [`priceModel.checkpoints.${cpIdx}.staking`]: false } },
         ).catch(() => {});
 
-      // Pin the arena window + capture the Second-5 entry YES-mid FIRST. The
+      // Pin the arena window + capture the Second-10 entry YES-mid FIRST. The
       // player's real stake goes into THIS market, and the round resolves at
-      // Second 15 against THIS market — one window, one resolution, one stake.
+      // Second 20 against THIS market — one window, one resolution, one stake.
       const asset = (gateCheck.priceModel?.asset ?? gateCheck.predictionAsset ?? "BTC") as "BTC" | "ETH";
       let entryPrice = 0;
       let pinnedArena: ArenaRef | null = null;
@@ -645,8 +645,8 @@ export async function POST(req: Request): Promise<Response> {
 
       // Atomic COMMIT → ACTIVE claim (only the lock holder wins — it releases
       // the lock in the same write). The battle deadline starts NOW — at
-      // confirmation time — so the strict 10s window always measures Second 5
-      // → Second 15 from the confirmed stake. That 10s is the ONLY rigid clock.
+      // confirmation time — so the strict 10s window always measures Second 10
+      // → Second 20 from the confirmed stake. That 10s is the ONLY rigid clock.
       const stakeSet: Record<string, unknown> = {};
       if (stakeTxHash) {
         stakeSet[`priceModel.checkpoints.${cpIdx}.stakeTxHash`] = stakeTxHash;
@@ -839,7 +839,7 @@ export async function POST(req: Request): Promise<Response> {
           },
         });
 
-        // ROUND RESOLUTION (Second 15) — [INSTANT DATABASE CREDIT ONLY]
+        // ROUND RESOLUTION (Second 20) — [INSTANT DATABASE CREDIT ONLY]
         // Paper-credit the round PnL straight into MongoDB (playerBalance /
         // rivalBalance). Deliberately NO on-chain transfer or redemption here —
         // the single real tUSDC payout fires once at GAME OVER below, and the

@@ -497,7 +497,7 @@ export async function readArenaSettlement(arena: ArenaRef): Promise<{
   if (!arena.marketId) return { isResolved: false, isVoided: false, winningOutcome: 0, status: 0 };
   try {
     // Bounded: the underlying WS/RPC read has no timeout of its own, and this
-    // runs in the Second-15 resolution path — a hang here freezes the client on
+    // runs in the Second-20 resolution path — a hang here freezes the client on
     // CALCULATING forever. On timeout treat as unresolved (direction fallback).
     const oc = await Promise.race([
       exchange.client.getMarketOnchain(arena.marketId as `0x${string}`),
@@ -524,7 +524,7 @@ function floorToTick(price: number, tick: number): number {
  * is posted on the binary market once the oracle finalizes the payout vector.
  * When the market has NOT yet resolved on-chain (the usual case — venue
  * windows outlive our 10s round), the round is decided by the YES-mid MOVE
- * from the Second-5 entry to the Second-15 exit: any genuine tick movement
+ * from the Second-10 entry to the Second-20 exit: any genuine tick movement
  * counts (epsilon band, not the legacy 0.0008 flat band). A flat book across
  * the round is an honest FLAT draw — the same book the house settles on.
  */
@@ -553,7 +553,7 @@ export async function resolveArenaOutcome(
   }
   // 2. Direction fallback: exit mid vs commit-end entry mid. One quick retry
   // before declaring a null-book FLAT, so a transient indexer hiccup at
-  // Second 15 doesn't donate a draw.
+  // Second 20 doesn't donate a draw.
   let quote = await readArenaPrice(arena);
   if ((quote.yesPrice == null || !(quote.yesPrice > 0)) && entryYesPrice != null && entryYesPrice > 0) {
     await new Promise((r) => setTimeout(r, 1500));

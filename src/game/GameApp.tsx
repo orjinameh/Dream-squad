@@ -410,7 +410,7 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
   const presets = [1, 5, 10, 25, 50];
   const rounds = game.totalRounds ?? 7;
   // This window grants funding approval only — no side is picked here. Every
-  // round's UP/DOWN is chosen fresh in its 5s commit; the position record just
+  // round's UP/DOWN is chosen fresh in its 10s commit; the position record just
   // carries the per-round size (direction rides along as the last used side).
   const direction = game.positionDirection ?? "UP";
   // Integer-only pot math: avoid float String(amount*rounds) drift.
@@ -533,7 +533,7 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
         )}
 
         <div style={{ marginBottom: 14, padding: "10px 14px", borderRadius: 8, border: "1px solid #334155", background: "rgba(30,41,59,0.25)", fontSize: 12, color: "#94a3b8", lineHeight: 1.6 }}>
-          No side to pick here — every round's UP/DOWN is chosen fresh in its 5s commit. This screen only sizes the funding.
+          No side to pick here — every round's UP/DOWN is chosen fresh in its 10s commit. This screen only sizes the funding.
         </div>
 
         <div style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.1em", marginBottom: 6 }}>AMOUNT PER ROUND (tUSDC)</div>
@@ -1631,7 +1631,7 @@ function ArenaScreen({ game, escrow }: { game: ReturnType<typeof useGameState>; 
               CALCULATING RESULT...
             </div>
             <div style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.08em" }}>
-              {game.executionError ?? "Freezing Second-15 contract value — crediting paper PnL to match balance"}
+              {game.executionError ?? "Freezing Second-20 contract value — crediting paper PnL to match balance"}
             </div>
           </div>
         )}
