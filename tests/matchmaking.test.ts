@@ -74,8 +74,10 @@ function jsonGet(url: string): Request {
   return new Request(`http://test${url}`);
 }
 
-async function join(address: string, rounds = 7) {
-  const res = await joinRoute(jsonPost("/api/matchmaking/join", { address, rounds, charId: "dreamer" }));
+async function join(address: string, rounds = 7, amountPerRound?: number) {
+  const res = await joinRoute(jsonPost("/api/matchmaking/join", {
+    address, rounds, charId: "dreamer", ...(amountPerRound != null ? { amountPerRound } : {}),
+  }));
   return res.json();
 }
 
@@ -113,6 +115,16 @@ describe("PvP matchmaking (two devices)", () => {
     // Queue entries should no longer be "searching".
     const stillSearching = await MatchQueue.countDocuments({ status: "searching" });
     expect(stillSearching).toBe(0);
+  });
+
+  it("rides the joiner's funded position size, never a silent default", async () => {
+    // Seeded positions carry amount 10; the second joiner (match creator)
+    // passes 7 explicitly — the created match must use 7, not a default.
+    await join(A);
+    const rB = await join(B, 7, 7);
+    expect(rB.status).toBe("matched");
+    const match = await Match.findById(rB.matchId).lean();
+    expect(match!.playerAmountPerRound).toBe(7);
   });
 
   it("cleans up the queue on leave so a stale entry never blocks a future pairing", async () => {

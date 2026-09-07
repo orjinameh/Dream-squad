@@ -73,8 +73,12 @@ function jsonGet(url: string): Request {
 
 describe("POST /api/matches/create", () => {
   beforeEach(async () => {
-    await Match.deleteMany({ $or: [{ playerAddress: normalizeAddress(PLAYER).toLowerCase() }, { player2Address: normalizeAddress(PLAYER).toLowerCase() }] });
-    await EcPosition.deleteMany({ address: normalizeAddress(PLAYER).toLowerCase() });
+    // Matches store checksummed addresses — clean both casings or a stale
+    // ACTIVE match leaks across tests and false-409s the next create.
+    const checksum = normalizeAddress(PLAYER);
+    const lower = checksum.toLowerCase();
+    await Match.deleteMany({ $or: [{ playerAddress: { $in: [checksum, lower] } }, { player2Address: { $in: [checksum, lower] } }] });
+    await EcPosition.deleteMany({ address: lower });
   });
 
   it("creates a bot match and returns match info", async () => {
@@ -94,8 +98,42 @@ describe("POST /api/matches/create", () => {
     expect(body.roundDeadline).toBeTruthy();
   });
 
-  it("rejects duplicate active matches for same wallet", async () => {
-    await seedActivePosition(PLAYER);
+  it("rides the funded position size, never a silent default (picked 5 → fights 5)", async () => {
+    await seedActivePosition(PLAYER, 5);
+    // No explicit amountPerRound: the match must inherit the position amount.
+    const res = await createRoute(jsonPost("/api/matches/create", {
+      playerAddress: PLAYER,
+      playerChar: "dreamer",
+      rivalName: "BOT",
+      rivalChar: "oracle",
+      mode: "quick",
+      totalRounds: 3,
+    }));
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    const created = await Match.findById(body.matchId).lean();
+    expect(created!.playerAmountPerRound).toBe(5);
+
+    // Explicit amount wins when provided.
+    const checksum = normalizeAddress(PLAYER);
+    const lower = checksum.toLowerCase();
+    await Match.deleteMany({ $or: [{ playerAddress: { $in: [checksum, lower] } }, { player2Address: { $in: [checksum, lower] } }] });
+    const res2 = await createRoute(jsonPost("/api/matches/create", {
+      playerAddress: PLAYER,
+      playerChar: "dreamer",
+      rivalName: "BOT",
+      rivalChar: "oracle",
+      mode: "quick",
+      totalRounds: 3,
+      amountPerRound: 10,
+    }));
+    expect(res2.status).toBe(201);
+    const body2 = await res2.json();
+    const created2 = await Match.findById(body2.matchId).lean();
+    expect(created2!.playerAmountPerRound).toBe(10);
+  });
+
+  it("rejects duplicate active matches for same wallet", async () => {    await seedActivePosition(PLAYER);
     // First create succeeds and leaves an active match.
     await createRoute(jsonPost("/api/matches/create", {
       playerAddress: PLAYER,
