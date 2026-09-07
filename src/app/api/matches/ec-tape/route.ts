@@ -17,6 +17,7 @@ const clampProb = (p: number): number => Math.min(PROB_MAX, Math.max(PROB_MIN, p
 interface TapePoint {
   t: number; // unix seconds
   p: number; // YES probability, clamped to [0.01, 0.99]
+  v: number; // tUSDC value traded at this tick (0 for the live edge poll)
 }
 
 /**
@@ -31,7 +32,7 @@ async function windowTape(pool: string, marketId: string): Promise<TapePoint[]> 
         where: { pool: { _eq: "${pool.toLowerCase()}" }, market_id: { _eq: "${marketId.toLowerCase()}" } },
         order_by: [{ timestamp: desc }, { blockNumber: desc }],
         limit: ${TAPE_LIMIT}
-      ) { fillPrice timestamp }
+      ) { fillPrice timestamp quoteQuantity }
     }`;
   const res = await fetch(EC_INDEXER_URL, {
     method: "POST",
@@ -39,21 +40,22 @@ async function windowTape(pool: string, marketId: string): Promise<TapePoint[]> 
     body: JSON.stringify({ query }),
     signal: AbortSignal.timeout(6_000),
   });
-  const json = (await res.json()) as { data?: { Fill?: { fillPrice?: string | number; timestamp?: string | number }[] } };
+  const json = (await res.json()) as { data?: { Fill?: { fillPrice?: string | number; timestamp?: string | number; quoteQuantity?: string | number }[] } };
   const rows = json.data?.Fill ?? [];
   const pts: TapePoint[] = [];
   for (const r of rows) {
     const t = Number(r.timestamp);
     const p = Number(r.fillPrice) / SCALE;
     if (!Number.isFinite(t) || t <= 0 || !Number.isFinite(p) || p <= 0) continue;
-    pts.push({ t: Math.floor(t), p: clampProb(p) });
+    const rawV = Number(r.quoteQuantity) / SCALE;
+    pts.push({ t: Math.floor(t), p: clampProb(p), v: Number.isFinite(rawV) && rawV > 0 ? rawV : 0 });
   }
   pts.sort((a, b) => a.t - b.t);
-  // Collapse same-second duplicates (lightweight-charts keys line points by time).
+  // Collapse same-second duplicates (keep the latest tick; sum volume).
   const deduped: TapePoint[] = [];
   for (const pt of pts) {
     const last = deduped[deduped.length - 1];
-    if (last && last.t === pt.t) last.p = pt.p;
+    if (last && last.t === pt.t) { last.p = pt.p; last.v += pt.v; }
     else deduped.push(pt);
   }
   return deduped;
@@ -113,7 +115,12 @@ export async function GET(req: Request) {
     ]);
 
     const mid = quote?.yesPrice && quote.yesPrice > 0 ? clampProb(quote.yesPrice) : null;
-    const edge = mid != null ? { t: Math.floor(Date.now() / 1000), p: mid } : tape.length ? { ...tape[tape.length - 1] } : null;
+    // Live edge carries no volume — polls move price, never trade size.
+    const edge = mid != null
+      ? { t: Math.floor(Date.now() / 1000), p: mid, v: 0 }
+      : tape.length
+        ? { ...tape[tape.length - 1] }
+        : null;
 
     let direction: "UP" | "DOWN" | "FLAT" | null = null;
     if (edge && entry != null) {

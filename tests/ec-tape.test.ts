@@ -43,11 +43,11 @@ vi.mock("@/lib/ec/executor", async (importOriginal) => {
 
 const ALL_FILLS = [
   // newest-first, as the indexer returns them
-  { fillPrice: "2000000", timestamp: String(NOW - 2), market_id: MARKET, pool: POOL }, // p=2.0 → clamped 0.99
-  { fillPrice: "470000", timestamp: String(NOW - 5), market_id: MARKET, pool: POOL },
-  { fillPrice: "420000", timestamp: String(NOW - 9), market_id: MARKET, pool: POOL },
-  { fillPrice: "5000", timestamp: String(NOW - 12), market_id: MARKET, pool: POOL }, // p=0.005 → clamped 0.01
-  { fillPrice: "900000", timestamp: String(NOW - 20), market_id: "0xoldmarket", pool: POOL }, // recycled pool, old window
+  { fillPrice: "2000000", timestamp: String(NOW - 2), market_id: MARKET, pool: POOL, quoteQuantity: "4000000" }, // p=2.0 → clamped 0.99
+  { fillPrice: "470000", timestamp: String(NOW - 5), market_id: MARKET, pool: POOL, quoteQuantity: "940000" },
+  { fillPrice: "420000", timestamp: String(NOW - 9), market_id: MARKET, pool: POOL, quoteQuantity: "840000" },
+  { fillPrice: "5000", timestamp: String(NOW - 12), market_id: MARKET, pool: POOL, quoteQuantity: "10000" }, // p=0.005 → clamped 0.01
+  { fillPrice: "900000", timestamp: String(NOW - 20), market_id: "0xoldmarket", pool: POOL, quoteQuantity: "1800000" }, // recycled pool, old window
 ];
 
 const fillFetch = vi.fn(async (url: string, init?: any) => {
@@ -128,8 +128,14 @@ describe("GET /api/matches/ec-tape", () => {
     expect(probs).toEqual([0.01, 0.42, 0.47, 0.99]);
     const times = body.points.map((p: any) => p.t);
     expect([...times].sort((a, b) => a - b)).toEqual(times);
-    // Live edge = current top-of-book mid
+    // Live edge = current top-of-book mid with zero volume (polls move price)
     expect(body.edge.p).toBeCloseTo(0.49, 6);
+    expect(body.edge.v).toBe(0);
+    // Fill points carry real traded value
+    for (const pt of body.points) {
+      expect(typeof pt.v).toBe("number");
+      expect(pt.v).toBeGreaterThan(0);
+    }
     // Entry anchor + direction vs the live edge (0.49 > 0.45 → UP)
     expect(body.entry).toBeCloseTo(0.45, 6);
     expect(body.direction).toBe("UP");
