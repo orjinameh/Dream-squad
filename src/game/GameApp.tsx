@@ -403,31 +403,28 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
 }) {
   const { address } = useAccount();
   const asset = (TRADE_MARKETS.find((m) => m.symbol === game.marketSymbol)?.asset) ?? "BTC";
-  const [direction, setDirection] = useState<"UP" | "DOWN">("UP");
   const [amount, setAmount] = useState(10);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [faucetBusy, setFaucetBusy] = useState(false);
   const presets = [1, 5, 10, 25, 50];
   const rounds = game.totalRounds ?? 7;
+  // This window grants funding approval only — no side is picked here. Every
+  // round's UP/DOWN is chosen fresh in its 5s commit; the position record just
+  // carries the per-round size (direction rides along as the last used side).
+  const direction = game.positionDirection ?? "UP";
   // Integer-only pot math: avoid float String(amount*rounds) drift.
   const fullPotRaw = BigInt(Math.round(amount * 1_000_000)) * BigInt(rounds);
-  // Per-round model: an active position = a funded fight entry (the position
-  // record carries amountPerRound). Money is staked PER ROUND by the per-round
-  // escrow + ghost; at POSITION time the player only AUTHORIZES the full pot
-  // (amount x rounds) via a single on-chain approve to the operator. So this
-  // screen is "APPROVED", not "STAKED" — actual staking happens round by round.
-  // A leftover DB record or an auto-loaded position alone is NOT approved — you
-  // can't advance without a real on-chain approve covering the full match pot.
+  // Approval truth: an active position record PLUS a live on-chain approval
+  // covering this pot. A bare DB record never unlocks the fight.
   const onchainApproved = (escrow.operatorAllowance ?? 0n) >= fullPotRaw;
   const hasActive = Boolean(game.positionWindowId && game.positionDirection) && onchainApproved;
   const activeDirection = game.positionDirection;
   const activeAmount = game.positionAmount;
-  // Replay without re-funding: the operator approval is spend-free (nothing
-  // moves it except an explicit relay), so an existing approval covering this
-  // pot stays valid across matches. If the picked side/amount already matches
-  // the active position, advance directly — no redundant approve popup, no
-  // position re-POST.
+  // Replay without re-funding: the operator approval is drawn per confirmed
+  // round, so an existing approval covering this pot stays valid across
+  // matches. If the picked amount already matches the active position, advance
+  // directly — no redundant approve popup, no position re-POST.
   // Backstop: testnet RPC reads can hang with no timeout. If the allowance
   // state hasn't settled within 10s, stop blocking the button — the approve
   // call itself re-reads the live allowance first, so a tap can never fire a
@@ -439,7 +436,7 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
     return () => clearTimeout(t);
   }, [escrow.loading]);
   const allowanceKnown = !escrow.loading || allowanceStale;
-  const sameAsActive = hasActive && direction === activeDirection && amount === activeAmount;
+  const sameAsActive = hasActive && amount === activeAmount;
 
   const handleFaucet = async () => {
     if (!escrow.address) return;
@@ -465,10 +462,10 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
     finally { setFaucetBusy(false); }
   };
 
-  // Stake the FULL match up front: ONE approve popup for amount x rounds (e.g.
-  // 10 x 7 = 70 tUSDC). Only when that on-chain approve succeeds do we open the
-  // position record and unlock CHOOSE MATCH TYPE. The per-round escrow + ghost
-  // then draw from this staked pot during the fight (no further popups).
+  // Approve the FULL match pot up front: ONE popup for amount x rounds (e.g.
+  // 10 x 7 = 70 tUSDC). Only when that on-chain approval lands do we record
+  // the position and unlock CHOOSE MATCH TYPE. Each round's commit then draws
+  // its share from this approval (no further popups).
   const handleStake = async () => {
     if (!escrow.address || !address) { setError("Connect your wallet first"); return; }
     setBusy(true); setError(null);
@@ -522,7 +519,7 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
 
       <div style={{ width: "100%", maxWidth: 440, marginBottom: 16, padding: "16px 20px", border: "1px solid #334155", borderRadius: 10, background: "rgba(15,23,42,0.75)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-          <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.12em", color: "#a855f7" }}>YOUR CALL</span>
+          <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.12em", color: "#a855f7" }}>WALLET FUNDS</span>
           <span style={{ fontSize: 12, color: "#38bdf8", fontFamily: "'Courier New', monospace" }}>tUSDC {escrow.usdcBalanceFormatted ?? "\u2014"}</span>
         </div>
 
@@ -535,25 +532,8 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
           </button>
         )}
 
-        <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
-          <button onClick={() => setDirection("UP")} style={{
-            flex: 1, padding: "10px 0", borderRadius: 8, fontSize: 15, fontWeight: 900, letterSpacing: "0.08em", cursor: "pointer", fontFamily: "'Courier New', monospace",
-            background: direction === "UP" ? "rgba(16,185,129,0.18)" : "rgba(15,23,42,0.8)",
-            border: `2px solid ${direction === "UP" ? "#10b981" : "#334155"}`,
-            color: direction === "UP" ? "#10b981" : "#64748b",
-            boxShadow: direction === "UP" ? "0 0 14px rgba(16,185,129,0.5)" : undefined,
-          }}>
-            {"\u2B06\uFE0F"} UP
-          </button>
-          <button onClick={() => setDirection("DOWN")} style={{
-            flex: 1, padding: "10px 0", borderRadius: 8, fontSize: 15, fontWeight: 900, letterSpacing: "0.08em", cursor: "pointer", fontFamily: "'Courier New', monospace",
-            background: direction === "DOWN" ? "rgba(239,68,68,0.18)" : "rgba(15,23,42,0.8)",
-            border: `2px solid ${direction === "DOWN" ? "#ef4444" : "#334155"}`,
-            color: direction === "DOWN" ? "#ef4444" : "#64748b",
-            boxShadow: direction === "DOWN" ? "0 0 14px rgba(239,68,68,0.5)" : undefined,
-          }}>
-            {"\u2B07\uFE0F"} DOWN
-          </button>
+        <div style={{ marginBottom: 14, padding: "10px 14px", borderRadius: 8, border: "1px solid #334155", background: "rgba(30,41,59,0.25)", fontSize: 12, color: "#94a3b8", lineHeight: 1.6 }}>
+          No side to pick here — every round's UP/DOWN is chosen fresh in its 5s commit. This screen only sizes the funding.
         </div>
 
         <div style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.1em", marginBottom: 6 }}>AMOUNT PER ROUND (tUSDC)</div>
@@ -599,7 +579,7 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
           width: "100%", padding: "12px 0", borderRadius: 6, cursor: "pointer", fontWeight: 800, fontSize: 14,
           background: "linear-gradient(135deg, #7c3aed, #a855f7)", border: "none", color: "#fff", letterSpacing: "0.08em", opacity: busy ? 0.6 : 1,
         }}>
-          {busy ? "APPROVING..." : !allowanceKnown ? "CHECKING APPROVAL..." : sameAsActive ? `\u2713 COVERED \u2192 FIGHT ${direction} ${amount} tUSDC / ROUND` : hasActive ? `\u2713 COVERED \u2192 SWITCH \u2192 FIGHT ${direction} ${amount} tUSDC / ROUND` : `\u2694 APPROVE ${direction} ${amount} tUSDC \u00D7 ${rounds} = ${amount * rounds} tUSDC`}
+          {busy ? "APPROVING..." : !allowanceKnown ? "CHECKING APPROVAL..." : sameAsActive ? `\u2713 COVERED \u2192 FIGHT ${amount} tUSDC / ROUND` : hasActive ? `\u2713 COVERED \u2192 SWITCH \u2192 FIGHT ${amount} tUSDC / ROUND` : `\u2694 APPROVE ${amount} tUSDC \u00D7 ${rounds} = ${amount * rounds} tUSDC`}
         </button>
 
         {game.positionWonPositions.length > 0 && (

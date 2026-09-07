@@ -144,6 +144,11 @@ export function ProbabilityChart({ matchId, asset = "BTC", height = 220, pollMs 
       wickUpColor: UP,
       wickDownColor: DOWN,
       priceFormat: { type: "price", precision: 4, minMove: 0.0001 },
+      // No library last-price line: the header already reads out YES, and the
+      // only horizontal that may cross the pane is the ENTRY anchor. Two
+      // unexplained lines is exactly the confusion to avoid.
+      lastValueVisible: false,
+      priceLineVisible: false,
     });
     const volumes = chart.addHistogramSeries({
       priceScaleId: "",
@@ -261,6 +266,20 @@ export function ProbabilityChart({ matchId, asset = "BTC", height = 220, pollMs 
           </span>
         </div>
       )}
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 6 }}>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 9, letterSpacing: "0.08em", color: "#64748b" }}>
+          <span style={{ display: "inline-block", width: 14, height: 3, borderRadius: 2, background: "#38bdf8" }} />
+          YES PRICE
+        </span>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 9, letterSpacing: "0.08em", color: "#64748b" }}>
+          <span style={{ display: "inline-block", width: 14, height: 0, borderTop: "2px dashed #fbbf24" }} />
+          YOUR ENTRY
+        </span>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 9, letterSpacing: "0.08em", color: "#64748b" }}>
+          <span style={{ display: "inline-block", width: 8, height: 10, borderRadius: 1, background: "rgba(148,163,184,0.5)" }} />
+          TRADED VOLUME
+        </span>
+      </div>
       <div style={{
         position: "relative", borderRadius: 8, overflow: "hidden",
         border: "1px solid #1e293b", background: "#0b1120",
