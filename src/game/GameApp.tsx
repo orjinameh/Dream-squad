@@ -495,15 +495,14 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
       <div style={{ position: "absolute", inset: 0, background: `radial-gradient(ellipse at 50% 40%, rgba(168,85,247,0.08) 0%, transparent 50%)`, pointerEvents: "none" }} />
 
       <h2 style={{ fontSize: 28, fontWeight: 900, letterSpacing: "0.1em", color: "#fbbf24", textShadow: "2px 2px 0 #92400e", marginBottom: 8, textAlign: "center" }}>
-        {"\uD83D\uDCC8"} SET UP YOUR FIGHT STAKE
+        {"\uD83D\uDD11"} APPROVE MATCH FUNDING
       </h2>
       <p style={{ fontSize: 13, color: "#64748b", marginBottom: 8, textAlign: "center" }}>
-        Fund your match: stake {amount} tUSDC {"\u00D7"} {rounds} rounds UP/DOWN on {asset}.
+        Authorize the operator to draw {amount} tUSDC {"\u00D7"} {rounds} rounds on {asset} — nothing leaves your wallet here.
       </p>
       <p style={{ fontSize: 11, color: "#475569", marginBottom: 12, textAlign: "center", maxWidth: 420, lineHeight: 1.6 }}>
-        One approval covers the full match (10 {"\u00D7"} 7 = 70 tUSDC). Each round you
-        lock UP/DOWN in a 5s commit, then a 10s locked trade runs; paper P&L credits
-        your match balance, one final payout at game over.
+        One approval funds the full match (10 {"\u00D7"} 7 = 70 tUSDC). Each round's commit
+        draws its share; paper P&L credits your match balance, one final payout at game over.
       </p>
       {game.stakingLive !== null && (
         <div style={{
@@ -557,7 +556,7 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
           </button>
         </div>
 
-        <div style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.1em", marginBottom: 6 }}>STAKE (tUSDC)</div>
+        <div style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.1em", marginBottom: 6 }}>AMOUNT PER ROUND (tUSDC)</div>
         <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
           {presets.map((a) => (
             <button key={a} onClick={() => setAmount(a)} style={{
@@ -573,9 +572,8 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
 
         {hasActive ? (
           <div style={{ fontSize: 12, color: "#f59e0b", lineHeight: 1.5, marginBottom: 10 }}>
-            Ready to fight: {"\uD83D\uDCC8"} {activeDirection} {activeAmount} tUSDC per round {"\u00D7"} {game.totalRounds} rounds
-            {" "} = <b>{(activeAmount ?? 0) * (game.totalRounds ?? 7)} tUSDC authorized</b> (one approval, drawn per confirmed round).
-            {"\n"}Each round draws {activeAmount} tUSDC from your wallet at commit and stakes it on-chain; only that round's stake moves per round.
+            Open position: {"\uD83D\uDCC8"} {activeDirection} {activeAmount} tUSDC per round {"\u00D7"} {game.totalRounds} rounds.
+            {"\n"}This fight needs <b>{amount * (game.totalRounds ?? 7)} tUSDC</b> of approval.
             {escrow.operatorAllowance != null && (
               <span style={{ display: "block", marginTop: 4, color: "#38bdf8" }}>
                 Approval remaining: {formatUnits(escrow.operatorAllowance, EC_COLLATERAL_DECIMALS)} tUSDC
@@ -585,9 +583,14 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
         ) : (
           <div style={{ marginBottom: 12, padding: "12px 14px", borderRadius: 8, border: "1px solid #334155", background: "rgba(30,41,59,0.25)" }}>
             <div style={{ fontSize: 12, color: "#94a3b8", lineHeight: 1.6 }}>
-              <b style={{ color: "#cbd5e1" }}>Per-round staking model:</b> open a position (one approval), then each
-              round you lock {amount} tUSDC UP/DOWN in commit and it paper-settles against the live market. Net P&L pays
+              <b style={{ color: "#cbd5e1" }}>How funding works:</b> approve once and each
+              round's commit draws {amount} tUSDC from that approval to back the on-chain trade. Net P&L pays
               out once at game over. No per-window escrow lock-up.
+              {escrow.operatorAllowance != null && Number(formatUnits(escrow.operatorAllowance, EC_COLLATERAL_DECIMALS)) > 0 && (
+                <span style={{ display: "block", marginTop: 4, color: "#38bdf8" }}>
+                  Approval remaining: {formatUnits(escrow.operatorAllowance, EC_COLLATERAL_DECIMALS)} tUSDC
+                </span>
+              )}
             </div>
           </div>
         )}
@@ -596,7 +599,7 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
           width: "100%", padding: "12px 0", borderRadius: 6, cursor: "pointer", fontWeight: 800, fontSize: 14,
           background: "linear-gradient(135deg, #7c3aed, #a855f7)", border: "none", color: "#fff", letterSpacing: "0.08em", opacity: busy ? 0.6 : 1,
         }}>
-          {busy ? "APPROVING..." : !allowanceKnown ? "CHECKING APPROVAL..." : sameAsActive ? `\u2713 APPROVED \u2192 FIGHT ${direction} ${amount} tUSDC / ROUND` : hasActive ? `\u2713 APPROVED \u2192 SWITCH \u2192 FIGHT ${direction} ${amount} tUSDC / ROUND` : `\u2694 APPROVE ${direction} ${amount} tUSDC \u00D7 ${rounds} = ${amount * rounds} tUSDC (stakes per round)`}
+          {busy ? "APPROVING..." : !allowanceKnown ? "CHECKING APPROVAL..." : sameAsActive ? `\u2713 COVERED \u2192 FIGHT ${direction} ${amount} tUSDC / ROUND` : hasActive ? `\u2713 COVERED \u2192 SWITCH \u2192 FIGHT ${direction} ${amount} tUSDC / ROUND` : `\u2694 APPROVE ${direction} ${amount} tUSDC \u00D7 ${rounds} = ${amount * rounds} tUSDC`}
         </button>
 
         {game.positionWonPositions.length > 0 && (
@@ -649,7 +652,7 @@ function MatchTypeScreen({ game, onBack, onPvP, onBot, onHome }: {
       <h2 style={{ fontSize: 28, fontWeight: 900, letterSpacing: "0.1em", color: "#fbbf24", textShadow: "2px 2px 0 #92400e", marginBottom: 8, textAlign: "center" }}>
         CHOOSE YOUR OPPONENT
       </h2>
-      <p style={{ fontSize: 12, color: "#64748b", letterSpacing: "0.12em", marginBottom: 32 }}>POT ALLOCATED \u2014 EVERY ROUND STAKES {game.positionAmount ?? 0} tUSDC AND SETTLES ON-CHAIN</p>
+      <p style={{ fontSize: 12, color: "#64748b", letterSpacing: "0.12em", marginBottom: 32 }}>POT COVERED \u2014 EVERY ROUND DRAWS {game.positionAmount ?? 0} tUSDC FROM YOUR APPROVAL</p>
 
       <div style={{
         fontSize: 13, color: "#94a3b8", marginBottom: 24, padding: "8px 18px", borderRadius: 6,
