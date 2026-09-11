@@ -43,7 +43,7 @@ export interface GameActions {
   rematch: () => void;
   joinMatchmaking: (rounds: number) => void;
   startPvPMatch: (matchId: string) => void;
-  setReady: () => void;
+  setReady: () => Promise<boolean>;
   startDuel: () => void;
   cancelMatchmaking: () => void;
   fightBotInstead: () => void;
@@ -646,23 +646,26 @@ export function useGameState(): GameHook {
               roundPhaseRef.current = "WAITING_SERVER";
               setExecutionStatus("success");
               setExecutionError(null);
-            } else if (!d) {
-              roundPhaseRef.current = "LOCKED";
+              return;
             }
-            if (!d && commitAttempts < 6) scheduleTimer(attemptCommit, 600);
-            else if (!d) {
-              // Gate did not confirm (stake 502 / network). Stay in COMMIT and
-              // SAY so — tapping UP/DOWN re-submits and re-enters the gate.
+            // Still COMMIT (staking-pending hold, 502 gate, blip): the server
+            // staking lock makes resubmits idempotent, so keep waiting
+            // patiently — up to ~3 minutes — instead of erroring on a clock.
+            if (activeRoundNumRef.current !== wantRound) return;
+            roundPhaseRef.current = "LOCKED";
+            if (commitAttempts < 90) scheduleTimer(attemptCommit, 2000);
+            else {
+              // Gate did not confirm in ~3 minutes. Stay in COMMIT and SAY so
+              // — tapping UP/DOWN re-submits and re-enters the gate.
               // Never auto-advance: the battle must not start unconfirmed.
-              roundPhaseRef.current = "LOCKED";
               setExecutionStatus("failed");
               setExecutionError("Stake not confirmed — tap UP or DOWN to retry the commit.");
             }
           }).catch(() => {
             if (activeRoundNumRef.current !== wantRound) return;
-            if (commitAttempts < 6) scheduleTimer(attemptCommit, 600);
+            roundPhaseRef.current = "LOCKED";
+            if (commitAttempts < 90) scheduleTimer(attemptCommit, 2000);
             else {
-              roundPhaseRef.current = "LOCKED";
               setExecutionStatus("failed");
               setExecutionError("Stake not confirmed — tap UP or DOWN to retry the commit.");
             }
@@ -1113,9 +1116,25 @@ export function useGameState(): GameHook {
 
     // Submit immediately to record the pick + trigger the COMMIT stake gate
     // (server places the order + awaits receipt before opening the battle).
+    // A staking-pending answer means another request holds the gate — not
+    // progress, not failure: stay put and re-ping once; the timer loop and the
+    // server poll own the wait from here.
     setExecutionStatus("executing");
     setExecutionError(null);
     mp.actions.submitPrediction(_pred).then((d) => {
+      if ((d as any)?.staking) {
+        roundPhaseRef.current = "LOCKED";
+        const wantRound = activeRoundNumRef.current;
+        scheduleTimer(() => {
+          if (phaseRef.current === "ROUND_COMMIT" && activeRoundNumRef.current === wantRound) {
+            mp.actions.submitPrediction(_pred).then((d2) => {
+              if (d2 && (d2 as any).roundPhase === "ACTIVE") roundPhaseRef.current = "WAITING_SERVER";
+              else roundPhaseRef.current = "LOCKED";
+            }).catch(() => { roundPhaseRef.current = "LOCKED"; });
+          }
+        }, 3000);
+        return;
+      }
       if (d && d.rounds && d.rounds.length) {
         roundPhaseRef.current = "WAITING_SERVER";
         setExecutionStatus("success");
@@ -1229,20 +1248,30 @@ export function useGameState(): GameHook {
     scheduleTimer(() => { setPhase("READY_UP"); }, 2000);
   }, [clearAllTimers, mp.actions, scheduleTimer]);
 
-  const setReady = useCallback(async () => {
+  // Returns true only when the server confirms the ready flag — the UI must
+  // not display "READY" on a failed request, or the player waits forever for
+  // an opponent while the server never recorded them.
+  const setReady = useCallback(async (): Promise<boolean> => {
     const id = mp.state.serverState?.matchId;
-    if (!id || !address) return;
+    if (!id || !address) return false;
 
-    await fetch("/api/matches/ready", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        matchId: id,
-        address: address, // Always use connected wallet
-        charId: playerChar?.id ?? "dreamer",
-      }),
-    });
-  }, [mp.state.serverState, address, playerChar]);
+    try {
+      const res = await fetch("/api/matches/ready", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          matchId: id,
+          address: address, // Always use connected wallet
+          charId: playerChar?.id ?? "dreamer",
+        }),
+      });
+      if (!res.ok) return false;
+      await mp.actions.fetchState();
+      return true;
+    } catch {
+      return false;
+    }
+  }, [mp.state.serverState, mp.actions, address, playerChar]);
 
   const cancelMatchmaking = useCallback(() => {
     clearAllTimers();

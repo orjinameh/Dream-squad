@@ -1253,30 +1253,43 @@ function MatchFoundScreen({ game }: { game: ReturnType<typeof useGameState> }) {
 function ReadyUpScreen({ game, escrow, onReady, onStartDuel }: {
   game: ReturnType<typeof useGameState>;
   escrow: ReturnType<typeof useDreamEscrow>;
-  onReady: () => void;
+  onReady: () => Promise<boolean>;
   onStartDuel: () => void;
 }) {
   const [ready, setReady] = useState(false);
   const [opponentReady, setOpponentReady] = useState(false);
+  const [readyError, setReadyError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const { address } = useAccount();
 
-  // Poll for ready state (PvP only). The stake already happened on the POSITION
-  // screen — here we just wait for both players to READY UP before the server
-  // opens round 1.
+  // Poll for ready state (PvP only), perspective-safe: the state route mirrors
+  // fields to the viewer, so player2Ready here is ALWAYS the opponent — never
+  // our own flag. The stake already happened on the POSITION screen — here we
+  // just wait for both players to READY UP before the server opens round 1.
   useEffect(() => {
     if (!game.matchId) return;
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(`/api/matches/state?matchId=${game.matchId}`);
+        const addrParam = address ? `&address=${encodeURIComponent(address)}` : "";
+        const res = await fetch(`/api/matches/state?matchId=${game.matchId}${addrParam}`);
         const data = await res.json();
-        if (data.player1Ready) setOpponentReady(true);
+        if (data.player2Ready) setOpponentReady(true);
       } catch { /* keep polling */ }
     }, 1000);
     return () => clearInterval(interval);
-  }, [game.matchId]);
+  }, [game.matchId, address]);
 
-  const handleReady = () => {
-    setReady(true);
-    onReady();
+  const handleReady = async () => {
+    if (submitting) return;
+    setSubmitting(true);
+    setReadyError(null);
+    try {
+      const ok = await onReady();
+      if (ok) setReady(true);
+      else setReadyError("Ready not confirmed — tap again.");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -1323,9 +1336,14 @@ function ReadyUpScreen({ game, escrow, onReady, onStartDuel }: {
       </div>
 
       {!ready ? (
-        <button onClick={handleReady} style={{ ...ctaButtonStyle, fontSize: 18, padding: "14px 48px" }}>
-          {"\u2713"} READY UP
-        </button>
+        <>
+          <button onClick={handleReady} disabled={submitting} style={{ ...ctaButtonStyle, fontSize: 18, padding: "14px 48px", opacity: submitting ? 0.6 : 1 }}>
+            {"\u2713"} {submitting ? "CONFIRMING..." : "READY UP"}
+          </button>
+          {readyError && (
+            <div style={{ fontSize: 11, color: "#ef4444", marginTop: 8 }}>{readyError}</div>
+          )}
+        </>
       ) : (
         <div style={{ fontSize: 14, color: "#a855f7", letterSpacing: "0.1em" }}>
           Waiting for opponent...
