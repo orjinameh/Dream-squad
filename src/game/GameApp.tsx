@@ -61,6 +61,15 @@ export default function GameApp() {
     }
   }, [mm.state.status, mm.state.matchId, g.actions]);
 
+  // Same handoff for private rooms: the moment the room matches (host poll or
+  // guest join), both clients enter the shared match exactly once.
+  useEffect(() => {
+    if (mm.room.status === "matched" && mm.room.matchId && startedMatchRef.current !== mm.room.matchId) {
+      startedMatchRef.current = mm.room.matchId;
+      g.actions.startPvPMatch(mm.room.matchId);
+    }
+  }, [mm.room.status, mm.room.matchId, g.actions]);
+
   // NOTE: no auto-join effect here. The QUICK MATCH button calls joinQueue
   // directly, so an auto-join is redundant AND harmful: it would re-fire on any
   // transient "idle" status and create a fresh queue entry, racing the real
@@ -85,11 +94,11 @@ export default function GameApp() {
       {g.phase === "HOME" && <HomeScreen address={address} escrow={escrow} game={g} onEnter={g.actions.goToMarketSelect} onLeaderboard={g.actions.goToLeaderboard} onProfile={g.actions.goToProfile} onHistory={g.actions.goToMatchHistory} onStakeHistory={g.actions.goToStakeHistory} onRejoin={activeMatchId ? rejoinMatch : undefined} />}
       {g.phase === "MARKET_SELECT" && <TradeSelect onSelect={g.actions.selectMarket} onBack={g.actions.goToHome} />}
       {g.phase === "POSITION" && <PositionScreen game={g} escrow={escrow} onBack={g.actions.goToMarketSelect} onNext={g.actions.goToMatchType} onOpenPosition={g.actions.openPosition} />}
-      {g.phase === "MATCH_TYPE" && <MatchTypeScreen game={g} onBack={g.actions.changePosition} onPvP={() => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.joinMatchmaking(7); mm.actions.joinQueue(7, g.playerChar?.id ?? "dreamer", g.positionAmount ?? undefined); }} onBot={() => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.fightBotInstead(); }} onHome={g.actions.goToHome} />}
+      {g.phase === "MATCH_TYPE" && <MatchTypeScreen game={g} onBack={g.actions.changePosition} onPvP={() => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.joinMatchmaking(7); mm.actions.joinQueue(7, g.playerChar?.id ?? "dreamer", g.positionAmount ?? undefined); }} onPrivate={() => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.joinMatchmaking(7); }} onBot={() => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.fightBotInstead(); }} onHome={g.actions.goToHome} />}
       {g.phase === "CHAR_SELECT" && <CharSelect onSelect={g.actions.selectChar} onBack={g.actions.goToMarketSelect} />}
       {g.phase === "DUEL_CONFIRM" && <DuelConfirm mode={g.mode!} char={g.playerChar!} difficulty={g.botDifficulty} amount={g.selectedAmount} onSelectAmount={g.actions.selectAmount} onConfirm={() => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.confirmDuel(); }} onBack={g.actions.goToCharSelect} onQuickMatch={(rounds) => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.joinMatchmaking(rounds); mm.actions.joinQueue(rounds, g.playerChar?.id ?? "dreamer"); }} onSelectDifficulty={g.actions.selectDifficulty} />}
       {g.phase === "PREDICTION_SELECT" && <PredictionSelect asset={(TRADE_MARKETS.find((m) => m.symbol === g.marketSymbol)?.asset) ?? "BTC"} onBack={g.actions.goToCharSelect} onPredict={g.actions.setMatchPrediction} difficulty={g.botDifficulty} onSelectDifficulty={g.actions.selectDifficulty} amount={g.selectedAmount} onSelectAmount={g.actions.selectAmount} char={g.playerChar!} mode={g.mode!} onFightBot={() => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.fightBotInstead(); }} onQuickMatch={() => { if (!isConnected) { setShowWalletModal(true); return; } g.actions.joinMatchmaking(g.mode?.rounds ?? 7); mm.actions.joinQueue(g.mode?.rounds ?? 7, g.playerChar?.id ?? "dreamer", g.positionAmount ?? undefined); }} />}
-      {g.phase === "MATCHMAKING" && <MatchmakingScreen matchmaking={mm} onFightBot={g.actions.fightBotInstead} onHome={g.actions.cancelMatchmaking} />}
+      {g.phase === "MATCHMAKING" && <MatchmakingScreen game={g} matchmaking={mm} onFightBot={g.actions.fightBotInstead} onHome={g.actions.cancelMatchmaking} />}
       {g.phase === "MATCH_FOUND" && <MatchFoundScreen game={g} />}
       {g.phase === "READY_UP" && <ReadyUpScreen game={g} escrow={escrow} onReady={g.actions.setReady} onStartDuel={g.actions.startDuel} />}
       {(g.phase === "MATCH_INTRO" || g.phase === "ROUND_START" || g.phase === "ROUND_COMMIT" || g.phase === "ROUND_ACTIVE" || g.phase === "ROUND_LOCKED" || g.phase === "ROUND_EXECUTING" || g.phase === "ROUND_REVEAL" || g.phase === "ROUND_IMPACT") && (
@@ -618,10 +627,11 @@ function PositionScreen({ game, escrow, onBack, onNext, onOpenPosition }: {
   );
 }
 
-function MatchTypeScreen({ game, onBack, onPvP, onBot, onHome }: {
+function MatchTypeScreen({ game, onBack, onPvP, onPrivate, onBot, onHome }: {
   game: ReturnType<typeof useGameState>;
   onBack: () => void;
   onPvP: () => void;
+  onPrivate: () => void;
   onBot: () => void;
   onHome: () => void;
 }) {
@@ -650,6 +660,16 @@ function MatchTypeScreen({ game, onBack, onPvP, onBot, onHome }: {
           <div style={{ fontSize: 20, fontWeight: 900, color: "#fbbf24", letterSpacing: "0.08em", marginBottom: 6 }}>PVP {"\u00B7"} MATCHMAKING</div>
           <div style={{ fontSize: 11, color: "#94a3b8", lineHeight: 1.5 }}>
             Find a real human opponent. Best of 7 rounds, {game.positionAmount ?? 0} tUSDC staked per round.
+          </div>
+        </button>
+        <button onClick={onPrivate} style={{
+          ...modeCardStyle, cursor: "pointer", minWidth: 260,
+          borderColor: "#22d3ee", background: "rgba(34,211,238,0.08)",
+        }}>
+          <div style={{ fontSize: 34, marginBottom: 8 }}>{"\uD83D\uDD11"}</div>
+          <div style={{ fontSize: 20, fontWeight: 900, color: "#22d3ee", letterSpacing: "0.08em", marginBottom: 6 }}>PRIVATE ROOM</div>
+          <div style={{ fontSize: 11, color: "#94a3b8", lineHeight: 1.5 }}>
+            Duel a rival by invite code. Same stakes, same rules, zero queue.
           </div>
         </button>
         <button onClick={onBot} style={{
@@ -967,9 +987,20 @@ function PredictionSelect({ asset, onBack, onPredict, difficulty, onSelectDiffic
   );
 }
 
-function MatchmakingScreen({ matchmaking, onFightBot, onHome }: { matchmaking: ReturnType<typeof useMatchmaking>; onFightBot: () => void; onHome: () => void }) {
+function MatchmakingScreen({ game, matchmaking, onFightBot, onHome }: {
+  game: ReturnType<typeof useGameState>;
+  matchmaking: ReturnType<typeof useMatchmaking>;
+  onFightBot: () => void;
+  onHome: () => void;
+}) {
   const { status, age, error } = matchmaking.state;
   const elapsed = Math.floor(age / 1000);
+
+  // Private rooms live here while the public queue is idle: create a code or
+  // enter one. Either side lands on MATCH_FOUND the moment the room matches.
+  if (status === "idle") {
+    return <PrivateRoomPanel game={game} matchmaking={matchmaking} onHome={onHome} />;
+  }
 
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "40px 20px" }}>
@@ -1042,6 +1073,127 @@ function MatchmakingScreen({ matchmaking, onFightBot, onHome }: { matchmaking: R
           </>
         )}
         <button onClick={() => { matchmaking.actions.leaveQueue(); onHome(); }} style={{ marginTop: 8, background: "none", border: "none", color: "#64748b", fontSize: 12, cursor: "pointer", letterSpacing: "0.1em" }}>
+          BACK TO ARENA
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function PrivateRoomPanel({ game, matchmaking, onHome }: {
+  game: ReturnType<typeof useGameState>;
+  matchmaking: ReturnType<typeof useMatchmaking>;
+  onHome: () => void;
+}) {
+  const room = matchmaking.room;
+  const [rounds, setRounds] = useState(7);
+  const [codeInput, setCodeInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const charId = game.playerChar?.id ?? "dreamer";
+  const amount = game.positionAmount ?? undefined;
+
+  const create = async () => {
+    setBusy(true);
+    try { await matchmaking.roomActions.createRoom(rounds, charId, amount); }
+    finally { setBusy(false); }
+  };
+  const join = async () => {
+    setBusy(true);
+    try { await matchmaking.roomActions.joinRoom(codeInput, charId, amount); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "40px 20px" }}>
+      <div style={{ position: "absolute", inset: 0, background: "radial-gradient(ellipse at 50% 40%, rgba(34,211,238,0.07) 0%, transparent 50%)", pointerEvents: "none" }} />
+
+      <div style={{ fontSize: 24, fontWeight: 900, letterSpacing: "0.15em", color: "#22d3ee", textShadow: "2px 2px 0 #164e63", marginBottom: 8, textAlign: "center" }}>
+        {"\uD83D\uDD11"} PRIVATE DUEL
+      </div>
+      <p style={{ fontSize: 12, color: "#64748b", letterSpacing: "0.08em", marginBottom: 28, textAlign: "center" }}>
+        Same stakes, same rules — just you and your rival. No queue.
+      </p>
+
+      {room.status === "matched" ? (
+        <div style={{ textAlign: "center", marginBottom: 32 }}>
+          <div style={{ fontSize: 14, color: "#4ade80", letterSpacing: "0.08em" }}>
+            RIVAL FOUND — ENTERING MATCH...
+          </div>
+        </div>
+      ) : room.status === "waiting" && room.code ? (
+        <div style={{ width: "100%", maxWidth: 420, marginBottom: 24, padding: "20px", border: "2px solid #22d3ee", borderRadius: 10, background: "rgba(34,211,238,0.06)", textAlign: "center" }}>
+          <div style={{ fontSize: 11, color: "#94a3b8", letterSpacing: "0.12em", marginBottom: 8 }}>
+            SHARE THIS CODE — BEST OF {room.rounds}
+          </div>
+          <div style={{ fontSize: 40, fontWeight: 900, letterSpacing: "0.2em", color: "#e2e8f0", fontFamily: "'Courier New', monospace", marginBottom: 8 }}>
+            {room.code}
+          </div>
+          <div style={{ fontSize: 12, color: "#64748b", letterSpacing: "0.05em", marginBottom: 16 }}>
+            Waiting for your rival...
+          </div>
+          <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
+            {[0, 1, 2].map((i) => (
+              <div key={i} style={{ width: 8, height: 8, borderRadius: "50%", background: "#22d3ee", animation: `pulse 1.4s ease-in-out ${i * 0.2}s infinite` }} />
+            ))}
+          </div>
+          <button onClick={() => matchmaking.roomActions.leaveRoom()} style={{ marginTop: 16, background: "transparent", border: "1px solid #475569", color: "#94a3b8", fontSize: 12, padding: "8px 20px", borderRadius: 6, cursor: "pointer", letterSpacing: "0.1em" }}>
+            CANCEL ROOM
+          </button>
+        </div>
+      ) : (
+        <div style={{ display: "flex", gap: 16, flexWrap: "wrap", justifyContent: "center", width: "100%", maxWidth: 720, marginBottom: 24 }}>
+          <div style={{ flex: "1 1 280px", maxWidth: 340, padding: "20px", border: "1px solid #334155", borderRadius: 10, background: "rgba(15,23,42,0.75)", textAlign: "center" }}>
+            <div style={{ fontSize: 13, fontWeight: 900, letterSpacing: "0.1em", color: "#e2e8f0", marginBottom: 12 }}>HOST A ROOM</div>
+            <div style={{ display: "flex", gap: 6, justifyContent: "center", marginBottom: 14 }}>
+              {[3, 5, 7, 11].map((r) => (
+                <button key={r} onClick={() => setRounds(r)} style={{
+                  padding: "6px 12px", borderRadius: 6, cursor: "pointer",
+                  border: rounds === r ? "2px solid #22d3ee" : "1px solid #334155",
+                  background: rounds === r ? "rgba(34,211,238,0.15)" : "#0f172a",
+                  color: "#e2e8f0", fontWeight: 700, fontSize: 13,
+                }}>
+                  {r}
+                </button>
+              ))}
+            </div>
+            <button onClick={create} disabled={busy} style={{
+              width: "100%", padding: "12px 0", borderRadius: 6, cursor: "pointer", fontWeight: 800, fontSize: 14,
+              background: "linear-gradient(135deg, #0e7490, #22d3ee)", border: "none", color: "#fff", letterSpacing: "0.08em", opacity: busy ? 0.6 : 1,
+            }}>
+              {busy ? "CREATING..." : "CREATE INVITE CODE"}
+            </button>
+          </div>
+
+          <div style={{ flex: "1 1 280px", maxWidth: 340, padding: "20px", border: "1px solid #334155", borderRadius: 10, background: "rgba(15,23,42,0.75)", textAlign: "center" }}>
+            <div style={{ fontSize: 13, fontWeight: 900, letterSpacing: "0.1em", color: "#e2e8f0", marginBottom: 12 }}>JOIN WITH CODE</div>
+            <input
+              value={codeInput}
+              onChange={(e) => setCodeInput(e.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, "").slice(0, 9))}
+              placeholder="DUEL-XXXX"
+              spellCheck={false}
+              autoComplete="off"
+              style={{
+                width: "100%", padding: "12px", borderRadius: 6, marginBottom: 14, textAlign: "center",
+                border: "1px solid #334155", background: "#0f172a", color: "#e2e8f0",
+                fontSize: 18, fontWeight: 900, letterSpacing: "0.2em", fontFamily: "'Courier New', monospace",
+              }}
+            />
+            <button onClick={join} disabled={busy || codeInput.trim().length < 9} style={{
+              width: "100%", padding: "12px 0", borderRadius: 6, cursor: "pointer", fontWeight: 800, fontSize: 14,
+              background: "linear-gradient(135deg, #7c3aed, #a855f7)", border: "none", color: "#fff", letterSpacing: "0.08em", opacity: busy ? 0.6 : 1,
+            }}>
+              {busy ? "JOINING..." : "ENTER DUEL"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {(room.error || room.status === "error") && (
+        <div style={{ fontSize: 12, color: "#ef4444", marginBottom: 16, textAlign: "center" }}>{room.error ?? "Room error"}</div>
+      )}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 12, alignItems: "center" }}>
+        <button onClick={() => { matchmaking.roomActions.leaveRoom(); onHome(); }} style={{ background: "none", border: "none", color: "#64748b", fontSize: 12, cursor: "pointer", letterSpacing: "0.1em" }}>
           BACK TO ARENA
         </button>
       </div>

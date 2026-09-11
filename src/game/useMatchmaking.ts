@@ -19,12 +19,30 @@ export interface MatchmakingActions {
   reset: () => void;
 }
 
+export type RoomStatus = "idle" | "waiting" | "matched" | "error";
+
+export interface RoomState {
+  status: RoomStatus;
+  code: string | null;
+  matchId: string | null;
+  rounds: number;
+  error: string | null;
+}
+
+export interface RoomActions {
+  createRoom: (rounds: number, charId: string, amountPerRound?: number) => Promise<string | null>;
+  joinRoom: (code: string, charId?: string, amountPerRound?: number) => Promise<string | null>;
+  leaveRoom: () => Promise<void>;
+}
+
 const POLL_INTERVAL = 1500;
 const TIMEOUT_MS = 120000;
 
 export function useMatchmaking(walletAddress?: `0x${string}`): {
   state: MatchmakingState;
   actions: MatchmakingActions;
+  room: RoomState;
+  roomActions: RoomActions;
 } {
   const [status, setStatus] = useState<MatchmakingStatus>("idle");
   const [matchId, setMatchId] = useState<string | null>(null);
@@ -36,12 +54,25 @@ export function useMatchmaking(walletAddress?: `0x${string}`): {
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const statusRef = useRef<MatchmakingStatus>("idle");
   const rejoiningRef = useRef(false);
+  const roomPollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // ── Private rooms ──────────────────────────────────────────────────────
+  const [roomStatus, setRoomStatus] = useState<RoomStatus>("idle");
+  const [roomCode, setRoomCode] = useState<string | null>(null);
+  const [roomMatchId, setRoomMatchId] = useState<string | null>(null);
+  const [roomRounds, setRoomRounds] = useState(7);
+  const [roomError, setRoomError] = useState<string | null>(null);
+
+  const stopRoomPolling = useCallback(() => {
+    if (roomPollingRef.current) { clearInterval(roomPollingRef.current); roomPollingRef.current = null; }
+  }, []);
 
   const stopPolling = useCallback(() => {
     if (pollingRef.current) { clearInterval(pollingRef.current); pollingRef.current = null; }
   }, []);
 
   useEffect(() => () => stopPolling(), [stopPolling]);
+  useEffect(() => () => stopRoomPolling(), [stopRoomPolling]);
 
   // Keep statusRef in sync
   useEffect(() => { statusRef.current = status; }, [status]);
@@ -174,15 +205,140 @@ export function useMatchmaking(walletAddress?: `0x${string}`): {
 
   const reset = useCallback(() => {
     stopPolling();
+    stopRoomPolling();
     setStatus("idle");
     setMatchId(null);
     setQueueId(null);
     setError(null);
     setAge(0);
-  }, [stopPolling]);
+    setRoomStatus("idle");
+    setRoomCode(null);
+    setRoomMatchId(null);
+    setRoomError(null);
+  }, [stopPolling, stopRoomPolling]);
+
+  const createRoom = useCallback(async (roundsSelected: number, charId: string, amountPerRound?: number): Promise<string | null> => {
+    if (!walletAddress) return null;
+    // A wallet fights in one place at a time — exit the public search first.
+    stopPolling();
+    setStatus("idle");
+    stopRoomPolling();
+    setRoomError(null);
+    setRoomMatchId(null);
+    setRoomRounds(roundsSelected);
+    try {
+      const res = await fetch("/api/matchmaking/room", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          address: walletAddress,
+          rounds: roundsSelected,
+          charId,
+          ...(amountPerRound != null ? { amountPerRound } : {}),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        // Already in an active match → hand it over like the queue does.
+        if (data?.status === "matched" && data?.matchId) {
+          setRoomStatus("matched");
+          setRoomMatchId(data.matchId);
+          return data.matchId;
+        }
+        setRoomStatus("error");
+        setRoomError(data?.error || "Failed to create room");
+        return null;
+      }
+      setRoomCode(data.code);
+      setRoomStatus("waiting");
+      // Host idle lobby: lightweight poll of the spec gate
+      // (GET /api/matchmaking/status?code=...) until the guest claims it.
+      roomPollingRef.current = setInterval(async () => {
+        try {
+          const pollRes = await fetch(`/api/matchmaking/status?code=${encodeURIComponent(data.code)}`);
+          const pollData = await pollRes.json();
+          if (!pollRes.ok) {
+            setRoomStatus("error");
+            setRoomError(pollData?.error || "Room lost");
+            stopRoomPolling();
+            return;
+          }
+          if (pollData.status === "matched" && pollData.matchId) {
+            setRoomStatus("matched");
+            setRoomMatchId(pollData.matchId);
+            stopRoomPolling();
+          }
+        } catch {
+          /* keep polling */
+        }
+      }, POLL_INTERVAL);
+      return data.code as string;
+    } catch {
+      setRoomStatus("error");
+      setRoomError("Network error");
+      return null;
+    }
+  }, [walletAddress, stopPolling, stopRoomPolling]);
+
+  const joinRoom = useCallback(async (code: string, charId?: string, amountPerRound?: number): Promise<string | null> => {
+    const clean = code.trim().toUpperCase();
+    if (!walletAddress || !/^DUEL-[A-Z2-9]{4}$/.test(clean)) {
+      setRoomStatus("error");
+      setRoomError("Enter the invite code (DUEL-XXXX)");
+      return null;
+    }
+    stopPolling();
+    setStatus("idle");
+    stopRoomPolling();
+    setRoomError(null);
+    setRoomMatchId(null);
+    setRoomCode(clean);
+    try {
+      const res = await fetch("/api/matchmaking/join", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          address: walletAddress,
+          code: clean,
+          charId: charId || "dreamer",
+          ...(amountPerRound != null ? { amountPerRound } : {}),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || data?.status !== "matched" || !data?.matchId) {
+        setRoomStatus("error");
+        setRoomError(data?.error || "Failed to join room");
+        return null;
+      }
+      setRoomStatus("matched");
+      setRoomMatchId(data.matchId);
+      return data.matchId as string;
+    } catch {
+      setRoomStatus("error");
+      setRoomError("Network error");
+      return null;
+    }
+  }, [walletAddress, stopPolling, stopRoomPolling]);
+
+  const leaveRoom = useCallback(async () => {
+    stopRoomPolling();
+    try {
+      if (walletAddress && roomCode && roomStatus === "waiting") {
+        await fetch(`/api/matchmaking/room?code=${encodeURIComponent(roomCode)}&address=${encodeURIComponent(walletAddress)}`, {
+          method: "DELETE",
+        });
+      }
+    } catch { /* best effort */ }
+    setRoomStatus("idle");
+    setRoomCode(null);
+    setRoomMatchId(null);
+    setRoomError(null);
+  }, [walletAddress, roomCode, roomStatus, stopRoomPolling]);
 
   return {
     state: { status, matchId, queueId, rounds, age, error },
     actions: { joinQueue, leaveQueue, reset },
+    room: { status: roomStatus, code: roomCode, matchId: roomMatchId, rounds: roomRounds, error: roomError },
+    roomActions: { createRoom, joinRoom, leaveRoom },
   };
 }

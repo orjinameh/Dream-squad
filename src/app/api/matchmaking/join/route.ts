@@ -1,19 +1,141 @@
 import { connectToDatabase } from "@/db/connect";
 import { MatchQueue } from "@/db/models/MatchQueue";
-import { Match, ROUND_TIMINGS } from "@/db/models/Match";
+import { Match } from "@/db/models/Match";
+import { MatchRoom, normalizeRoomCode } from "@/db/models/MatchRoom";
 import { EcPosition } from "@/db/models/EcPosition";
 import { normalizeAddress } from "@/lib/addresses";
 import { jsonError } from "@/lib/utils";
 import { expireStaleWaitingMatches } from "@/lib/matchExpiry";
 import { assertMatchFunding } from "@/lib/ec/funding";
+import { createPvpMatch } from "@/lib/matchmaking";
 import { randomUUID } from "node:crypto";
 import { isAddress } from "viem";
 import { CHARACTERS } from "@/game/characters";
 
 export const dynamic = "force-dynamic";
 
-const READY_TIMEOUT_MS = 30_000;
 const QUEUE_TIMEOUT_MS = 120_000;
+
+/**
+ * Join a private room by invite code. The guest claims the waiting room
+ * atomically (exactly one claim wins), then an identical PvP match is created
+ * with the guest as player 1 and the host as player 2. Idempotent for either
+ * party: rejoining a room you're already in returns its matchId.
+ */
+async function joinPrivateRoom(input: {
+  code: string;
+  address: string;
+  charId?: string;
+  amountPerRound?: number;
+}): Promise<Response> {
+  const validCharIds = new Set(CHARACTERS.map((c) => c.id));
+  if (input.charId && (typeof input.charId !== "string" || input.charId.length > 32 || !validCharIds.has(input.charId))) {
+    return jsonError(400, "invalid charId");
+  }
+  if (input.amountPerRound !== undefined && (!(typeof input.amountPerRound === "number") || !(input.amountPerRound > 0) || input.amountPerRound > 100000)) {
+    return jsonError(400, "amountPerRound must be a positive number");
+  }
+
+  try {
+    await connectToDatabase();
+    const addr = normalizeAddress(input.address);
+    const lower = addr.toLowerCase();
+
+    const room = await MatchRoom.findOne({ code: input.code }).lean();
+    if (!room) return jsonError(404, "invite code not found");
+    if (room.status === "cancelled" || new Date(room.expiresAt).getTime() <= Date.now()) {
+      return jsonError(410, "invite code expired — ask the host for a fresh one");
+    }
+    if (room.hostAddress === lower && room.status === "waiting") {
+      return jsonError(400, "you can't join your own room — share the code with your rival");
+    }
+    // Idempotent rejoin for either party of an already-matched room.
+    if (room.status === "matched" && room.matchId && (room.hostAddress === lower || room.guestAddress === lower)) {
+      return Response.json({ status: "matched", matchId: room.matchId });
+    }
+    if (room.status !== "waiting") {
+      return jsonError(410, "invite code already used");
+    }
+
+    // Same gates as the public queue: no active match, funded position, funded pot.
+    await expireStaleWaitingMatches(addr);
+    const activeMatch = await Match.findOne({
+      $or: [{ playerAddress: { $in: [addr, lower] } }, { player2Address: { $in: [addr, lower] } }],
+      status: "ACTIVE",
+    }).lean();
+    if (activeMatch) {
+      return Response.json({ status: "matched", matchId: activeMatch._id, message: "Already in an active match" });
+    }
+
+    const position = await EcPosition.findOne({ address: lower, status: "ACTIVE" }).sort({ createdAt: -1 }).lean();
+    if (!position) {
+      return jsonError(409, "no active EC position — stake one first on the POSITION screen");
+    }
+    if (position.windowCloseAt && new Date(position.windowCloseAt) <= new Date()) {
+      return jsonError(409, "your EC position window has ended — open a new position to fight");
+    }
+    const joinAmount = input.amountPerRound ?? position.amount ?? 1;
+    const fund = await assertMatchFunding(addr, joinAmount, room.rounds);
+    if (!fund.ok) {
+      return fund.reason === "insufficient"
+        ? jsonError(402, `operator approval ${fund.allowance} below match pot ${fund.required} — approve on the POSITION screen first`)
+        : jsonError(503, "could not verify on-chain funding — retry");
+    }
+
+    // DUAL-WALLET VERIFICATION: the host's approval must independently cover
+    // their side too. Only when BOTH handshakes pass may the room activate.
+    const hostPosition = await EcPosition.findOne({ address: room.hostAddress, status: "ACTIVE" }).sort({ createdAt: -1 }).lean();
+    if (!hostPosition || (hostPosition.windowCloseAt && new Date(hostPosition.windowCloseAt) <= new Date())) {
+      return jsonError(409, "host funding lapsed — ask the host for a fresh code");
+    }
+    const hostFund = await assertMatchFunding(
+      room.hostAddress as `0x${string}`,
+      hostPosition.amount ?? 1,
+      room.rounds,
+    );
+    if (!hostFund.ok) {
+      return hostFund.reason === "insufficient"
+        ? jsonError(402, "host funding approval short of the match pot — ask the host to re-approve")
+        : jsonError(503, "could not verify host funding — retry");
+    }
+
+    // Atomic claim: exactly one guest wins the room.
+    const claimed = await MatchRoom.updateOne(
+      { _id: room._id, status: "waiting" },
+      { $set: { status: "matched", guestAddress: lower, updatedAt: new Date() } },
+    );
+    if (claimed.modifiedCount !== 1) {
+      // Lost the race — whoever won either matched it (return it if we're a
+      // party) or took it (gone for us).
+      const current = await MatchRoom.findById(room._id).lean();
+      if (current?.status === "matched" && current.matchId && (current.hostAddress === lower || current.guestAddress === lower)) {
+        return Response.json({ status: "matched", matchId: current.matchId });
+      }
+      return jsonError(410, "invite code already used");
+    }
+
+    const { matchId } = await createPvpMatch({
+      address: addr,
+      charId: input.charId || "dreamer",
+      opponentAddress: room.hostAddress,
+      opponentCharId: room.hostCharId || "dreamer",
+      rounds: room.rounds,
+      position: { _id: position._id, amount: position.amount, windowId: position.windowId ?? undefined, direction: position.direction },
+      amountPerRound: joinAmount,
+    });
+    await MatchRoom.updateOne({ _id: room._id }, { $set: { matchId } });
+    console.log(`[room] code=${room.code} matched=${matchId} guest=${addr.slice(0, 6)} host=${room.hostAddress.slice(0, 6)}`);
+
+    return Response.json({
+      status: "matched",
+      matchId,
+      opponent: { address: room.hostAddress, charId: room.hostCharId },
+    });
+  } catch (err) {
+    console.error("private room join failed", err);
+    return jsonError(500, "failed to join private room — try again shortly");
+  }
+}
 
 export async function POST(req: Request): Promise<Response> {
   const body = await req.json().catch(() => ({}));
@@ -21,9 +143,14 @@ export async function POST(req: Request): Promise<Response> {
   const rounds = body.rounds as number | undefined;
   const charId = body.charId as string | undefined;
   const amountPerRound = body.amountPerRound as number | undefined;
+  const roomCode = normalizeRoomCode(body.code);
 
   if (!address || !isAddress(address)) {
     return jsonError(400, "valid wallet address required");
+  }
+  // Private-room join by invite code: rounds/amount ride the host's room.
+  if (roomCode) {
+    return joinPrivateRoom({ code: roomCode, address, charId, amountPerRound });
   }
   if (![3, 5, 7, 11].includes(rounds as number)) {
     return jsonError(400, "rounds must be 3, 5, 7, or 11");
@@ -137,55 +264,18 @@ export async function POST(req: Request): Promise<Response> {
         return Response.json({ status: "searching", queueId, age: ageNow });
       }
 
-      // Create the match
-      const matchId = randomUUID();
-      const nowDate = new Date();
-      const deadline = new Date(nowDate.getTime() + READY_TIMEOUT_MS + ROUND_TIMINGS.ROUND_DURATION_MS);
-
-      // Assign random rival names for display
-      const RIVAL_NAMES = ["RAVEN", "CIPHER", "NOVA", "BLAZE", "PHANTOM", "STORM", "VIPER", "NEXUS", "ORBIT", "ZENITH", "PULSE", "DASH", "NIMBUS", "FROST", "APEX"];
-
-      // Player 1 is the one who joined second (current player), Player 2 is the opponent
-      // But we want "playerAddress" = current player from the client's perspective
-      const p2Name = RIVAL_NAMES[Math.floor(Math.random() * RIVAL_NAMES.length)];
-
-      await Match.create({
-        _id: matchId,
-        playerAddress: addr,
-        playerChar: charId || "dreamer",
-        rivalName: p2Name,
-        rivalChar: opponent.charId || "dreamer",
-        mode: rounds === 3 ? "quick" : rounds === 5 ? "clash" : rounds === 7 ? "battle" : "war",
-        totalRounds: rounds,
-        currentRound: 1,
-        roundPhase: "WAITING",
-        roundStartTime: nowDate,
-        roundDeadline: deadline,
-        playerScore: 0,
-        rivalScore: 0,
-        winner: "player",
-        rounds: [],
-        playerPrediction: null,
-        rivalPrediction: null,
-        status: "ACTIVE",
-        opponentType: "player",
-        player2Address: opponent.address,
-        player2Char: opponent.charId || "dreamer",
-        player1Ready: false,
-        player2Ready: false,
-        funded: true,
-        // Ride the funded position size (client sends its position amount;
-        // falls back to the position record, never a silent default).
-        playerAmountPerRound: joinAmount,
-        playerStartBalance: position.amount,
-        rivalStartBalance: position.amount,
-        playerBalance: position.amount,
-        rivalBalance: position.amount,
-        // Reference the player's active EC position (money lives there, not here).
-        positionId: position._id,
-        positionWindowId: position.windowId,
-        positionDirection: position.direction,
-        positionAmount: position.amount,
+      // Create the match (shared PvP creator — identical to private rooms).
+      // Player 1 is the one who joined second (current player), Player 2 is
+      // the opponent. "playerAddress" = current player from the client's
+      // perspective.
+      const { matchId } = await createPvpMatch({
+        address: addr,
+        charId: charId || "dreamer",
+        opponentAddress: opponent.address,
+        opponentCharId: opponent.charId || "dreamer",
+        rounds: rounds as 3 | 5 | 7 | 11,
+        position: { _id: position._id, amount: position.amount, windowId: position.windowId ?? undefined, direction: position.direction },
+        amountPerRound: joinAmount,
       });
 
       // Update both queue entries with matchId

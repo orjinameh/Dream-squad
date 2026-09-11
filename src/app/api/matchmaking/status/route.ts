@@ -1,6 +1,7 @@
 import { connectToDatabase } from "@/db/connect";
 import { MatchQueue } from "@/db/models/MatchQueue";
 import { Match } from "@/db/models/Match";
+import { MatchRoom, normalizeRoomCode } from "@/db/models/MatchRoom";
 import { normalizeAddress } from "@/lib/addresses";
 import { jsonError } from "@/lib/utils";
 import { expireStaleWaitingMatches } from "@/lib/matchExpiry";
@@ -10,13 +11,31 @@ export const dynamic = "force-dynamic";
 export async function GET(req: Request): Promise<Response> {
   const url = new URL(req.url);
   const address = url.searchParams.get("address");
-
-  if (!address || !address.startsWith("0x")) {
-    return jsonError(400, "address required");
-  }
+  const codeParam = url.searchParams.get("code");
 
   try {
     await connectToDatabase();
+
+    // Private-room polling gate: the host idles on ?code= until the guest's
+    // join flips the room to matched (matchId included, zero latency handoff).
+    if (codeParam) {
+      const code = normalizeRoomCode(codeParam);
+      if (!code) return jsonError(400, "invalid invite code format (DUEL-XXXX)");
+      const room = await MatchRoom.findOne({ code }).lean();
+      if (!room) return jsonError(404, "invite code not found");
+      if (room.status === "cancelled" || new Date(room.expiresAt).getTime() <= Date.now()) {
+        return jsonError(410, "invite code expired — ask the host for a fresh one");
+      }
+      return Response.json({
+        status: room.status === "matched" ? "matched" : "waiting",
+        rounds: room.rounds,
+        matchId: room.matchId ?? null,
+      });
+    }
+
+    if (!address || !address.startsWith("0x")) {
+      return jsonError(400, "address required");
+    }
     const addr = normalizeAddress(address);
     const lower = addr.toLowerCase();
 
